@@ -4,11 +4,21 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from apple_device_cli.core.exceptions import RestoreError, ToolNotFoundError
+from apple_device_cli.core.exceptions import RestoreError
 
 
 def erase_device(udid: str) -> bool:
-    """Erase device using pymobiledevice3."""
+    """Erase device using pymobiledevice3.
+
+    Args:
+        udid: Device UDID to erase.
+
+    Returns:
+        True if erase succeeded.
+
+    Raises:
+        RestoreError: If erase fails or times out.
+    """
     try:
         result = subprocess.run(
             ["python3", "-m", "pymobiledevice3", "restore", "update", "--erase", "--udid", udid],
@@ -26,7 +36,17 @@ def erase_device(udid: str) -> bool:
 
 
 def update_device(udid: str) -> bool:
-    """Update device to latest iOS."""
+    """Update device to latest iOS.
+
+    Args:
+        udid: Device UDID to update.
+
+    Returns:
+        True if update succeeded.
+
+    Raises:
+        RestoreError: If update fails or times out.
+    """
     try:
         result = subprocess.run(
             ["python3", "-m", "pymobiledevice3", "restore", "update", "--udid", udid],
@@ -44,7 +64,18 @@ def update_device(udid: str) -> bool:
 
 
 def restore_device(udid: str, ipsw: str | Path) -> bool:
-    """Restore device with specific IPSW."""
+    """Restore device with specific IPSW.
+
+    Args:
+        udid: Device UDID to restore.
+        ipsw: Path to IPSW file.
+
+    Returns:
+        True if restore succeeded.
+
+    Raises:
+        RestoreError: If restore fails or times out.
+    """
     try:
         result = subprocess.run(
             ["python3", "-m", "pymobiledevice3", "restore", "--udid", udid, str(ipsw)],

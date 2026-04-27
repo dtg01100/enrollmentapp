@@ -1,6 +1,7 @@
 from pathlib import Path
 import shutil
 
+import asyncio
 import typer
 
 from apple_device_cli import __version__
@@ -24,7 +25,7 @@ app.add_typer(enroll_app, name="enroll")
 
 
 @app.callback(invoke_without_command=True)
-def main(ctx: typer.Context):
+def cli_main(ctx: typer.Context):
     """Apple Configurator-like CLI for Linux.
 
     Manage iOS device enrollment with supervised pairing.
@@ -104,7 +105,7 @@ def interactive_enroll():
         typer.echo("\nOrganizations:")
         for i, o in enumerate(orgs):
             typer.echo(f"  [{i + 1}] {o.name}" + (f" ({o.org_id})" if o.org_id else ""))
-        typer.echo(f"  [n] Create new organization")
+        typer.echo("  [n] Create new organization")
         choice = typer.prompt("Select organization number", default="1")
         if choice.lower() == "n":
             org = _create_org_interactive(manager)
@@ -159,11 +160,12 @@ def interactive_enroll():
 
 
 def _get_device_activation_state(udid: str) -> dict:
-    import asyncio
     from pymobiledevice3.lockdown import create_using_usbmux
+
     async def _get():
         lockdown = await create_using_usbmux()
         return lockdown.all_values
+
     return asyncio.run(_get())
 
 
@@ -398,12 +400,12 @@ def org_show(name: str = typer.Option(..., "--name")):
 @org_app.command("import")
 def org_import(
     path: str = typer.Option(..., "--path"),
-    password: str = typer.Option("password", "-p", "--password"),
+    password: str = typer.Option("", "-p", "--password"),
 ):
     """Import organization from Apple Configurator .organization file, directory, or zip."""
     manager = OrganizationManager()
     try:
-        org = manager.import_org(path, password)
+        org = manager.import_org(path, password or "password")
         typer.secho(f"Imported: {org.name}", fg=typer.colors.GREEN)
         typer.echo(f"  Cert: {'Yes' if org.cert_path else 'No'}")
         typer.echo(f"  Key: {'Yes' if org.key_path else 'No'}")
@@ -495,7 +497,7 @@ def enroll_make_supervised(
 
 
 @enroll_app.command("activate")
-def enroll_activate(udid: str = typer.Option(..., "--udid")):
+def enroll_activate(udid: str = typer.Option(None, "--udid")):
     """Activate device."""
     try:
         activate_device(udid)
@@ -505,6 +507,7 @@ def enroll_activate(udid: str = typer.Option(..., "--udid")):
 
 
 def main():
+    """Entry point for the CLI application."""
     app()
 
 

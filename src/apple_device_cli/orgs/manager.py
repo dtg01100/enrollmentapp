@@ -183,8 +183,6 @@ class OrganizationManager:
 
         dest_dir = self.orgs_dir / self._sanitize_name(name)
         if dest_dir.exists():
-            if not overwrite:
-                raise ValueError(f"Organization '{name}' already exists")
             shutil.rmtree(dest_dir)
         dest_dir.mkdir(parents=True, exist_ok=True)
 

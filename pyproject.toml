@@ -1,23 +1,21 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
-name = "enrollment"
+name = "ios-enroll"
 version = "0.1.0"
-description = "iOS supervision enrollment tool for Linux"
-readme = "SPEC.md"
-license = {text = "MIT"}
+description = "iOS device supervised enrollment CLI"
+readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
-    "gradio>=4.0",
+    "typer>=0.12.0",
+    "pymobiledevice3>=3.0.0",
+    "cryptography>=42.0.0",
 ]
 
 [project.scripts]
-enrollment = "enroll:main"
-enrollment-gui = "enroll_gui:main"
+ios-enroll = "apple_device_cli.cli:main"
 
-[project.optional-dependencies]
-dev = [
-    "ruff",
-]
+[tool.hatch.build.targets.wheel]
+packages = ["src/apple_device_cli"]

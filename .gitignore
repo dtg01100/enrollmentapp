@@ -1,0 +1,32 @@
+.worktrees/
+__pycache__/
+*.pyc
+
+.venv/
+build/
+dist/
+*.egg-info/
+
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+.opencode/
+.crush/
+
+*.ipsw
+*.ipsw.lock
+restore_*.log
+
+*.der
+*.pem
+*.mobileconfig
+*.organization
+
+Apple Configurator.app/
+
+docs/superpowers/
+
+# Development environments
+.venv/
+.ruff_cache/

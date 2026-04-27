@@ -63,3 +63,44 @@ def test_organization_manager_get_org():
         assert retrieved is not None
         assert retrieved.name == "Test Org"
         assert retrieved.org_id == "com.test"
+
+
+def test_sanitize_name_special_chars():
+    """_sanitize_name should convert special characters to underscores."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        manager = OrganizationManager(Path(tmpdir))
+        sanitized = manager._sanitize_name("Test/Org:With<Special>Chars")
+        assert sanitized == "Test_Org_With_Special_Chars"
+
+
+def test_sanitize_name_preserves_alphanumeric():
+    """_sanitize_name should preserve alphanumeric, dots, hyphens, underscores."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        manager = OrganizationManager(Path(tmpdir))
+        assert manager._sanitize_name("Test-Org_123.example") == "Test-Org_123.example"
+
+
+def test_save_org_overwrite():
+    """save_org with overwrite=True should replace existing org."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        manager = OrganizationManager(Path(tmpdir))
+        org1 = Organization(name="Test Org", org_id="com.test.v1")
+        manager.save_org(org1)
+        
+        org2 = Organization(name="Test Org", org_id="com.test.v2")
+        manager.save_org(org2, overwrite=True)
+        
+        retrieved = manager.get_org("Test Org")
+        assert retrieved.org_id == "com.test.v2"
+
+
+def test_save_org_no_overwrite_raises():
+    """save_org without overwrite should raise when org exists."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        manager = OrganizationManager(Path(tmpdir))
+        org1 = Organization(name="Test Org", org_id="com.test.v1")
+        manager.save_org(org1)
+        
+        org2 = Organization(name="Test Org", org_id="com.test.v2")
+        with pytest.raises(ValueError, match="already exists"):
+            manager.save_org(org2, overwrite=False)

@@ -95,14 +95,18 @@ class OrganizationManager:
         self.orgs_dir.mkdir(parents=True, exist_ok=True)
 
     def list_orgs(self) -> list[Organization]:
+        import logging
         orgs = []
+        failed = 0
         for item in self.orgs_dir.iterdir():
             if item.is_dir() and (item / "org.json").exists():
                 try:
                     orgs.append(Organization.load(item))
                 except Exception as e:
-                    import logging
+                    failed += 1
                     logging.warning(f"Failed to load org from {item}: {e}")
+        if failed:
+            logging.warning(f"Failed to load {failed} organization(s)")
         return orgs
 
     def get_org(self, name: str) -> Organization | None:
@@ -111,8 +115,10 @@ class OrganizationManager:
             return None
         return Organization.load(org_dir)
 
-    def save_org(self, org: Organization):
+    def save_org(self, org: Organization, overwrite: bool = False):
         org_dir = self.orgs_dir / self._sanitize_name(org.name)
+        if not overwrite and org_dir.exists():
+            raise ValueError(f"Organization '{org.name}' already exists")
         org.save(org_dir)
 
     def delete_org(self, name: str) -> bool:
@@ -134,9 +140,9 @@ class OrganizationManager:
         elif path.is_file() and path.suffix == ".zip":
             with tempfile.TemporaryDirectory() as tmpdir:
                 shutil.unpack_archive(path, tmpdir)
-                return self._import_from_dir(Path(tmpdir))
+                return self._import_from_dir(Path(tmpdir), overwrite=True)
         elif path.is_dir():
-            return self._import_from_dir(path)
+            return self._import_from_dir(path, overwrite=True)
         else:
             raise ValueError(f"Invalid path: {path}")
 
@@ -177,6 +183,8 @@ class OrganizationManager:
 
         dest_dir = self.orgs_dir / self._sanitize_name(name)
         if dest_dir.exists():
+            if not overwrite:
+                raise ValueError(f"Organization '{name}' already exists")
             shutil.rmtree(dest_dir)
         dest_dir.mkdir(parents=True, exist_ok=True)
 
@@ -219,7 +227,7 @@ class OrganizationManager:
             key_path=str(dest_dir / "key.der"),
         )
 
-    def _import_from_dir(self, src_dir: Path) -> Organization:
+    def _import_from_dir(self, src_dir: Path, overwrite: bool = False) -> Organization:
         """Import org from directory."""
         if not (src_dir / "org.json").exists():
             raise ValueError("Missing org.json in import directory")
@@ -235,9 +243,11 @@ class OrganizationManager:
 
         dest_dir = self.orgs_dir / self._sanitize_name(name)
         if dest_dir.exists():
+            if not overwrite:
+                raise ValueError(f"Organization '{name}' already exists")
             shutil.rmtree(dest_dir)
 
-        org.save(dest_dir)
+        org.save(org_dir=dest_dir, skip_copy=False)
         return org
 
     def import_mobileconfig(self, path: str | Path) -> Organization:
@@ -292,19 +302,14 @@ class OrganizationManager:
                 identity_ref = item.get('IdentityCertificateUUID')
                 break
 
-        # Extract client certificates from PKCS7 if present
-        cert_path = None
-        if pkcs7_certs:
-            dest_dir = self.orgs_dir / self._sanitize_name(name)
-            dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_dir = self.orgs_dir / self._sanitize_name(name)
+        dest_dir.mkdir(parents=True, exist_ok=True)
 
-            # Save client identity cert from PKCS7
+        if pkcs7_certs:
             cert_der = pkcs7_certs[0].public_bytes(serialization.Encoding.DER)
             with open(dest_dir / "cert.der", "wb") as f:
                 f.write(cert_der)
-            cert_path = str(dest_dir / "cert.der")
 
-        # Build org with extracted data
         org = Organization(
             name=name,
             org_id=mdm_topic,
@@ -313,18 +318,10 @@ class OrganizationManager:
             mdm_topic=mdm_topic,
             identity_ref=identity_ref,
             mdm_description=payload.get('PayloadDescription'),
-            cert_path=cert_path,
+            cert_path=str(dest_dir / "cert.der") if pkcs7_certs else None,
         )
 
-        # Save org manually (skip_copy since we already wrote cert above)
-        org_dir = self.orgs_dir / self._sanitize_name(name)
-        if not org_dir.exists():
-            org_dir.mkdir(parents=True, exist_ok=True)
-        metadata = org.to_dict()
-        del metadata["cert_path"]
-        del metadata["key_path"]
-        with open(org_dir / "org.json", "w") as f:
-            json.dump(metadata, f, indent=2)
+        org.save(org_dir=dest_dir, skip_copy=True)
         return org
 
     def export_org(self, name: str, dest_path: str | Path) -> bool:

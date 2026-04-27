@@ -15,13 +15,10 @@ Run `ios-enroll --help` for all commands, or `ios-enroll version` for version in
 
 ## Installation
 
-### Homebrew Installation (Recommended for Linux)
+### Homebrew Installation (Linux)
 
 ```bash
-# Install all dependencies and this tool
-./homebrew/install.sh
-
-# Or manually:
+# Install dependencies via Homebrew
 brew install libimobiledevice
 ```
 
@@ -232,9 +229,5 @@ enrollmentapp/
 │   ├── orgs/               # Organization management (manager, identity)
 │   └── restore/            # Erase, restore helpers
 ├── tests/                  # pytest test suite
-├── homebrew/               # Homebrew installation scripts
-│   ├── install.sh
-│   └── Library/Taps/local/enrollment/
-│       └── Formula/
-└── scripts/                # Utility scripts
+├── scripts/           # Utility scripts
 ```

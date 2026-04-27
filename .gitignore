@@ -1,32 +1,58 @@
+# Version control
 .worktrees/
+
+# Python
 __pycache__/
 *.pyc
-
+*.pyo
 .venv/
 build/
 dist/
 *.egg-info/
+*.egg
 
+# Testing & linting
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.coverage
+htmlcov/
 
+# AI/agent tools
 .opencode/
 .crush/
 
+# iOS firmware & restore artifacts
 *.ipsw
 *.ipsw.lock
 restore_*.log
 
+# Credentials & secrets — NEVER commit these
 *.der
 *.pem
+*.p12
+*.pfx
 *.mobileconfig
 *.organization
 
+# macOS binary reference — not needed
 Apple Configurator.app/
 
-docs/superpowers/
+# IDE & editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 
-# Development environments
-.venv/
-.ruff_cache/
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.*
+
+# Internal dev docs (not for release)
+docs/superpowers/
+AGENTS.md

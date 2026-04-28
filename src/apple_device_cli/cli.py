@@ -302,11 +302,29 @@ def org_create(
     phone: str = typer.Option(None, "--phone"),
     email: str = typer.Option(None, "--email"),
     mdm_url: str = typer.Option(None, "--mdm-url"),
+    checkin_url: str = typer.Option(None, "--checkin-url"),
+    mdm_topic: str = typer.Option(None, "--mdm-topic"),
+    mdm_description: str = typer.Option(None, "--mdm-description"),
     cert: str = typer.Option(None, "-C", "--cert"),
     key: str = typer.Option(None, "-K", "--key"),
 ):
-    """Create organization."""
-    org = Organization(name=name, org_id=org_id, address=address, phone=phone, email=email, mdm_url=mdm_url)
+    """Create organization with MDM server configuration.
+
+    Example:
+        ios-enroll org create --name "My Org" --mdm-url https://mdm.example.com/mdm \\
+            --checkin-url https://mdm.example.com/checkin --mdm-topic com.example.mdm
+    """
+    org = Organization(
+        name=name,
+        org_id=org_id,
+        address=address,
+        phone=phone,
+        email=email,
+        mdm_url=mdm_url,
+        checkin_url=checkin_url,
+        mdm_topic=mdm_topic,
+        mdm_description=mdm_description,
+    )
     if cert:
         org.cert_path = str(Path(cert).resolve()) if cert else None
     if key:
@@ -314,6 +332,12 @@ def org_create(
     manager = OrganizationManager()
     manager.save_org(org)
     typer.secho(f"Created organization: {org.name}", fg=typer.colors.GREEN)
+    if mdm_url:
+        typer.echo(f"  MDM URL: {mdm_url}")
+    if checkin_url:
+        typer.echo(f"  Check-in URL: {checkin_url}")
+    if mdm_topic:
+        typer.echo(f"  MDM Topic: {mdm_topic}")
 
 
 @org_app.command("delete")
@@ -335,7 +359,7 @@ def org_set_cert(name: str = typer.Option(..., "--name"), cert: str = typer.Opti
         typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
         return
     org.cert_path = str(Path(cert).resolve())
-    manager.save_org(org)
+    manager.save_org(org, overwrite=True)
     typer.secho(f"Set certificate for '{name}'", fg=typer.colors.GREEN)
 
 
@@ -348,7 +372,7 @@ def org_set_key(name: str = typer.Option(..., "--name"), key: str = typer.Option
         typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
         return
     org.key_path = str(Path(key).resolve())
-    manager.save_org(org)
+    manager.save_org(org, overwrite=True)
     typer.secho(f"Set private key for '{name}'", fg=typer.colors.GREEN)
 
 
@@ -361,8 +385,34 @@ def org_set_mdm_url(name: str = typer.Option(..., "--name"), mdm_url: str = type
         typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
         return
     org.mdm_url = mdm_url
-    manager.save_org(org)
+    manager.save_org(org, overwrite=True)
     typer.secho(f"Set MDM URL for '{name}'", fg=typer.colors.GREEN)
+
+
+@org_app.command("set-checkin-url")
+def org_set_checkin_url(name: str = typer.Option(..., "--name"), checkin_url: str = typer.Option(..., "--checkin-url")):
+    """Set SCEP check-in URL for organization."""
+    manager = OrganizationManager()
+    org = manager.get_org(name)
+    if not org:
+        typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
+        return
+    org.checkin_url = checkin_url
+    manager.save_org(org, overwrite=True)
+    typer.secho(f"Set check-in URL for '{name}'", fg=typer.colors.GREEN)
+
+
+@org_app.command("set-mdm-topic")
+def org_set_mdm_topic(name: str = typer.Option(..., "--name"), mdm_topic: str = typer.Option(..., "--mdm-topic")):
+    """Set MDM topic for organization."""
+    manager = OrganizationManager()
+    org = manager.get_org(name)
+    if not org:
+        typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
+        return
+    org.mdm_topic = mdm_topic
+    manager.save_org(org, overwrite=True)
+    typer.secho(f"Set MDM topic for '{name}'", fg=typer.colors.GREEN)
 
 
 @org_app.command("show")
@@ -384,6 +434,12 @@ def org_show(name: str = typer.Option(..., "--name")):
         typer.echo(f"Email: {org.email}")
     if org.mdm_url:
         typer.echo(f"MDM URL: {org.mdm_url}")
+    if org.checkin_url:
+        typer.echo(f"Check-in URL: {org.checkin_url}")
+    if org.mdm_topic:
+        typer.echo(f"MDM Topic: {org.mdm_topic}")
+    if org.mdm_description:
+        typer.echo(f"MDM Description: {org.mdm_description}")
     typer.echo(f"Created: {org.created_at}")
     typer.echo(f"Cert: {org.cert_path or 'Not set'}")
     typer.echo(f"Key: {org.key_path or 'Not set'}")
@@ -430,9 +486,20 @@ def org_generate(
     name: str = typer.Option(..., "--name"),
     org_id: str = typer.Option(None, "--org-id"),
     mdm_url: str = typer.Option(None, "--mdm-url"),
+    checkin_url: str = typer.Option(None, "--checkin-url"),
+    mdm_topic: str = typer.Option(None, "--mdm-topic"),
+    mdm_description: str = typer.Option(None, "--mdm-description"),
     valid_days: int = typer.Option(365 * 5, "--valid-days"),
 ):
-    """Generate a new supervising identity for an organization."""
+    """Generate a new supervising identity for an organization.
+
+    Creates a self-signed certificate and private key for the organization,
+    then saves the org with the specified MDM server configuration.
+
+    Example:
+        ios-enroll org generate --name "My Org" --mdm-url https://mdm.example.com/mdm \\
+            --checkin-url https://mdm.example.com/checkin --mdm-topic com.example.mdm
+    """
     manager = OrganizationManager()
     existing = manager.get_org(name)
     if existing and existing.cert_path and existing.key_path:
@@ -455,12 +522,21 @@ def org_generate(
         name=name,
         org_id=org_id,
         mdm_url=mdm_url,
+        checkin_url=checkin_url,
+        mdm_topic=mdm_topic,
+        mdm_description=mdm_description,
         cert_path=str(org_dir / "cert.der"),
         key_path=str(org_dir / "key.der"),
     )
     org.save(org_dir, skip_copy=True)
 
     typer.secho(f"Generated identity for: {name}", fg=typer.colors.GREEN)
+    if mdm_url:
+        typer.echo(f"  MDM URL: {mdm_url}")
+    if checkin_url:
+        typer.echo(f"  Check-in URL: {checkin_url}")
+    if mdm_topic:
+        typer.echo(f"  MDM Topic: {mdm_topic}")
 
 
 @enroll_app.command("make-supervised")

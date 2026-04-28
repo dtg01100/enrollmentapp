@@ -46,30 +46,46 @@ def cli_main(ctx: typer.Context):
 
 @enroll_app.command("guided-enroll")
 def enroll_guided_enroll():
-    """Guided supervised enrollment workflow.
+    """Guided supervised enrollment workflow matching Apple Configurator.
 
-    This command walks you through:
-    1. Selecting a connected device
-    2. Choosing or creating an organization
-    3. Configuring skip panes
-    4. Erasing device if needed
-    5. Performing supervised pairing with cloud configuration
+    Steps:
+    1. Select device
+    2. Choose MDM server configuration
+    3. Configure organization & supervision identity
+    4. Select Setup Assistant skip panes
+    5. Erase device if needed
+    6. Apply configuration
 
-    For quick device enrollment with interactive prompts.
+    This mimics Apple Configurator's Prepare Assistant workflow.
     """
     interactive_enroll()
 
 
 def interactive_enroll():
+    """Guided enrollment workflow matching Apple Configurator's Prepare Assistant.
+    
+    Steps:
+    1. Select device
+    2. Choose MDM server (new or existing)
+    3. Configure organization & supervision identity
+    4. Select skip panes
+    5. Erase if needed
+    6. Apply configuration
+    """
     from apple_device_cli.enrollment.skip_panes import PRESETS
+    from apple_device_cli.orgs.identity import generate_org_identity
 
     typer.secho("=== Apple Device Enrollment ===\n", fg=typer.colors.BLUE, bold=True)
+    typer.echo("Following Apple Configurator workflow...\n")
 
+    # Step 1: Select device
     devices = list_devices()
     if not devices:
         typer.secho("No devices found. Connect a device and try again.", fg=typer.colors.RED)
         raise typer.Exit(1)
 
+    typer.echo("Step 1: Select Device")
+    typer.echo("-" * 40)
     typer.echo("Available devices:")
     for i, d in enumerate(devices):
         typer.echo(f"  [{i + 1}] {d.udid}  ({d.device_name})")
@@ -83,6 +99,7 @@ def interactive_enroll():
 
     typer.echo(f"\nSelected: {selected.device_name} ({selected.udid})")
 
+    # Get device state
     try:
         lockdown = asyncio.get_event_loop().run_until_complete(
             asyncio.to_thread(_get_device_activation_state, selected.udid)
@@ -94,44 +111,174 @@ def interactive_enroll():
     except Exception as e:
         typer.echo(f"Could not check device state: {e}")
         activation_state = None
+        has_cloud_config = False
 
-    manager = OrganizationManager()
-    orgs = manager.list_orgs()
+    # Step 2: MDM Server Configuration
+    typer.echo("\nStep 2: MDM Server Configuration")
+    typer.secho("-" * 40)
+    typer.echo("Select enrollment type:")
+    typer.echo("  [1] Do not enroll in MDM")
+    typer.echo("  [2] Use existing MDM server")
+    typer.echo("  [3] Configure new MDM server")
+    enroll_choice = typer.prompt("Select option", default="2")
 
-    if not orgs:
-        typer.secho("\nNo organizations found. Let's create one.", fg=typer.colors.YELLOW)
-        org = _create_org_interactive(manager)
-    else:
-        typer.echo("\nOrganizations:")
-        for i, o in enumerate(orgs):
-            typer.echo(f"  [{i + 1}] {o.name}" + (f" ({o.org_id})" if o.org_id else ""))
-        typer.echo("  [n] Create new organization")
-        choice = typer.prompt("Select organization number", default="1")
-        if choice.lower() == "n":
-            org = _create_org_interactive(manager)
+    mdm_url = None
+    checkin_url = None
+    mdm_topic = None
+
+    if enroll_choice == "2":
+        manager = OrganizationManager()
+        orgs = manager.list_orgs()
+        orgs_with_mdm = [o for o in orgs if o.mdm_url]
+        if not orgs_with_mdm:
+            typer.secho("No organizations with MDM URL found. Creating new server...", fg=typer.colors.YELLOW)
+            enroll_choice = "3"
         else:
+            typer.echo("\nAvailable MDM servers:")
+            for i, o in enumerate(orgs_with_mdm):
+                typer.echo(f"  [{i + 1}] {o.name} ({o.mdm_url})")
+            choice = typer.prompt("Select MDM server", default="1")
             try:
-                org = orgs[int(choice) - 1]
+                selected_org = orgs_with_mdm[int(choice) - 1]
+                mdm_url = selected_org.mdm_url
+                checkin_url = selected_org.checkin_url
+                mdm_topic = selected_org.mdm_topic
             except (ValueError, IndexError):
                 typer.secho("Invalid selection", fg=typer.colors.RED)
                 raise typer.Exit(1)
 
-    if not org.cert_path or not org.key_path:
-        typer.secho(f"\nOrganization '{org.name}' has no cert/key.", fg=typer.colors.RED)
+    if enroll_choice == "3":
+        typer.echo("\nNew MDM Server Configuration:")
+        mdm_url = typer.prompt("  Server URL (e.g. https://mdm.example.com/mdm)")
+        checkin_url = typer.prompt("  Check-in URL (e.g. https://mdm.example.com/checkin)", default="")
+        mdm_topic = typer.prompt("  MDM Topic", default="")
+
+    if mdm_url:
+        typer.echo(f"\nMDM Server URL: {mdm_url}")
+        if checkin_url:
+            typer.echo(f"Check-in URL: {checkin_url}")
+
+    # Step 3: Organization Configuration
+    typer.echo("\nStep 3: Organization & Supervision Identity")
+    typer.secho("-" * 40)
+    manager = OrganizationManager()
+    orgs = manager.list_orgs()
+    existing_orgs = [o for o in orgs if o.cert_path and o.key_path]
+
+    typer.echo("Organization options:")
+    typer.echo("  [n] Create new organization")
+    if existing_orgs:
+        for i, o in enumerate(existing_orgs):
+            typer.echo(f"  [{i + 1}] {o.name}")
+    org_choice = typer.prompt("Select organization", default="n")
+
+    org = None
+    if org_choice.lower() == "n":
+        # Create new organization
+        name = typer.prompt("  Organization name")
+        org_id = typer.prompt("  Organization ID (e.g. com.example)", default="")
+        
+        typer.echo("\n  Supervision identity:")
+        typer.echo("    [1] Generate new identity")
+        typer.echo("    [2] Use existing certificate/key")
+        identity_choice = typer.prompt("Select option", default="1")
+
+        if identity_choice == "1":
+            valid_days_str = typer.prompt("  Certificate validity (days)", default=str(365 * 5))
+            try:
+                valid_days = int(valid_days_str)
+            except ValueError:
+                valid_days = 365 * 5
+            
+            cert_der, key_der = generate_org_identity(name, valid_days)
+            org_dir = manager.orgs_dir / manager._sanitize_name(name)
+            if org_dir.exists():
+                shutil.rmtree(org_dir)
+            org_dir.mkdir(parents=True, exist_ok=True)
+            with open(org_dir / "cert.der", "wb") as f:
+                f.write(cert_der)
+            with open(org_dir / "key.der", "wb") as f:
+                f.write(key_der)
+            
+            org = Organization(
+                name=name,
+                org_id=org_id or None,
+                mdm_url=mdm_url,
+                checkin_url=checkin_url or None,
+                mdm_topic=mdm_topic or None,
+                cert_path=str(org_dir / "cert.der"),
+                key_path=str(org_dir / "key.der"),
+            )
+        else:
+            cert_path = typer.prompt("  Path to certificate (DER)")
+            key_path = typer.prompt("  Path to private key (DER)")
+            org = Organization(
+                name=name,
+                org_id=org_id or None,
+                mdm_url=mdm_url,
+                checkin_url=checkin_url or None,
+                mdm_topic=mdm_topic or None,
+                cert_path=cert_path,
+                key_path=key_path,
+            )
+        
+        manager.save_org(org)
+        typer.secho(f"Organization '{name}' saved.", fg=typer.colors.GREEN)
+    else:
+        try:
+            org = existing_orgs[int(org_choice) - 1]
+            # Update MDM settings if new server was configured
+            if mdm_url and (org.mdm_url != mdm_url or org.checkin_url != checkin_url or org.mdm_topic != mdm_topic):
+                org.mdm_url = mdm_url
+                org.checkin_url = checkin_url
+                org.mdm_topic = mdm_topic
+                manager.save_org(org, overwrite=True)
+                typer.secho(f"Updated MDM settings for '{org.name}'", fg=typer.colors.GREEN)
+        except (ValueError, IndexError):
+            typer.secho("Invalid selection", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+    if not org or not org.cert_path or not org.key_path:
+        typer.secho(f"\nOrganization '{org.name if org else 'unknown'}' missing cert/key.", fg=typer.colors.RED)
         raise typer.Exit(1)
 
     typer.echo(f"\nOrganization: {org.name}")
     typer.echo(f"MDM URL: {org.mdm_url or 'Not set'}")
 
-    typer.echo("\nSkip panes presets:")
-    for name in PRESETS:
-        typer.echo(f"  - {name}")
-    preset_choice = typer.prompt("Select preset", default="standard")
-    skip_list = PRESETS.get(preset_choice, PRESETS["standard"])
+    # Step 4: Skip panes selection
+    typer.echo("\nStep 4: Setup Assistant Skip Panes")
+    typer.secho("-" * 40)
+    typer.echo("Select skip panes preset:")
+    typer.echo("  [1] minimal - Skip most panes for unattended setup")
+    typer.echo("  [2] standard - Common enterprise configuration")
+    typer.echo("  [3] all - Skip all applicable panes")
+    typer.echo("  [4] custom - Configure individual panes")
+    preset_choice = typer.prompt("Select preset", default="2")
 
+    if preset_choice == "4":
+        from apple_device_cli.enrollment.skip_panes import VALID_PANES
+        typer.echo("\nAvailable panes to skip:")
+        for pane in sorted(VALID_PANES):
+            typer.echo(f"  - {pane}")
+        panes_input = typer.prompt("\nEnter panes to skip (comma-separated, or 'all'):", default="")
+        if panes_input.lower() == "all":
+            skip_list = list(VALID_PANES)
+        else:
+            skip_list = [p.strip() for p in panes_input.split(",") if p.strip()]
+    else:
+        preset_map = {"1": "minimal", "2": "standard", "3": "all"}
+        preset_name = preset_map.get(preset_choice, "standard")
+        skip_list = PRESETS.get(preset_name, PRESETS["standard"])
+
+    typer.echo(f"\nSkipping {len(skip_list)} panes: {', '.join(skip_list[:5])}{'...' if len(skip_list) > 5 else ''}")
+
+    # Step 5: Erase if needed
+    typer.echo("\nStep 5: Device Preparation")
+    typer.secho("-" * 40)
     needs_erase = activation_state != "Activated" or has_cloud_config
+    
     if needs_erase:
-        typer.secho("\nDevice needs erase before enrollment.", fg=typer.colors.YELLOW)
+        typer.secho(f"Device state requires erase (activation: {activation_state}, cloud config: {has_cloud_config}).", fg=typer.colors.YELLOW)
         if not typer.confirm("Erase device now?"):
             typer.secho("Aborted.", fg=typer.colors.YELLOW)
             raise typer.Exit()
@@ -144,16 +291,30 @@ def interactive_enroll():
         typer.secho("Device erased. Waiting 60s for boot...", fg=typer.colors.YELLOW)
         import time
         time.sleep(60)
-        typer.secho("Ready for supervised pairing.", fg=typer.colors.GREEN)
+        typer.secho("Device ready for supervised pairing.", fg=typer.colors.GREEN)
+    else:
+        typer.secho(f"Device activation: {activation_state}")
+        typer.echo("No erase required.")
 
-    typer.echo("\nEnrolling device as supervised...")
+    # Step 6: Apply configuration
+    typer.echo("\nStep 6: Apply Configuration")
+    typer.secho("-" * 40)
+    typer.echo("Enrolling device as supervised...")
     try:
-        cloud_config = make_supervised(org.cert_path, org.key_path, org.name, org.org_id, skip_list, org.mdm_url)
-        typer.secho("\nDevice is now supervised and enrolled!", fg=typer.colors.GREEN)
+        cloud_config = make_supervised(
+            org.cert_path, org.key_path, org.name, org.org_id, 
+            skip_list, org.mdm_url
+        )
+        typer.secho("\n" + "=" * 50, fg=typer.colors.GREEN, bold=True)
+        typer.secho("  Device is now supervised and enrolled!", fg=typer.colors.GREEN, bold=True)
+        typer.secho("=" * 50, fg=typer.colors.GREEN, bold=True)
+        typer.echo(f"\n  Organization: {org.name}")
         if org.mdm_url:
-            typer.echo(f"MDM Server URL: {org.mdm_url}")
+            typer.echo(f"  MDM Server URL: {org.mdm_url}")
         if cloud_config.get("MDMServerURL"):
-            typer.echo(f"Cloud config MDM URL: {cloud_config['MDMServerURL']}")
+            typer.echo(f"  Cloud Config MDM URL: {cloud_config['MDMServerURL']}")
+        typer.echo(f"  Skip panes: {len(skip_list)} configured")
+        typer.echo("\n  Connect device to power and wait for Setup Assistant...")
     except AppleDeviceError as e:
         typer.secho(f"Enrollment failed: {e}", fg=typer.colors.RED)
         raise typer.Exit(1)

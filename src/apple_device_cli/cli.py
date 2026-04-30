@@ -430,16 +430,20 @@ def _prompt_for_udid(udid: str | None, allow_empty: bool = False) -> DeviceInfo 
     try:
         from apple_device_cli.restore.erase import get_irecv
         irecv = get_irecv()
-        if irecv._device is not None:
-            # There's a Recovery-mode device connected
-            dev = irecv._device
-            ecid_str = hex(getattr(dev, 'ecid', None)) if getattr(dev, 'ecid', None) else None
+        # IRecv connects to Recovery mode device and populates attributes directly
+        ecid_val = getattr(irecv, 'ecid', None)
+        if ecid_val:
+            ecid_str = hex(ecid_val)
+            try:
+                iboot = irecv.iboot_version
+            except Exception:
+                iboot = "Unknown"
             recovery_devices.append(DeviceInfo(
-                udid=ecid_str or "recovery",
-                device_name=getattr(dev, 'display_name', None) or "Recovery Mode Device",
-                device_type=getattr(dev, 'product_type', None) or "Unknown",
-                build_version=getattr(dev, 'build_version', None) or "Unknown",
-                firmware_version=getattr(dev, 'product_version', None) or "Unknown",
+                udid=ecid_str,
+                device_name=getattr(irecv, 'display_name', None) or "Recovery Mode Device",
+                device_type=getattr(irecv, 'product_type', None) or "Unknown",
+                build_version=iboot,
+                firmware_version="",
                 ecid=ecid_str,
             ))
     except Exception:

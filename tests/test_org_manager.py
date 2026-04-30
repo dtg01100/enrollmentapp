@@ -184,8 +184,8 @@ def test_organization_manager_delete():
         manager = OrganizationManager(Path(tmpdir))
         org = Organization(name="Test Org", org_id="com.test")
         manager.save_org(org)
-        assert manager.delete_org("Test Org") == True
-        assert manager.delete_org("NonExistent") == False
+        assert manager.delete_org("Test Org")
+        assert not manager.delete_org("NonExistent")
 
 
 def test_organization_manager_get_org():
@@ -327,8 +327,6 @@ def test_delete_org_removes_all_files():
 
 def test_export_org_to_directory():
     """Test that export_org to directory preserves all MDM fields."""
-    import shutil
-    
     with tempfile.TemporaryDirectory() as tmpdir:
         manager = OrganizationManager(Path(tmpdir))
         

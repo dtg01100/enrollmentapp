@@ -30,10 +30,11 @@ SAMPLE_MDM_PAYLOAD = {
 @pytest.fixture
 def mock_mobileconfig():
     """Create a mock mobileconfig file in temp directory."""
-    tmp = Path(tempfile.mkdtemp())
-    mobileconfig_path = tmp / "test.mobileconfig"
-    mobileconfig_path.write_bytes(b"mock signed mobileconfig data")
-    yield mobileconfig_path, tmp
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp = Path(tmp_dir)
+        mobileconfig_path = tmp / "test.mobileconfig"
+        mobileconfig_path.write_bytes(b"mock signed mobileconfig data")
+        yield mobileconfig_path, tmp
 
 
 def make_mock_subprocess(plist_data):

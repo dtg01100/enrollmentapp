@@ -11,7 +11,7 @@ VALID_PANES = {
     "app-store", "safety", "multitasking", "action-button",
     "apple-intelligence", "camera-controls", "terms-of-address",
     "accessibility-appearance", "welcome", "appearance",
-    "restore-completed", "update-completed",
+    "restore-completed", "update-completed", "accessibility",
 }
 
 PRESETS = {

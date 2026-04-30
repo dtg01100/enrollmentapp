@@ -19,7 +19,7 @@ from cryptography.hazmat.primitives.serialization import (
 from cryptography.x509 import load_der_x509_certificate, load_pem_x509_certificate
 
 from pymobiledevice3.ca import create_keybag_file
-from pymobiledevice3.services.mobile_config import CloudConfigurationAlreadyPresentError, MobileConfigService
+from pymobiledevice3.services.mobile_config import CloudConfigurationAlreadyPresentError
 
 from apple_device_cli.core.exceptions import EnrollmentError
 
@@ -319,16 +319,16 @@ async def do_supervised_pairing(
                 "PayloadUUID": str(uuid4()),
                 "PayloadVersion": 1,
             })
-            try:
-                async with MobileConfigService(lockdown) as svc:
-                    await _maybe_await(svc.install_profile_silent(keybag_path, mdm_profile_plist))
+        try:
+            async with MobileConfigService(lockdown) as svc:
+                await _maybe_await(svc.install_profile_silent(keybag_path, mdm_profile_plist))
                 mdm_enrolled = True
-            except Exception as e:
-                error_msg = f"MDM profile install failed: {e}"
-                if fail_on_mdm_error:
-                    errors.append(error_msg)
-                else:
-                    errors.append(error_msg)
+        except Exception as e:
+            error_msg = f"MDM profile install failed: {e}"
+            if fail_on_mdm_error:
+                raise EnrollmentError(error_msg) from e
+            else:
+                errors.append(error_msg)
 
     # Step 6: Get cloud configuration result
     _progress("Verifying configuration...")
@@ -501,6 +501,8 @@ def validate_enrollment_prerequisites(
                 load_der_private_key(key_der, password=None)
             except Exception as e:
                 errors.append(f"Invalid private key format: {e}")
+    elif cert_path or key_path:
+        errors.append("Both cert_path and key_path must be provided together")
 
     # Check organization name
     if not org_name or not org_name.strip():

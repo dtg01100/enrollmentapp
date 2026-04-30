@@ -135,4 +135,4 @@ def test_presets_all_contains_all_valid():
 def test_valid_panes_count():
     """VALID_PANES should contain expected number of panes."""
     # This is a regression test - if panes are added/removed, this test will catch it
-    assert len(VALID_PANES) == 43  # Current count
+    assert len(VALID_PANES) == 44 # Current count

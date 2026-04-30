@@ -2,12 +2,9 @@
 import json
 import plistlib
 import tempfile
-import zipfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-
 import pytest
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography import x509
 

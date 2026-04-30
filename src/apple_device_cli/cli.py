@@ -1,5 +1,6 @@
 from pathlib import Path
 import shutil
+import time
 
 import asyncio
 import typer
@@ -8,7 +9,6 @@ from apple_device_cli import __version__
 from apple_device_cli.device.connection import (
     ensure_device_pairing,
     get_device_info,
-    get_device_info_for_recovery,
     list_devices,
     wait_for_udid_in_usbmux,
 )
@@ -20,6 +20,7 @@ from apple_device_cli.restore.erase import (
     resolve_firmware_url,
     restore_device,
     update_device,
+    InsufficientSpaceError,
 )
 from apple_device_cli.orgs.manager import OrganizationManager, Organization
 from apple_device_cli.orgs.identity import generate_org_identity, load_cert_info
@@ -114,9 +115,7 @@ def interactive_enroll():
 
     # Get device state
     try:
-        loop = asyncio.new_event_loop()
-        lockdown = loop.run_until_complete(_get_device_activation_state(selected.udid))
-        loop.close()
+        lockdown = asyncio.run(_get_device_activation_state(selected.udid))
         activation_state = lockdown.get("ActivationState", "Unknown")
         has_cloud_config = lockdown.get("CloudConfigurationWasApplied", False)
         typer.echo(f"Activation state: {activation_state}")
@@ -205,6 +204,11 @@ def interactive_enroll():
             cert_der, key_der = generate_org_identity(name, valid_days)
             org_dir = manager.orgs_dir / manager._sanitize_name(name)
             if org_dir.exists():
+                existing_org = manager.get_org(name)
+                if existing_org:
+                    typer.secho(f"Organization '{name}' already exists and will be overwritten.", fg=typer.colors.YELLOW)
+                else:
+                    typer.secho(f"Directory '{org_dir}' already exists (name collision). Overwriting.", fg=typer.colors.YELLOW)
                 shutil.rmtree(org_dir)
             org_dir.mkdir(parents=True, exist_ok=True)
             with open(org_dir / "cert.der", "wb") as f:
@@ -290,9 +294,7 @@ def interactive_enroll():
 
     # Get full device state for smart erase decision
     try:
-        loop = asyncio.new_event_loop()
-        lockdown = loop.run_until_complete(_get_device_activation_state(selected.udid))
-        loop.close()
+        lockdown = asyncio.run(_get_device_activation_state(selected.udid))
         is_supervised = lockdown.get("IsSupervised", False)
         has_cloud_config = lockdown.get("CloudConfigurationWasApplied", False)
     except Exception:
@@ -336,19 +338,43 @@ def interactive_enroll():
 
     if needs_erase:
         typer.echo("Erasing device...")
+        if not selected.ecid:
+            typer.secho("Cannot erase: device ECID not available. Connect device in normal mode first.", fg=typer.colors.RED)
+            raise typer.Exit(1)
         try:
-            erase_device(selected.udid, selected.ecid or None)
-        except AppleDeviceError as e:
+            firmware_url = resolve_firmware_url(selected.device_type, "latest")
+            typer.echo(f"Using latest signed iOS for {selected.device_type}...")
+        except Exception as e:
+            typer.secho(f"Failed to resolve IPSW: {e}", fg=typer.colors.RED)
+            typer.echo("Provide --ipsw or --version to override, or ensure device is connected in normal mode.")
+            raise typer.Exit(1)
+        try:
+            erase_device(selected.udid, selected.ecid, ipsw=firmware_url)
+        except Exception as e:
             typer.secho(f"Erase failed: {e}", fg=typer.colors.RED)
             raise typer.Exit(1)
         typer.secho("Device erased. Waiting 60s for boot...", fg=typer.colors.YELLOW)
-        import time
 
         time.sleep(60)
         typer.secho("Device ready for supervised pairing.", fg=typer.colors.GREEN)
     else:
         typer.secho(f"Device activation: {activation_state}")
         typer.echo("No erase required.")
+        update_firmware = typer.confirm("Optionally update to latest iOS to avoid certificate issues?", default=False)
+        if update_firmware:
+            if not selected.ecid:
+                typer.secho("Cannot update: device ECID not available. Connect device in normal mode first.", fg=typer.colors.RED)
+                raise typer.Exit(1)
+            else:
+                try:
+                    firmware_url = resolve_firmware_url(selected.device_type, "latest")
+                    typer.echo(f"Updating to latest signed iOS for {selected.device_type}...")
+                    update_device(selected.udid, selected.ecid, ipsw=firmware_url)
+                    typer.secho("Device updated. Waiting 30s for reboot...", fg=typer.colors.YELLOW)
+                    time.sleep(30)
+                except Exception as e:
+                    typer.secho(f"Update failed: {e}", fg=typer.colors.YELLOW)
+                    typer.echo("Continuing without update...")
 
     # Step 6: Apply configuration
     typer.echo("\nStep 6: Apply Configuration")
@@ -478,7 +504,12 @@ def _device_is_in_recovery_mode(ecid: str | None) -> bool:
         return False
     try:
         from apple_device_cli.restore.erase import get_irecv
-        irecv = get_irecv()
+        IRecv = get_irecv.__globals__.get("IRecv")
+        if IRecv is None:
+            from pymobiledevice3.irecv import IRecv as _IRecv
+        else:
+            _IRecv = IRecv
+        irecv = _IRecv(ecid=int(ecid, 16), timeout=2, is_recovery=True)
         return irecv._device is not None
     except Exception:
         return False
@@ -505,14 +536,42 @@ def _prompt_for_signed_firmware(device: DeviceInfo) -> str:
     return selected["url"]
 
 
-def _get_device_activation_state(udid: str):
+async def _get_device_activation_state(udid: str):
     from pymobiledevice3.lockdown import create_using_usbmux
 
-    async def _get():
-        lockdown = await create_using_usbmux(serial=udid)
-        return lockdown.all_values
+    lockdown = await create_using_usbmux(serial=udid)
+    return lockdown.all_values
 
-    return _get()
+
+def _prompt_for_work_dir(needed_mb: int, available_mb: int, error_msg: str) -> Path | None:
+    """Prompt user for a work directory with enough space.
+
+    Args:
+        needed_mb: Minimum space needed in MB
+        available_mb: Current available space in MB
+        error_msg: The original error message
+
+    Returns:
+        Path to selected directory, or None if cancelled
+    """
+    typer.secho(f"\n{error_msg}", fg=typer.colors.RED)
+    typer.echo(f"Need {needed_mb} MB but only {available_mb} MB available.")
+    typer.echo()
+
+    choice = typer.prompt(
+        "Choose an action: [1] Specify different directory, [2] Use current anyway, [3] Cancel",
+        default="1"
+    )
+
+    if choice == "2":
+        typer.secho("Proceeding without guaranteed space (may fail)...", fg=typer.colors.YELLOW)
+        return None
+    elif choice == "3":
+        typer.secho("Cancelled.", fg=typer.colors.YELLOW)
+        raise typer.Exit(1)
+    else:
+        new_dir = typer.prompt("Enter path to directory with more space (e.g. /mnt/drive)")
+        return Path(new_dir)
 
 
 def _create_org_interactive(manager: OrganizationManager) -> Organization:
@@ -526,6 +585,7 @@ def _create_org_interactive(manager: OrganizationManager) -> Organization:
         cert_der, key_der = generate_org_identity(name, int(valid_days))
         org_dir = manager.orgs_dir / manager._sanitize_name(name)
         if org_dir.exists():
+            typer.secho(f"Overwriting existing organization directory '{org_dir}'.", fg=typer.colors.YELLOW)
             shutil.rmtree(org_dir)
         org_dir.mkdir(parents=True, exist_ok=True)
         with open(org_dir / "cert.der", "wb") as f:
@@ -604,6 +664,7 @@ def device_erase(
     force: bool = typer.Option(False, "--force", help="Skip confirmation prompt"),
     enter_recovery: bool = typer.Option(True, "--enter-recovery/--no-enter-recovery"),
     yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation prompt"),
+    work_dir: str = typer.Option(None, "--work-dir", help="Directory to store IPSW file (default: current directory)"),
 ):
     """Erase all data on a device and restore to factory state.
 
@@ -703,7 +764,21 @@ def device_erase(
             "Starting erase. Restore output will stream live below.",
             fg=typer.colors.YELLOW,
         )
-        erase_device(device.udid, device.ecid or None, ipsw=selected_ipsw)
+
+        current_work_dir = work_dir
+        while True:
+            try:
+                erase_device(device.udid, device.ecid or None, ipsw=selected_ipsw, work_dir=current_work_dir)
+                break
+            except InsufficientSpaceError as e:
+                if current_work_dir:
+                    typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
+                new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
+                if new_dir is None:
+                    current_work_dir = None
+                else:
+                    current_work_dir = str(new_dir)
+
         typer.secho("Erase completed", fg=typer.colors.GREEN)
     except typer.Abort:
         typer.secho("Erase cancelled.", fg=typer.colors.YELLOW)
@@ -718,6 +793,7 @@ def device_update(
     ios_version: str = typer.Option(None, "--version"),
     enter_recovery: bool = typer.Option(True, "--enter-recovery/--no-enter-recovery"),
     yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation prompt"),
+    work_dir: str = typer.Option(None, "--work-dir", help="Directory to store IPSW file (default: current directory)"),
 ):
     """Update device to a signed iOS version (preserves user data)."""
     device = _prompt_for_udid(udid)
@@ -800,7 +876,20 @@ def device_update(
             "\nStep 2/3  Starting update — output streams live below.",
             fg=typer.colors.YELLOW,
         )
-        update_device(device.udid, device.ecid or None, ipsw=selected_ipsw)
+
+        current_work_dir = work_dir
+        while True:
+            try:
+                update_device(device.udid, device.ecid or None, ipsw=selected_ipsw, work_dir=current_work_dir)
+                break
+            except InsufficientSpaceError as e:
+                if current_work_dir:
+                    typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
+                new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
+                if new_dir is None:
+                    current_work_dir = None
+                else:
+                    current_work_dir = str(new_dir)
 
         typer.echo()
         typer.secho("Step 3/3  Update complete.", fg=typer.colors.GREEN, bold=True)
@@ -816,6 +905,7 @@ def device_restore(
     udid: str = typer.Option(None, "--udid"),
     ipsw: str = typer.Option(..., "--ipsw"),
     enter_recovery: bool = typer.Option(True, "--enter-recovery/--no-enter-recovery"),
+    work_dir: str = typer.Option(None, "--work-dir", help="Directory to store IPSW file (default: current directory)"),
 ):
     """Restore device with IPSW."""
     device = _prompt_for_udid(udid)
@@ -840,7 +930,21 @@ def device_restore(
             "Starting restore. pymobiledevice3 output will stream live; the device may reboot or enter Recovery mode.",
             fg=typer.colors.YELLOW,
         )
-        restore_device(device.udid, ipsw, device.ecid or None)
+
+        current_work_dir = work_dir
+        while True:
+            try:
+                restore_device(device.udid, ipsw, device.ecid or None, work_dir=current_work_dir)
+                break
+            except InsufficientSpaceError as e:
+                if current_work_dir:
+                    typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
+                new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
+                if new_dir is None:
+                    current_work_dir = None
+                else:
+                    current_work_dir = str(new_dir)
+
         typer.secho("Restore completed", fg=typer.colors.GREEN)
     except AppleDeviceError as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED)

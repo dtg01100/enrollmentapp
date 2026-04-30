@@ -1,4 +1,3 @@
-import pytest
 from apple_device_cli.device.info import DeviceInfo
 
 def test_device_info_struct():

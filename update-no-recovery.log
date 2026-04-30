@@ -1,0 +1,21 @@
+Script started on 2026-04-30 12:39:41-04:00 [COMMAND="cd /var/mnt/Disk2/projects/enrollmentapp && timeout 120 ios-enroll device update --udid 00008120-000E28E921780032 --ipsw https://updates.cdn-apple.com/2026SpringFCS/fullrestores/122-60819/F9C65878-32AC-438B-BA6E-ABD08D386E7E/iPad15,7_26.4.2_23E261_Restore.ipsw --no-enter-recovery -y" TERM="xterm-256color" TTY="/dev/pts/13" COLUMNS="80" LINES="30"]
+
+[34m[1miOS Update / Upgrade[0m
+----------------------------------------[0m
+  Device:  Unknown
+  UDID:    00008120-000E28E921780032
+  Current iOS:  Unknown (Unknown)
+
+[32mTarget IPSW: https://updates.cdn-apple.com/2026SpringFCS/fullrestores/122-60819/F9C65878-32AC-438B-BA6E-ABD08D386E7E/iPad15,7_26.4.2_23E261_Restore.ipsw[0m
+
+[33mPre-update checklist:[0m
+  • Keep the device plugged in throughout the update
+  • The device will reboot one or more times
+  • User data is preserved (this is NOT a factory reset)
+
+[33m
+Step 2/3  Starting update — output streams live below.[0m
+[32m2026-04-30 12:39:43[0m [35mit-laptop[0m [34mpymobiledevice3.lockdown[273596][0m [1;30mINFO[0m Creating host key & certificate
+[32m2026-04-30 12:39:43[0m [35mit-laptop[0m [34mpymobiledevice3.lockdown[273596][0m [1;30mINFO[0m waiting user pairing dialog...
+^C
+Script done on 2026-04-30 12:39:55-04:00 [COMMAND_EXIT_CODE="130"]

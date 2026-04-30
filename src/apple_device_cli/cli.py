@@ -5,8 +5,22 @@ import asyncio
 import typer
 
 from apple_device_cli import __version__
-from apple_device_cli.device.connection import list_devices, get_device_info
-from apple_device_cli.restore.erase import erase_device, update_device, restore_device
+from apple_device_cli.device.connection import (
+    ensure_device_pairing,
+    get_device_info,
+    get_device_info_for_recovery,
+    list_devices,
+    wait_for_udid_in_usbmux,
+)
+from apple_device_cli.device.info import DeviceInfo
+from apple_device_cli.restore.erase import (
+    enter_recovery_mode,
+    erase_device,
+    get_signed_firmwares,
+    resolve_firmware_url,
+    restore_device,
+    update_device,
+)
 from apple_device_cli.orgs.manager import OrganizationManager, Organization
 from apple_device_cli.orgs.identity import generate_org_identity, load_cert_info
 from apple_device_cli.enrollment.skip_panes import resolve_skip_panes
@@ -22,7 +36,6 @@ enroll_app = typer.Typer(help="Enrollment commands")
 app.add_typer(device_app, name="device")
 app.add_typer(org_app, name="org")
 app.add_typer(enroll_app, name="enroll")
-
 
 @app.callback(invoke_without_command=True)
 def cli_main(ctx: typer.Context):
@@ -93,17 +106,17 @@ def interactive_enroll():
     choice = typer.prompt("Select device number", default="1")
     try:
         selected = devices[int(choice) - 1]
-    except (ValueError, IndexError):
+    except (ValueError, IndexError) as exc:
         typer.secho("Invalid selection", fg=typer.colors.RED)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from exc
 
     typer.echo(f"\nSelected: {selected.device_name} ({selected.udid})")
 
     # Get device state
     try:
-        lockdown = asyncio.get_event_loop().run_until_complete(
-            asyncio.to_thread(_get_device_activation_state, selected.udid)
-        )
+        loop = asyncio.new_event_loop()
+        lockdown = loop.run_until_complete(_get_device_activation_state(selected.udid))
+        loop.close()
         activation_state = lockdown.get("ActivationState", "Unknown")
         has_cloud_config = lockdown.get("CloudConfigurationWasApplied", False)
         typer.echo(f"Activation state: {activation_state}")
@@ -143,9 +156,9 @@ def interactive_enroll():
                 mdm_url = selected_org.mdm_url
                 checkin_url = selected_org.checkin_url
                 mdm_topic = selected_org.mdm_topic
-            except (ValueError, IndexError):
+            except (ValueError, IndexError) as exc:
                 typer.secho("Invalid selection", fg=typer.colors.RED)
-                raise typer.Exit(1)
+                raise typer.Exit(1) from exc
 
     if enroll_choice == "3":
         typer.echo("\nNew MDM Server Configuration:")
@@ -174,10 +187,9 @@ def interactive_enroll():
 
     org = None
     if org_choice.lower() == "n":
-        # Create new organization
         name = typer.prompt("  Organization name")
         org_id = typer.prompt("  Organization ID (e.g. com.example)", default="")
-        
+
         typer.echo("\n  Supervision identity:")
         typer.echo("    [1] Generate new identity")
         typer.echo("    [2] Use existing certificate/key")
@@ -189,7 +201,7 @@ def interactive_enroll():
                 valid_days = int(valid_days_str)
             except ValueError:
                 valid_days = 365 * 5
-            
+
             cert_der, key_der = generate_org_identity(name, valid_days)
             org_dir = manager.orgs_dir / manager._sanitize_name(name)
             if org_dir.exists():
@@ -199,7 +211,7 @@ def interactive_enroll():
                 f.write(cert_der)
             with open(org_dir / "key.der", "wb") as f:
                 f.write(key_der)
-            
+
             org = Organization(
                 name=name,
                 org_id=org_id or None,
@@ -221,22 +233,21 @@ def interactive_enroll():
                 cert_path=cert_path,
                 key_path=key_path,
             )
-        
+
         manager.save_org(org)
         typer.secho(f"Organization '{name}' saved.", fg=typer.colors.GREEN)
     else:
         try:
             org = existing_orgs[int(org_choice) - 1]
-            # Update MDM settings if new server was configured
             if mdm_url and (org.mdm_url != mdm_url or org.checkin_url != checkin_url or org.mdm_topic != mdm_topic):
                 org.mdm_url = mdm_url
                 org.checkin_url = checkin_url
                 org.mdm_topic = mdm_topic
                 manager.save_org(org, overwrite=True)
                 typer.secho(f"Updated MDM settings for '{org.name}'", fg=typer.colors.GREEN)
-        except (ValueError, IndexError):
+        except (ValueError, IndexError) as exc:
             typer.secho("Invalid selection", fg=typer.colors.RED)
-            raise typer.Exit(1)
+            raise typer.Exit(1) from exc
 
     if not org or not org.cert_path or not org.key_path:
         typer.secho(f"\nOrganization '{org.name if org else 'unknown'}' missing cert/key.", fg=typer.colors.RED)
@@ -257,6 +268,7 @@ def interactive_enroll():
 
     if preset_choice == "4":
         from apple_device_cli.enrollment.skip_panes import VALID_PANES
+
         typer.echo("\nAvailable panes to skip:")
         for pane in sorted(VALID_PANES):
             typer.echo(f"  - {pane}")
@@ -275,21 +287,63 @@ def interactive_enroll():
     # Step 5: Erase if needed
     typer.echo("\nStep 5: Device Preparation")
     typer.secho("-" * 40)
-    needs_erase = activation_state != "Activated" or has_cloud_config
-    
-    if needs_erase:
-        typer.secho(f"Device state requires erase (activation: {activation_state}, cloud config: {has_cloud_config}).", fg=typer.colors.YELLOW)
+
+    # Get full device state for smart erase decision
+    try:
+        loop = asyncio.new_event_loop()
+        lockdown = loop.run_until_complete(_get_device_activation_state(selected.udid))
+        loop.close()
+        is_supervised = lockdown.get("IsSupervised", False)
+        has_cloud_config = lockdown.get("CloudConfigurationWasApplied", False)
+    except Exception:
+        is_supervised = False
+        has_cloud_config = False
+
+    needs_erase = False
+    reason = ""
+
+    # State-aware erase logic
+    if is_supervised and has_cloud_config:
+        # Already supervised with cloud config - needs erase to re-enroll
+        needs_erase = True
+        reason = "Device is already supervised with cloud config"
+        typer.secho("Device already enrolled with supervised configuration.", fg=typer.colors.YELLOW)
+        typer.echo(f"  {reason}")
+        typer.echo("  Use 'enroll re-enroll' command first, or confirm to erase.")
+        if not typer.confirm("Erase device to allow re-enrollment?"):
+            typer.secho("Aborted. Use 'enroll re-enroll' to clear cloud config.", fg=typer.colors.YELLOW)
+            raise typer.Exit()
+    elif activation_state != "Activated" and not has_cloud_config:
+        # Fresh device - no erase needed
+        typer.secho("Fresh device detected. Applying configuration directly.", fg=typer.colors.GREEN)
+        needs_erase = False
+    elif has_cloud_config and not is_supervised:
+        # Partial config - may need erase
+        needs_erase = True
+        reason = "Partial cloud config detected"
+        typer.secho(f"Device state: {reason}", fg=typer.colors.YELLOW)
         if not typer.confirm("Erase device now?"):
             typer.secho("Aborted.", fg=typer.colors.YELLOW)
             raise typer.Exit()
+    else:
+        # Activated but not supervised - typically needs erase for supervision
+        needs_erase = True
+        reason = f"Activation state: {activation_state}, not supervised"
+        typer.secho(f"Device state requires erase ({reason}).", fg=typer.colors.YELLOW)
+        if not typer.confirm("Erase device now?"):
+            typer.secho("Aborted.", fg=typer.colors.YELLOW)
+            raise typer.Exit()
+
+    if needs_erase:
         typer.echo("Erasing device...")
         try:
-            erase_device(selected.udid)
+            erase_device(selected.udid, selected.ecid or None)
         except AppleDeviceError as e:
             typer.secho(f"Erase failed: {e}", fg=typer.colors.RED)
             raise typer.Exit(1)
         typer.secho("Device erased. Waiting 60s for boot...", fg=typer.colors.YELLOW)
         import time
+
         time.sleep(60)
         typer.secho("Device ready for supervised pairing.", fg=typer.colors.GREEN)
     else:
@@ -300,34 +354,124 @@ def interactive_enroll():
     typer.echo("\nStep 6: Apply Configuration")
     typer.secho("-" * 40)
     typer.echo("Enrolling device as supervised...")
+
+    # Progress callback for enrollment steps
+    def progress_callback(msg: str) -> None:
+        typer.echo(f"  {msg}")
+
     try:
-        cloud_config = make_supervised(
-            org.cert_path, org.key_path, org.name, org.org_id, 
-            skip_list, org.mdm_url
+        result = make_supervised(
+            cert_path=org.cert_path,
+            key_path=org.key_path,
+            org_name=org.name,
+            org_uuid=org.org_id,
+            skip_list=skip_list,
+            mdm_url=org.mdm_url,
+            mdm_checkin_url=org.checkin_url,
+            mdm_topic=org.mdm_topic,
+            udid=selected.udid,
+            progress_callback=progress_callback,
         )
         typer.secho("\n" + "=" * 50, fg=typer.colors.GREEN, bold=True)
-        typer.secho("  Device is now supervised and enrolled!", fg=typer.colors.GREEN, bold=True)
+        if result.success:
+            typer.secho("  Device is now supervised and enrolled!", fg=typer.colors.GREEN, bold=True)
+        else:
+            typer.secho("  Enrollment completed with errors", fg=typer.colors.YELLOW, bold=True)
         typer.secho("=" * 50, fg=typer.colors.GREEN, bold=True)
         typer.echo(f"\n  Organization: {org.name}")
+        typer.echo(f"  Device UDID: {result.device_udid}")
+        typer.echo(f"  Supervised: {result.supervised}")
+        typer.echo(f"  MDM Enrolled: {result.mdm_enrolled}")
         if org.mdm_url:
             typer.echo(f"  MDM Server URL: {org.mdm_url}")
-        if cloud_config.get("MDMServerURL"):
-            typer.echo(f"  Cloud Config MDM URL: {cloud_config['MDMServerURL']}")
+        if result.cloud_config and result.cloud_config.get("MDMServerURL"):
+            typer.echo(f"  Cloud Config MDM URL: {result.cloud_config['MDMServerURL']}")
         typer.echo(f"  Skip panes: {len(skip_list)} configured")
+        if result.errors:
+            typer.secho("\n  Errors:", fg=typer.colors.YELLOW)
+            for error in result.errors:
+                typer.echo(f"    - {error}")
         typer.echo("\n  Connect device to power and wait for Setup Assistant...")
     except AppleDeviceError as e:
         typer.secho(f"Enrollment failed: {e}", fg=typer.colors.RED)
         raise typer.Exit(1)
 
 
-def _get_device_activation_state(udid: str) -> dict:
+def _prompt_for_udid(udid: str | None, allow_empty: bool = False) -> DeviceInfo | None:
+    """Resolve a device selection, prompting the user when needed."""
+    if udid:
+        # For explicit UDID, try IRecv first since the device is likely in
+        # Recovery mode (usbmuxd not serving Recovery devices). Use udid as
+        # serial to match, but IRecv.connect() will use the ECID from the
+        # connected device.
+        from apple_device_cli.device.connection import get_device_info_for_recovery
+
+        info = get_device_info_for_recovery(udid)
+        if info and info.device_type not in ("", "Unknown"):
+            return info
+        # Also try normal-mode lockdown in case device is in normal mode
+        info = get_device_info(udid)
+        if info and info.device_type not in ("", "Unknown"):
+            return info
+        # Last resort: return stub (caller can still proceed with --ipsw)
+        return DeviceInfo(
+            udid=udid,
+            device_name="Unknown",
+            device_type="Unknown",
+            build_version="Unknown",
+            firmware_version="Unknown",
+        )
+
+    devices = list_devices()
+
+    if not devices:
+        if allow_empty:
+            return None
+        typer.secho("No devices found. Connect a device and try again.", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    typer.echo("Available devices:")
+    for i, device in enumerate(devices, start=1):
+        extra = f" [ECID: {device.ecid}]" if device.ecid else ""
+        typer.echo(f"  [{i}] {device.udid}  ({device.device_name}){extra}")
+    typer.echo()
+    choice = typer.prompt("Select device number", default="1")
+    try:
+        return devices[int(choice) - 1]
+    except (ValueError, IndexError) as exc:
+        typer.secho("Invalid selection", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+
+
+def _prompt_for_signed_firmware(device: DeviceInfo) -> str:
+    """Prompt the user to choose a signed IPSW URL for a device type."""
+    firmwares = get_signed_firmwares(device.device_type)
+    typer.echo("Signed iOS versions:")
+    for i, firmware in enumerate(firmwares, start=1):
+        typer.echo(f"  [{i}] {firmware['version']} ({firmware['buildid']})")
+    typer.echo()
+    choice = typer.prompt("Select iOS version", default="1")
+    try:
+        selected = firmwares[int(choice) - 1]
+    except (ValueError, IndexError) as exc:
+        typer.secho("Invalid version selection", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+
+    typer.secho(
+        f"Using signed build {selected['version']} ({selected['buildid']})",
+        fg=typer.colors.GREEN,
+    )
+    return selected["url"]
+
+
+def _get_device_activation_state(udid: str):
     from pymobiledevice3.lockdown import create_using_usbmux
 
     async def _get():
-        lockdown = await create_using_usbmux()
+        lockdown = await create_using_usbmux(serial=udid)
         return lockdown.all_values
 
-    return asyncio.run(_get())
+    return _get()
 
 
 def _create_org_interactive(manager: OrganizationManager) -> Organization:
@@ -405,36 +549,244 @@ def device_info(udid: str = typer.Option(None, "--udid")):
         typer.echo(f"Name: {info.device_name}")
         typer.echo(f"Type: {info.device_type}")
         typer.echo(f"iOS: {info.firmware_version} ({info.build_version})")
+        if info.ecid:
+            typer.echo(f"ECID: {info.ecid}")
     else:
         typer.secho(f"Device not found: {udid}", fg=typer.colors.RED)
 
 
 @device_app.command("erase")
-def device_erase(udid: str = typer.Option(..., "--udid")):
-    """Erase device."""
+def device_erase(
+    udid: str = typer.Option(None, "--udid"),
+    force: bool = typer.Option(False, "--force", help="Skip confirmation prompt"),
+    enter_recovery: bool = typer.Option(True, "--enter-recovery/--no-enter-recovery"),
+):
+    """Erase all data on a device and restore to factory state."""
+    device = _prompt_for_udid(udid)
+    if device is None:
+        typer.secho("No device selected", fg=typer.colors.RED)
+        return
+
+    # --- Preflight info ---
+    typer.echo()
+    typer.secho("=" * 52, fg=typer.colors.RED, bold=True)
+    typer.secho("  WARNING: This will ERASE ALL DATA on the device", fg=typer.colors.RED, bold=True)
+    typer.secho("=" * 52, fg=typer.colors.RED, bold=True)
+    typer.echo()
+    typer.echo(f"  Device:  {device.device_name}")
+    typer.echo(f"  UDID:    {device.udid}")
+    if device.firmware_version:
+        typer.echo(f"  iOS:     {device.firmware_version} ({device.build_version})")
+    if device.ecid:
+        typer.echo(f"  ECID:    {device.ecid}")
+    typer.echo()
+    typer.secho("  This operation cannot be undone.", fg=typer.colors.YELLOW)
+    typer.secho("  Ensure the device is charged and connected before proceeding.", fg=typer.colors.YELLOW)
+    typer.echo()
+
+    if not force:
+        confirm_name = typer.prompt(
+            f'  Type the device name "{device.device_name}" to confirm erase'
+        )
+        if confirm_name.strip() != device.device_name:
+            typer.secho("Confirmation did not match. Erase cancelled.", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
     try:
-        erase_device(udid)
+        if enter_recovery:
+            typer.secho(
+                "Placing device into Recovery mode (waiting up to 3 min)...",
+                fg=typer.colors.YELLOW,
+            )
+            if not wait_for_udid_in_usbmux(device.udid, timeout=60):
+                raise AppleDeviceError(
+                    "Device is not visible in normal mode via usbmux. Unlock the iPad, accept Trust, and reconnect USB."
+                )
+            typer.secho("Verifying trust/pairing with device...", fg=typer.colors.YELLOW)
+            ensure_device_pairing(device.udid)
+            enter_recovery_mode(device.udid, device.ecid or None)
+            typer.secho("Device is in Recovery mode.", fg=typer.colors.GREEN)
+
+        typer.secho(
+            "Starting erase. Restore output will stream live below.",
+            fg=typer.colors.YELLOW,
+        )
+        erase_device(device.udid, device.ecid or None)
         typer.secho("Erase completed", fg=typer.colors.GREEN)
     except AppleDeviceError as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED)
 
 
 @device_app.command("update")
-def device_update(udid: str = typer.Option(..., "--udid")):
-    """Update device to latest iOS."""
+def device_update(
+    udid: str = typer.Option(None, "--udid"),
+    ipsw: str = typer.Option(None, "--ipsw"),
+    ios_version: str = typer.Option(None, "--version"),
+    enter_recovery: bool = typer.Option(True, "--enter-recovery/--no-enter-recovery"),
+    yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation prompt"),
+):
+    """Update device to a signed iOS version (preserves user data)."""
+    device = _prompt_for_udid(udid)
+    if device is None:
+        typer.secho("No device selected", fg=typer.colors.RED)
+        return
+    if ipsw and ios_version:
+        typer.secho("Use either --ipsw or --version, not both.", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
     try:
-        update_device(udid)
-        typer.secho("Update completed", fg=typer.colors.GREEN)
+        # --- Preflight info ---
+        typer.echo()
+        typer.secho("iOS Update / Upgrade", fg=typer.colors.BLUE, bold=True)
+        typer.secho("-" * 40)
+        typer.echo(f"  Device:  {device.device_name}")
+        typer.echo(f"  UDID:    {device.udid}")
+        if device.firmware_version:
+            typer.echo(f"  Current iOS:  {device.firmware_version} ({device.build_version})")
+        if device.ecid:
+            typer.echo(f"  ECID:    {device.ecid}")
+        typer.echo()
+
+        # --- Choose firmware ---
+        if ipsw:
+            selected_ipsw = ipsw
+            typer.secho(f"Target IPSW: {selected_ipsw}", fg=typer.colors.GREEN)
+        elif ios_version:
+            if device.device_type in ("", "Unknown"):
+                typer.secho(
+                    "Cannot resolve --version without device type. Provide --ipsw URL/path.",
+                    fg=typer.colors.RED,
+                )
+                raise typer.Exit(1)
+            typer.secho(f"Resolving signed build for iOS {ios_version}...", fg=typer.colors.YELLOW)
+            selected_ipsw = resolve_firmware_url(device.device_type, ios_version)
+            typer.secho(f"Target iOS: {ios_version}  →  {selected_ipsw}", fg=typer.colors.GREEN)
+        elif yes:
+            if device.device_type in ("", "Unknown"):
+                typer.secho(
+                    "Cannot auto-select firmware without device type. Provide --ipsw URL/path or --version.",
+                    fg=typer.colors.RED,
+                )
+                raise typer.Exit(1)
+            # Non-interactive mode: auto-select the latest signed build.
+            firmwares = get_signed_firmwares(device.device_type)
+            latest = firmwares[0]
+            selected_ipsw = latest["url"]
+            typer.secho(
+                f"Auto-selected latest signed build: {latest['version']} ({latest['buildid']})",
+                fg=typer.colors.GREEN,
+            )
+        else:
+            selected_ipsw = _prompt_for_signed_firmware(device)
+
+        typer.echo()
+        typer.secho("Pre-update checklist:", fg=typer.colors.YELLOW)
+        typer.echo("  • Keep the device plugged in throughout the update")
+        typer.echo("  • The device will reboot one or more times")
+        typer.echo("  • User data is preserved (this is NOT a factory reset)")
+        typer.echo()
+
+        if not yes:
+            typer.confirm("Proceed with update?", default=True, abort=True)
+
+        if enter_recovery:
+            typer.secho(
+                "\nStep 1/3  Placing device into Recovery mode (waiting up to 3 min)...",
+                fg=typer.colors.YELLOW,
+            )
+            if not wait_for_udid_in_usbmux(device.udid, timeout=60):
+                raise AppleDeviceError(
+                    "Device is not visible in normal mode via usbmux. Unlock the iPad, accept Trust, and reconnect USB."
+                )
+            typer.secho("          Verifying trust/pairing with device...", fg=typer.colors.YELLOW)
+            ensure_device_pairing(device.udid)
+            enter_recovery_mode(device.udid, device.ecid or None)
+            typer.secho("          Device is in Recovery mode.", fg=typer.colors.GREEN)
+        typer.secho(
+            "\nStep 2/3  Starting update — output streams live below.",
+            fg=typer.colors.YELLOW,
+        )
+        update_device(device.udid, device.ecid or None, ipsw=selected_ipsw)
+
+        typer.echo()
+        typer.secho("Step 3/3  Update complete.", fg=typer.colors.GREEN, bold=True)
+        typer.echo("          The device will reboot into the updated iOS version.")
+    except typer.Abort:
+        typer.secho("Update cancelled.", fg=typer.colors.YELLOW)
     except AppleDeviceError as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED)
 
 
 @device_app.command("restore")
-def device_restore(udid: str = typer.Option(..., "--udid"), ipsw: str = typer.Option(..., "--ipsw")):
+def device_restore(
+    udid: str = typer.Option(None, "--udid"),
+    ipsw: str = typer.Option(..., "--ipsw"),
+    enter_recovery: bool = typer.Option(True, "--enter-recovery/--no-enter-recovery"),
+):
     """Restore device with IPSW."""
+    device = _prompt_for_udid(udid)
+    if device is None:
+        typer.secho("No device selected", fg=typer.colors.RED)
+        return
     try:
-        restore_device(udid, ipsw)
+        typer.echo(f"Selected device: {device.device_name} ({device.udid})")
+        if enter_recovery:
+            typer.secho(
+                "Placing device into Recovery mode before restore...",
+                fg=typer.colors.YELLOW,
+            )
+            if not wait_for_udid_in_usbmux(device.udid, timeout=60):
+                raise AppleDeviceError(
+                    "Device is not visible in normal mode via usbmux. Unlock the iPad, accept Trust, and reconnect USB."
+                )
+            typer.secho("Verifying trust/pairing with device...", fg=typer.colors.YELLOW)
+            ensure_device_pairing(device.udid)
+            enter_recovery_mode(device.udid, device.ecid or None)
+        typer.secho(
+            "Starting restore. pymobiledevice3 output will stream live; the device may reboot or enter Recovery mode.",
+            fg=typer.colors.YELLOW,
+        )
+        restore_device(device.udid, ipsw, device.ecid or None)
         typer.secho("Restore completed", fg=typer.colors.GREEN)
+    except AppleDeviceError as e:
+        typer.secho(f"Error: {e}", fg=typer.colors.RED)
+
+
+@device_app.command("enter-recovery")
+def device_enter_recovery(
+    udid: str = typer.Option(None, "--udid"),
+):
+    """Place a device into Recovery mode.
+
+    Use this when the device is in Normal mode and you need to perform
+    a restore, erase, or update operation.
+    """
+    device = _prompt_for_udid(udid)
+    if device is None:
+        typer.secho("No device selected", fg=typer.colors.RED)
+        return
+
+    typer.echo(f"Device: {device.device_name} ({device.udid})")
+    if device.ecid:
+        typer.echo(f"ECID: {device.ecid}")
+    typer.echo()
+
+    try:
+        # Ensure device is in normal mode and paired
+        if not wait_for_udid_in_usbmux(device.udid, timeout=60):
+            raise AppleDeviceError(
+                "Device is not visible in normal mode via usbmux. "
+                "Unlock the device, accept Trust, and reconnect USB."
+            )
+        typer.secho("Verifying trust/pairing with device...", fg=typer.colors.YELLOW)
+        ensure_device_pairing(device.udid)
+
+        typer.secho(
+            "Placing device into Recovery mode (waiting up to 3 min)...",
+            fg=typer.colors.YELLOW,
+        )
+        enter_recovery_mode(device.udid, device.ecid or None)
+        typer.secho("Device is in Recovery mode.", fg=typer.colors.GREEN)
     except AppleDeviceError as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED)
 
@@ -632,6 +984,23 @@ def org_import(
         typer.secho(f"Import failed: {e}", fg=typer.colors.RED)
 
 
+@org_app.command("import-mobileconfig")
+def org_import_mobileconfig(
+    path: str = typer.Option(..., "--path"),
+):
+    """Import organization from MDM .mobileconfig file."""
+    manager = OrganizationManager()
+    try:
+        org = manager.import_mobileconfig(path)
+        typer.secho(f"Imported: {org.name}", fg=typer.colors.GREEN)
+        typer.echo(f"  MDM URL: {org.mdm_url or 'Not set'}")
+        typer.echo(f"  Check-in URL: {org.checkin_url or 'Not set'}")
+        typer.echo(f"  Cert: {'Yes' if org.cert_path else 'No'}")
+        typer.echo(f"  Key: {'Yes' if org.key_path else 'No'}")
+    except Exception as e:
+        typer.secho(f"Import failed: {e}", fg=typer.colors.RED)
+
+
 @org_app.command("export")
 def org_export(name: str = typer.Option(..., "--name"), path: str = typer.Option(..., "--path")):
     """Export organization to directory or zip."""
@@ -702,15 +1071,28 @@ def org_generate(
 
 @enroll_app.command("make-supervised")
 def enroll_make_supervised(
-    udid: str = typer.Option(..., "--udid"),
+    udid: str = typer.Option(None, "--udid"),
     org_name: str = typer.Option(..., "--org-name"),
     skip_preset: str = typer.Option(None, "--skip-preset"),
     skip: list[str] = typer.Option([], "--skip"),
     wifi_ssid: str = typer.Option(None, "--wifi-ssid"),
     wifi_password: str = typer.Option(None, "--wifi-password"),
     wifi_encryption: str = typer.Option("WPA", "--wifi-encryption"),
+    mdm_unremovable: bool = typer.Option(False, "--mdm-unremovable"),
+    wifi_config: str = typer.Option(None, "--wifi-config"),
+    fail_on_mdm_error: bool = typer.Option(True, "--fail-on-mdm-error/--no-fail-on-mdm-error"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show progress updates"),
 ):
-    """Make device supervised."""
+    """Make device supervised with optional MDM enrollment.
+
+    Uses organization cert/key for supervision identity and optionally enrolls
+    the device in MDM. Device UDID can be specified with --udid or selected
+    interactively.
+    """
+    device = _prompt_for_udid(udid)
+    if not device:
+        typer.secho("No device selected", fg=typer.colors.RED)
+        return
     manager = OrganizationManager()
     org = manager.get_org(org_name)
     if not org:
@@ -719,18 +1101,167 @@ def enroll_make_supervised(
     if not org.cert_path or not org.key_path:
         typer.secho(f"Organization '{org_name}' missing cert or key", fg=typer.colors.RED)
         return
-
     try:
         skip_list = resolve_skip_panes(skip_preset, skip)
     except ValueError as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED)
         return
 
+    # Set up progress callback if verbose mode
+    progress_callback = None
+    if verbose:
+        def progress_callback(msg: str) -> None:
+            typer.echo(f"  {msg}")
+        typer.echo(f"Supervised enrollment for: {device.device_name} ({device.udid})")
+
     try:
-        make_supervised(org.cert_path, org.key_path, org.name, org.org_id, skip_list, org.mdm_url, wifi_ssid, wifi_password, wifi_encryption)
-        typer.secho("Device is now supervised", fg=typer.colors.GREEN)
+        result = make_supervised(
+            cert_path=org.cert_path,
+            key_path=org.key_path,
+            org_name=org.name,
+            org_uuid=org.org_id,
+            skip_list=skip_list,
+            mdm_url=org.mdm_url,
+            wifi_ssid=wifi_ssid,
+            wifi_password=wifi_password,
+            wifi_encryption=wifi_encryption,
+            mdm_checkin_url=org.checkin_url,
+            mdm_topic=org.mdm_topic,
+            mdm_unremovable=mdm_unremovable,
+            wifi_config=wifi_config,
+            udid=device.udid,
+            fail_on_mdm_error=fail_on_mdm_error,
+            progress_callback=progress_callback,
+        )
+        if result.success:
+            typer.secho("Device is now supervised", fg=typer.colors.GREEN)
+            typer.echo(f"  UDID: {result.device_udid}")
+            typer.echo(f"  Supervised: {result.supervised}")
+            typer.echo(f"  MDM Enrolled: {result.mdm_enrolled}")
+        else:
+            typer.secho("Enrollment completed with errors:", fg=typer.colors.YELLOW)
+            for error in result.errors:
+                typer.echo(f"  - {error}")
     except AppleDeviceError as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED)
+
+
+@enroll_app.command("re-enroll")
+def enroll_reenroll(
+    udid: str = typer.Option(None, "--udid"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+):
+    """Erase device cloud config to allow fresh re-enrollment.
+
+    This removes the current supervised configuration from the device,
+    allowing it to be re-enrolled with a new or existing organization.
+    Use this when you need to change the MDM server or organization.
+    """
+    from apple_device_cli.enrollment.supervised import erase_device_for_reenrollment
+
+    device = _prompt_for_udid(udid)
+    if not device:
+        typer.secho("No device selected", fg=typer.colors.RED)
+        return
+
+    if not force:
+        typer.echo()
+        typer.secho("WARNING: This will remove supervised configuration from the device.", fg=typer.colors.YELLOW)
+        typer.echo(f"  Device: {device.device_name} ({device.udid})")
+        typer.echo()
+        confirm = typer.confirm("Continue with re-enrollment preparation?")
+        if not confirm:
+            typer.secho("Cancelled.", fg=typer.colors.YELLOW)
+            return
+
+    try:
+        typer.echo("Erasing cloud configuration...")
+        erase_device_for_reenrollment(device.udid)
+        typer.secho("Device cloud config erased. Ready for fresh enrollment.", fg=typer.colors.GREEN)
+    except AppleDeviceError as e:
+        typer.secho(f"Error: {e}", fg=typer.colors.RED)
+
+
+@enroll_app.command("status")
+def enroll_status(
+    udid: str = typer.Option(None, "--udid"),
+):
+    """Show enrollment status of a connected device.
+
+    Displays current activation state, supervision status, and MDM enrollment
+    information for the selected device.
+    """
+    from apple_device_cli.enrollment.supervised import get_device_enrollment_state
+
+    device = _prompt_for_udid(udid)
+    if not device:
+        typer.secho("No device selected", fg=typer.colors.RED)
+        return
+
+    typer.echo(f"Device: {device.device_name} ({device.udid})")
+    typer.secho("-" * 40)
+
+    try:
+        state = get_device_enrollment_state(device.udid)
+        if "error" in state:
+            typer.secho(f"Could not get device state: {state['error']}", fg=typer.colors.RED)
+            return
+
+        typer.echo(f"  Activation State: {state.get('activation_state', 'Unknown')}")
+        typer.echo(f"  Supervised: {state.get('is_supervised', False)}")
+        typer.echo(f"  Cloud Config Applied: {state.get('cloud_config_applied', False)}")
+        if state.get('org_name'):
+            typer.echo(f"  Organization: {state['org_name']}")
+        if state.get('org_magic'):
+            typer.echo(f"  Organization ID: {state['org_magic']}")
+        typer.echo(f"  MDM Managed: {state.get('is_mdm_managed', False)}")
+    except Exception as e:
+        typer.secho(f"Error getting device status: {e}", fg=typer.colors.RED)
+
+
+@enroll_app.command("validate")
+def enroll_validate(
+    org_name: str = typer.Option(..., "--org-name"),
+    mdm_url: str = typer.Option(None, "--mdm-url"),
+    check_mdm: bool = typer.Option(False, "--check-mdm", help="Verify MDM server is reachable"),
+):
+    """Validate enrollment prerequisites without touching devices.
+
+    Checks that the organization exists with valid cert/key and optionally
+    verifies the MDM server is reachable.
+    """
+    from apple_device_cli.enrollment.supervised import validate_enrollment_prerequisites
+
+    manager = OrganizationManager()
+    org = manager.get_org(org_name)
+    if not org:
+        typer.secho(f"Organization not found: {org_name}", fg=typer.colors.RED)
+        return
+
+    typer.echo(f"Validating organization: {org_name}")
+    typer.secho("-" * 40)
+
+    # Determine MDM URL to check
+    target_mdm_url = mdm_url or org.mdm_url
+
+    errors = validate_enrollment_prerequisites(
+        cert_path=org.cert_path,
+        key_path=org.key_path,
+        org_name=org.name,
+        mdm_url=target_mdm_url,
+        check_mdm_reachability=check_mdm,
+    )
+
+    if not errors:
+        typer.secho("All prerequisites valid!", fg=typer.colors.GREEN)
+        typer.echo(f"  Certificate: {org.cert_path}")
+        typer.echo(f"  Private Key: {org.key_path}")
+        if target_mdm_url:
+            typer.echo(f"  MDM URL: {target_mdm_url}")
+    else:
+        typer.secho("Validation failed:", fg=typer.colors.RED)
+        for error in errors:
+            typer.echo(f"  - {error}")
 
 
 @enroll_app.command("activate")

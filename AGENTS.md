@@ -43,7 +43,8 @@ src/apple_device_cli/
 │   ├── identity.py      # generate_org_identity(), load_cert_info()
 │   └── manager.py       # OrganizationManager, Organization
 └── restore/
-    └── erase.py         # erase_device(), update_device(), restore_device()
+    └── erase.py         # erase_device(), update_device(), restore_device(),
+                        # _restore_with_api(), enter_recovery_mode(), get_irecv()
 ```
 
 ## Key Classes & Functions
@@ -101,6 +102,13 @@ class OrganizationManager:
 - `supervised.py` uses `MobileConfigService` and `MobileActivationService`
 - Type checkers may report missing imports—expected without the package
 
+### Restore (restore/erase.py)
+- Uses **Python API** (`Restore(...).update()`) not the broken CLI subprocess
+- `_restore_with_api(ecid_int, ipsw_path, Behavior.Update/Erase)` handles all restore operations
+- All three functions (`erase_device`, `update_device`, `restore_device`) require `ecid` and `ipsw` parameters
+- `IRecv(ecid=int, timeout=5, is_recovery=True)` connects to Recovery/DFU devices via libusb
+- `asyncio.run()` wraps the async `Restore.update()` call
+
 ### Skip Panes (enrollment/skip_panes.py)
 ```python
 VALID_PANES = {"location", "restore", "sim-setup", "appleid", "passcode", ...}  # 40+ items
@@ -115,6 +123,28 @@ resolve_skip_panes(preset: str | None, extra_panes: list[str] | None) -> list[st
 | `pymobiledevice3` | Device enumeration, lockdown, restore, supervision |
 | `openssl` | Mobileconfig parsing (`smime -verify`) |
 | `idevicerestore` | Erase/restore flows (via `brew --prefix`) |
+
+## ⚠️ usbmuxd Is On-Demand — NEVER Check if it's "Running"
+
+**usbmuxd is socket-activated.** It starts automatically when a normal-mode Apple device is plugged in and stops when no normal-mode devices are present. There is no persistent daemon to check or start.
+
+- `/run/usbmuxd` and `/var/run/usbmuxd` socket files always exist (created by udev/systemd)
+- `ps aux | grep usbmuxd` returning nothing is **normal** — it just means no normal-mode device is attached right now
+- `systemctl status usbmuxd` / `systemctl --user status usbmuxd` will fail or show inactive — this is **expected and correct**
+- **Do NOT** add `_connect_usbmuxd()` waits or retry loops for usbmuxd — they will always fail when the device is in Recovery mode (which uses libusb, not usbmuxd)
+- **Do NOT** attempt to start usbmuxd manually — it starts itself the moment a normal-mode Apple device is detected
+
+**Device transport modes:**
+- Normal iOS mode → usbmuxd (AF_UNIX socket at `/run/usbmuxd`)
+- Recovery / DFU mode → libusb directly (IRecv / `pymobiledevice3 restore`), usbmuxd not involved at all
+
+## ⚠️ Never Pass `--ecid` to `pymobiledevice3 restore update`
+
+The `restore update` CLI accepts `--ecid` but it is **broken for Recovery mode**: the CLI passes the ecid as a raw string to `IRecv(ecid=...)`, which internally compares it against an `int`. The comparison `int != str` is always `True`, so the device is never found and the command spins/fails.
+
+- **Do NOT** add `--ecid` to `restore update`, `restore update --erase`, etc.
+- Auto-detection (no `--ecid`) finds the first Recovery-mode device via libusb — correct since `enter_recovery_mode()` already confirmed our device entered Recovery.
+- The Python API (`IRecv(ecid=int(..., 16))`) works correctly — only the CLI path is broken.
 
 ## Safe Modification Rules
 

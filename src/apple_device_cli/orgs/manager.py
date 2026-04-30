@@ -76,9 +76,13 @@ class Organization:
             json.dump(metadata, f, indent=2)
         if not skip_copy:
             if self.cert_path and Path(self.cert_path).exists():
-                shutil.copy(self.cert_path, org_dir / "cert.der")
+                dest_cert = org_dir / "cert.der"
+                if Path(self.cert_path) != dest_cert:
+                    shutil.copy(self.cert_path, dest_cert)
             if self.key_path and Path(self.key_path).exists():
-                shutil.copy(self.key_path, org_dir / "key.der")
+                dest_key = org_dir / "key.der"
+                if Path(self.key_path) != dest_key:
+                    shutil.copy(self.key_path, dest_key)
 
     @classmethod
     def load(cls, org_dir: Path) -> "Organization":
@@ -285,7 +289,8 @@ class OrganizationManager:
         if not name:
             raise ValueError("Missing PayloadOrganization in mobileconfig")
 
-        if self.get_org(name) is not None:
+        existing_org = self.get_org(name)
+        if existing_org:
             raise ValueError(f"Organization '{name}' already exists")
 
         mdm_url = None

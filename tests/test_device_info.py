@@ -12,6 +12,19 @@ def test_device_info_struct():
     )
     assert info.udid == "1234567890ABCDEF"
     assert info.device_name == "iPad"
+    assert info.ecid == ""  # default empty
+
+def test_device_info_with_ecid():
+    """DeviceInfo should accept ecid field."""
+    info = DeviceInfo(
+        udid="1234567890ABCDEF",
+        device_name="iPad",
+        device_type="iPad13,4",
+        build_version="21A329",
+        firmware_version="17.0",
+        ecid="0xe28e921780032",
+    )
+    assert info.ecid == "0xe28e921780032"
 
 def test_device_info_from_idevice_info():
     """DeviceInfo.from_idevice_info parses output correctly."""

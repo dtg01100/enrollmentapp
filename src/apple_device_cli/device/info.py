@@ -9,6 +9,7 @@ class DeviceInfo:
     firmware_version: str
     model: str = ""
     serial_number: str = ""
+    ecid: str = ""
 
     @classmethod
     def from_idevice_info(cls, output: str) -> "DeviceInfo":
@@ -18,6 +19,14 @@ class DeviceInfo:
             if ":" in line:
                 key, value = line.split(":", 1)
                 info[key.strip()] = value.strip()
+        # UniqueChipID is the ECID; convert int to hex string if present
+        unique_chip_id = info.get("UniqueChipID", "")
+        ecid = ""
+        if unique_chip_id:
+            try:
+                ecid = hex(int(unique_chip_id))
+            except (ValueError, TypeError):
+                ecid = str(unique_chip_id)
         return cls(
             udid=info.get("UniqueDeviceID", ""),
             device_name=info.get("DeviceName", "Unknown"),
@@ -26,4 +35,5 @@ class DeviceInfo:
             firmware_version=info.get("ProductVersion", "Unknown"),
             model=info.get("ModelNumber", ""),
             serial_number=info.get("SerialNumber", ""),
+            ecid=ecid,
         )

@@ -558,41 +558,81 @@ def device_info(udid: str = typer.Option(None, "--udid")):
 @device_app.command("erase")
 def device_erase(
     udid: str = typer.Option(None, "--udid"),
+    ipsw: str = typer.Option(None, "--ipsw"),
+    ios_version: str = typer.Option(None, "--version"),
     force: bool = typer.Option(False, "--force", help="Skip confirmation prompt"),
     enter_recovery: bool = typer.Option(True, "--enter-recovery/--no-enter-recovery"),
+    yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation prompt"),
 ):
-    """Erase all data on a device and restore to factory state."""
+    """Erase all data on a device and restore to factory state.
+
+    Requires an IPSW file (provide --ipsw or --version)."""
     device = _prompt_for_udid(udid)
     if device is None:
         typer.secho("No device selected", fg=typer.colors.RED)
         return
+    if ipsw and ios_version:
+        typer.secho("Use either --ipsw or --version, not both.", fg=typer.colors.RED)
+        raise typer.Exit(1)
 
-    # --- Preflight info ---
-    typer.echo()
-    typer.secho("=" * 52, fg=typer.colors.RED, bold=True)
-    typer.secho("  WARNING: This will ERASE ALL DATA on the device", fg=typer.colors.RED, bold=True)
-    typer.secho("=" * 52, fg=typer.colors.RED, bold=True)
-    typer.echo()
-    typer.echo(f"  Device:  {device.device_name}")
-    typer.echo(f"  UDID:    {device.udid}")
-    if device.firmware_version:
-        typer.echo(f"  iOS:     {device.firmware_version} ({device.build_version})")
-    if device.ecid:
-        typer.echo(f"  ECID:    {device.ecid}")
-    typer.echo()
-    typer.secho("  This operation cannot be undone.", fg=typer.colors.YELLOW)
-    typer.secho("  Ensure the device is charged and connected before proceeding.", fg=typer.colors.YELLOW)
-    typer.echo()
-
-    if not force:
-        confirm_name = typer.prompt(
-            f'  Type the device name "{device.device_name}" to confirm erase'
-        )
-        if confirm_name.strip() != device.device_name:
-            typer.secho("Confirmation did not match. Erase cancelled.", fg=typer.colors.RED)
-            raise typer.Exit(1)
-
+    # --- Choose firmware ---
     try:
+        if ipsw:
+            selected_ipsw = ipsw
+        elif ios_version:
+            if device.device_type in ("", "Unknown"):
+                typer.secho(
+                    "Cannot resolve --version without device type. Provide --ipsw URL/path.",
+                    fg=typer.colors.RED,
+                )
+                raise typer.Exit(1)
+            typer.secho(f"Resolving signed build for iOS {ios_version}...", fg=typer.colors.YELLOW)
+            selected_ipsw = resolve_firmware_url(device.device_type, ios_version)
+            typer.secho(f"Target iOS: {ios_version}  ->  {selected_ipsw}", fg=typer.colors.GREEN)
+        elif yes:
+            if device.device_type in ("", "Unknown"):
+                typer.secho(
+                    "Cannot auto-select firmware without device type. Provide --ipsw URL/path or --version.",
+                    fg=typer.colors.RED,
+                )
+                raise typer.Exit(1)
+            firmwares = get_signed_firmwares(device.device_type)
+            latest = firmwares[0]
+            selected_ipsw = latest["url"]
+            typer.secho(
+                f"Auto-selected latest signed build: {latest['version']} ({latest['buildid']})",
+                fg=typer.colors.GREEN,
+            )
+        else:
+            selected_ipsw = _prompt_for_signed_firmware(device)
+
+        # --- Preflight info ---
+        typer.echo()
+        typer.secho("=" * 52, fg=typer.colors.RED, bold=True)
+        typer.secho("  WARNING: This will ERASE ALL DATA on the device", fg=typer.colors.RED, bold=True)
+        typer.secho("=" * 52, fg=typer.colors.RED, bold=True)
+        typer.echo()
+        typer.echo(f"  Device:  {device.device_name}")
+        typer.echo(f"  UDID:    {device.udid}")
+        if device.firmware_version:
+            typer.echo(f"  iOS:     {device.firmware_version} ({device.build_version})")
+        if device.ecid:
+            typer.echo(f"  ECID:    {device.ecid}")
+        typer.echo()
+        typer.secho("  This operation cannot be undone.", fg=typer.colors.YELLOW)
+        typer.secho("  Ensure the device is charged and connected before proceeding.", fg=typer.colors.YELLOW)
+        typer.echo()
+
+        if not yes and not force:
+            typer.confirm("Proceed with erase?", default=True, abort=True)
+        if not force:
+            confirm_name = typer.prompt(
+                f'  Type the device name "{device.device_name}" to confirm erase'
+            )
+            if confirm_name.strip() != device.device_name:
+                typer.secho("Confirmation did not match. Erase cancelled.", fg=typer.colors.RED)
+                raise typer.Exit(1)
+
         if enter_recovery:
             typer.secho(
                 "Placing device into Recovery mode (waiting up to 3 min)...",
@@ -611,8 +651,10 @@ def device_erase(
             "Starting erase. Restore output will stream live below.",
             fg=typer.colors.YELLOW,
         )
-        erase_device(device.udid, device.ecid or None)
+        erase_device(device.udid, device.ecid or None, ipsw=selected_ipsw)
         typer.secho("Erase completed", fg=typer.colors.GREEN)
+    except typer.Abort:
+        typer.secho("Erase cancelled.", fg=typer.colors.YELLOW)
     except AppleDeviceError as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED)
 

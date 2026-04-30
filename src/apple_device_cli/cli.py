@@ -422,25 +422,62 @@ def _prompt_for_udid(udid: str | None, allow_empty: bool = False) -> DeviceInfo 
             firmware_version="Unknown",
         )
 
+    # Start with normal-mode devices
     devices = list_devices()
+    recovery_devices: list[DeviceInfo] = []
 
-    if not devices:
+    # Also check for Recovery/DFU mode devices
+    try:
+        from apple_device_cli.restore.erase import get_irecv
+        irecv = get_irecv()
+        if irecv._device is not None:
+            # There's a Recovery-mode device connected
+            dev = irecv._device
+            ecid_str = hex(getattr(dev, 'ecid', None)) if getattr(dev, 'ecid', None) else None
+            recovery_devices.append(DeviceInfo(
+                udid=ecid_str or "recovery",
+                device_name=getattr(dev, 'display_name', None) or "Recovery Mode Device",
+                device_type=getattr(dev, 'product_type', None) or "Unknown",
+                build_version=getattr(dev, 'build_version', None) or "Unknown",
+                firmware_version=getattr(dev, 'product_version', None) or "Unknown",
+                ecid=ecid_str,
+            ))
+    except Exception:
+        pass
+
+    # Combine normal and recovery devices for selection
+    all_devices = devices + recovery_devices
+
+    if not all_devices:
         if allow_empty:
             return None
         typer.secho("No devices found. Connect a device and try again.", fg=typer.colors.RED)
         raise typer.Exit(1)
 
     typer.echo("Available devices:")
-    for i, device in enumerate(devices, start=1):
+    for i, device in enumerate(all_devices, start=1):
         extra = f" [ECID: {device.ecid}]" if device.ecid else ""
-        typer.echo(f"  [{i}] {device.udid}  ({device.device_name}){extra}")
+        mode_note = " [Recovery]" if device.udid.startswith("0x") else ""
+        typer.echo(f"  [{i}] {device.udid}  ({device.device_name}){extra}{mode_note}")
     typer.echo()
     choice = typer.prompt("Select device number", default="1")
     try:
-        return devices[int(choice) - 1]
+        return all_devices[int(choice) - 1]
     except (ValueError, IndexError) as exc:
         typer.secho("Invalid selection", fg=typer.colors.RED)
         raise typer.Exit(1) from exc
+
+
+def _device_is_in_recovery_mode(ecid: str | None) -> bool:
+    """Check if a device with the given ECID is currently in Recovery mode."""
+    if not ecid:
+        return False
+    try:
+        from apple_device_cli.restore.erase import get_irecv
+        irecv = get_irecv()
+        return irecv._device is not None
+    except Exception:
+        return False
 
 
 def _prompt_for_signed_firmware(device: DeviceInfo) -> str:
@@ -634,18 +671,29 @@ def device_erase(
                 raise typer.Exit(1)
 
         if enter_recovery:
-            typer.secho(
-                "Placing device into Recovery mode (waiting up to 3 min)...",
-                fg=typer.colors.YELLOW,
-            )
-            if not wait_for_udid_in_usbmux(device.udid, timeout=60):
-                raise AppleDeviceError(
-                    "Device is not visible in normal mode via usbmux. Unlock the iPad, accept Trust, and reconnect USB."
+            # Check if device is already in Recovery mode
+            if _device_is_in_recovery_mode(device.ecid):
+                typer.secho("Device is already in Recovery mode.", fg=typer.colors.GREEN)
+            else:
+                typer.secho(
+                    "Placing device into Recovery mode (waiting up to 3 min)...",
+                    fg=typer.colors.YELLOW,
                 )
-            typer.secho("Verifying trust/pairing with device...", fg=typer.colors.YELLOW)
-            ensure_device_pairing(device.udid)
-            enter_recovery_mode(device.udid, device.ecid or None)
-            typer.secho("Device is in Recovery mode.", fg=typer.colors.GREEN)
+                if not wait_for_udid_in_usbmux(device.udid, timeout=60):
+                    raise AppleDeviceError(
+                        "Device is not visible in normal mode via usbmux. Unlock the iPad, accept Trust, and reconnect USB."
+                    )
+                typer.secho("Verifying trust/pairing with device...", fg=typer.colors.YELLOW)
+                ensure_device_pairing(device.udid)
+                enter_recovery_mode(device.udid, device.ecid or None)
+                typer.secho("Device is in Recovery mode.", fg=typer.colors.GREEN)
+        elif not _device_is_in_recovery_mode(device.ecid):
+            # User said don't enter recovery, but device is in normal mode
+            # and we're doing an erase which requires Recovery mode
+            raise AppleDeviceError(
+                "Cannot erase: device is in normal mode but --no-enter-recovery was set. "
+                "Erase requires the device to be in Recovery mode. Omit --no-enter-recovery."
+            )
 
         typer.secho(
             "Starting erase. Restore output will stream live below.",

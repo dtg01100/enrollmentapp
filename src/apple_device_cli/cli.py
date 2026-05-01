@@ -170,8 +170,39 @@ def interactive_enroll():
         if checkin_url:
             typer.echo(f"Check-in URL: {checkin_url}")
 
-    # Step 3: Organization Configuration
-    typer.echo("\nStep 3: Organization & Supervision Identity")
+    # Step 3: WiFi Configuration (for headless enrollment)
+    typer.echo("\nStep 3: WiFi Configuration")
+    typer.secho("-" * 40)
+    typer.echo("Configure WiFi for headless enrollment (device will connect to WiFi before Setup Assistant):")
+    typer.echo("  [1] Skip (WiFi not needed)")
+    typer.echo("  [2] Enter WiFi credentials")
+    typer.echo("  [3] Use WiFi mobileconfig file")
+    wifi_choice = typer.prompt("Select option", default="1")
+
+    wifi_ssid = None
+    wifi_password = None
+    wifi_encryption = "WPA"
+    wifi_config = None
+
+    if wifi_choice == "2":
+        wifi_ssid = typer.prompt("  WiFi SSID (network name)")
+        wifi_password = typer.prompt("  WiFi password", hide_input=True)
+        typer.echo("  Encryption type:")
+        typer.echo("    [1] WPA/WPA2 (recommended)")
+        typer.echo("    [2] WEP")
+        typer.echo("    [3] None (open network)")
+        enc_choice = typer.prompt("Select option", default="1")
+        if enc_choice == "2":
+            wifi_encryption = "WEP"
+        elif enc_choice == "3":
+            wifi_encryption = "None"
+        typer.echo(f"\nWiFi: {wifi_ssid} ({wifi_encryption})")
+    elif wifi_choice == "3":
+        wifi_config = typer.prompt("  Path to WiFi mobileconfig file")
+        typer.echo(f"\nWiFi config: {wifi_config}")
+
+    # Step 4: Organization Configuration
+    typer.echo("\nStep 4: Organization & Supervision Identity")
     typer.secho("-" * 40)
     manager = OrganizationManager()
     orgs = manager.list_orgs()
@@ -376,6 +407,10 @@ def interactive_enroll():
             mdm_url=org.mdm_url,
             mdm_checkin_url=org.checkin_url,
             mdm_topic=org.mdm_topic,
+            wifi_ssid=wifi_ssid,
+            wifi_password=wifi_password,
+            wifi_encryption=wifi_encryption,
+            wifi_config=wifi_config,
             udid=selected.udid,
             progress_callback=progress_callback,
         )

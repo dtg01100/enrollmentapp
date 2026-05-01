@@ -264,13 +264,15 @@ class OrganizationManager:
         with open(path, "rb") as f:
             data = f.read()
 
-        # Extract certificates from PKCS7 structure
+        # Extract certificates from PKCS7 structure (for informational purposes only)
+        # Note: The PKCS7 signature contains server/CA certificates, NOT client identity.
+        # For supervision, we ALWAYS generate our own self-signed identity.
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                pkcs7_certs = pkcs7.load_der_pkcs7_certificates(data)
+                pkcs7.load_der_pkcs7_certificates(data)
         except Exception:
-            pkcs7_certs = []
+            pass  # PKCS7 certs are informational only
 
         # Parse the plist content (verified via PKCS7 signature)
         result = subprocess.run(
@@ -308,10 +310,14 @@ class OrganizationManager:
         dest_dir = self.orgs_dir / self._sanitize_name(name)
         dest_dir.mkdir(parents=True, exist_ok=True)
 
-        if pkcs7_certs:
-            cert_der = pkcs7_certs[0].public_bytes(serialization.Encoding.DER)
-            with open(dest_dir / "cert.der", "wb") as f:
-                f.write(cert_der)
+        # Always generate supervision identity - PKCS7 certs are server/CA certs, not client identity
+        from apple_device_cli.orgs.identity import generate_org_identity
+
+        cert_der, key_der = generate_org_identity(name)
+        with open(dest_dir / "cert.der", "wb") as f:
+            f.write(cert_der)
+        with open(dest_dir / "key.der", "wb") as f:
+            f.write(key_der)
 
         org = Organization(
             name=name,
@@ -321,7 +327,8 @@ class OrganizationManager:
             mdm_topic=mdm_topic,
             identity_ref=identity_ref,
             mdm_description=payload.get('PayloadDescription'),
-            cert_path=str(dest_dir / "cert.der") if pkcs7_certs else None,
+            cert_path=str(dest_dir / "cert.der"),
+            key_path=str(dest_dir / "key.der"),
         )
 
         org.save(org_dir=dest_dir, skip_copy=True)

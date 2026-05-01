@@ -302,39 +302,39 @@ def interactive_enroll():
         has_cloud_config = False
 
     needs_erase = False
-    reason = ""
 
-    # State-aware erase logic
-    if is_supervised and has_cloud_config:
-        # Already supervised with cloud config - needs erase to re-enroll
+    # State machine: Determine if erase is needed based on explicit device state combinations
+    # Possible states (with supervision implications):
+    # 1. Fresh (Unactivated, not supervised, no cloud config) → No erase needed
+    # 2. Activated clean (Activated, not supervised, no cloud config) → No erase needed
+    # 3. Already enrolled (Activated, supervised, cloud config) → ERASE REQUIRED to re-enroll
+    # 4. Partial config (any combo with cloud config but not supervised) → ERASE REQUIRED
+    
+    if has_cloud_config:
+        # Any device with cloud config needs erase to re-enroll (regardless of supervised state)
         needs_erase = True
-        reason = "Device is already supervised with cloud config"
-        typer.secho("Device already enrolled with supervised configuration.", fg=typer.colors.YELLOW)
-        typer.echo(f"  {reason}")
-        typer.echo("  Use 'enroll re-enroll' command first, or confirm to erase.")
-        if not typer.confirm("Erase device to allow re-enrollment?"):
-            typer.secho("Aborted. Use 'enroll re-enroll' to clear cloud config.", fg=typer.colors.YELLOW)
+        typer.secho("Device already has cloud configuration applied.", fg=typer.colors.YELLOW)
+        typer.echo(f"  State: supervised={is_supervised}, cloud_config_applied=True")
+        typer.echo("  Must erase to re-enroll with different configuration.")
+        typer.echo("  Alternatively, use 'enroll re-enroll' to clear only cloud config.")
+        if not typer.confirm("Erase and restore device now?"):
+            typer.secho("Aborted.", fg=typer.colors.YELLOW)
             raise typer.Exit()
-    elif activation_state != "Activated" and not has_cloud_config:
-        # Fresh device - no erase needed
-        typer.secho("Fresh device detected. Applying configuration directly.", fg=typer.colors.GREEN)
+    elif is_supervised:
+        # Supervised without cloud config is impossible state (shouldn't happen)
+        typer.secho("Device is supervised but has no cloud config (unexpected state).", fg=typer.colors.YELLOW)
+        needs_erase = True
+        if not typer.confirm("Erase device to reset to clean state?"):
+            typer.secho("Aborted.", fg=typer.colors.YELLOW)
+            raise typer.Exit()
+    elif activation_state == "Activated":
+        # Activated but clean (no cloud config, not supervised) - no erase needed
+        typer.secho("Device is activated and clean. Ready for supervision.", fg=typer.colors.GREEN)
         needs_erase = False
-    elif has_cloud_config and not is_supervised:
-        # Partial config - may need erase
-        needs_erase = True
-        reason = "Partial cloud config detected"
-        typer.secho(f"Device state: {reason}", fg=typer.colors.YELLOW)
-        if not typer.confirm("Erase device now?"):
-            typer.secho("Aborted.", fg=typer.colors.YELLOW)
-            raise typer.Exit()
     else:
-        # Activated but not supervised - typically needs erase for supervision
-        needs_erase = True
-        reason = f"Activation state: {activation_state}, not supervised"
-        typer.secho(f"Device state requires erase ({reason}).", fg=typer.colors.YELLOW)
-        if not typer.confirm("Erase device now?"):
-            typer.secho("Aborted.", fg=typer.colors.YELLOW)
-            raise typer.Exit()
+        # Unactivated and clean - no erase needed
+        typer.secho("Fresh device detected (unactivated, clean). Applying configuration directly.", fg=typer.colors.GREEN)
+        needs_erase = False
 
     if needs_erase:
         typer.echo("Erasing device...")
@@ -354,27 +354,8 @@ def interactive_enroll():
             typer.secho(f"Erase failed: {e}", fg=typer.colors.RED)
             raise typer.Exit(1)
         typer.secho("Device erased. Waiting 60s for boot...", fg=typer.colors.YELLOW)
-
         time.sleep(60)
         typer.secho("Device ready for supervised pairing.", fg=typer.colors.GREEN)
-    else:
-        typer.secho(f"Device activation: {activation_state}")
-        typer.echo("No erase required.")
-        update_firmware = typer.confirm("Optionally update to latest iOS to avoid certificate issues?", default=False)
-        if update_firmware:
-            if not selected.ecid:
-                typer.secho("Cannot update: device ECID not available. Connect device in normal mode first.", fg=typer.colors.RED)
-                raise typer.Exit(1)
-            else:
-                try:
-                    firmware_url = resolve_firmware_url(selected.device_type, "latest")
-                    typer.echo(f"Updating to latest signed iOS for {selected.device_type}...")
-                    update_device(selected.udid, selected.ecid, ipsw=firmware_url)
-                    typer.secho("Device updated. Waiting 30s for reboot...", fg=typer.colors.YELLOW)
-                    time.sleep(30)
-                except Exception as e:
-                    typer.secho(f"Update failed: {e}", fg=typer.colors.YELLOW)
-                    typer.echo("Continuing without update...")
 
     # Step 6: Apply configuration
     typer.echo("\nStep 6: Apply Configuration")

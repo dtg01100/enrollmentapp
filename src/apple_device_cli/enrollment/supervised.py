@@ -280,24 +280,28 @@ async def do_supervised_pairing(
         async with MobileConfigService(lockdown) as svc:
             await _maybe_await(svc.supervise(org_name, keybag_path))
 
+            # Always set cloud configuration with supervision state.
+            # This ensures IsSupervised is correctly reported even if skip_list is empty.
+            cloud_config_payload = {
+                "AllowPairing": True,
+                "CloudConfigurationUIComplete": True,
+                "ConfigurationSource": 2,
+                "ConfigurationWasApplied": True,
+                "IsMDMUnremovable": mdm_unremovable,
+                "IsMandatory": True,
+                "IsMultiUser": False,
+                "IsSupervised": True,
+                "OrganizationMagic": org_uuid or str(uuid4()),
+                "OrganizationName": org_name,
+                "PostSetupProfileWasInstalled": True,
+                "SupervisorHostCertificates": [
+                    _load_cert_public_bytes_from_keybag(keybag_path),
+                ],
+            }
             if skip_list:
-                await _maybe_await(svc.set_cloud_configuration({
-                    "AllowPairing": True,
-                    "CloudConfigurationUIComplete": True,
-                    "ConfigurationSource": 2,
-                    "ConfigurationWasApplied": True,
-                    "IsMDMUnremovable": mdm_unremovable,
-                    "IsMandatory": True,
-                    "IsMultiUser": False,
-                    "IsSupervised": True,
-                    "OrganizationMagic": org_uuid or str(uuid4()),
-                    "OrganizationName": org_name,
-                    "PostSetupProfileWasInstalled": True,
-                    "SkipSetup": _map_skip_setup(skip_list),
-                    "SupervisorHostCertificates": [
-                        _load_cert_public_bytes_from_keybag(keybag_path),
-                    ],
-                }))
+                cloud_config_payload["SkipSetup"] = _map_skip_setup(skip_list)
+            
+            await _maybe_await(svc.set_cloud_configuration(cloud_config_payload))
 
         # Step 5: Install MDM enrollment profile
         if mdm_url:
@@ -319,16 +323,16 @@ async def do_supervised_pairing(
                 "PayloadUUID": str(uuid4()),
                 "PayloadVersion": 1,
             })
-        try:
-            async with MobileConfigService(lockdown) as svc:
-                await _maybe_await(svc.install_profile_silent(keybag_path, mdm_profile_plist))
-                mdm_enrolled = True
-        except Exception as e:
-            error_msg = f"MDM profile install failed: {e}"
-            if fail_on_mdm_error:
-                raise EnrollmentError(error_msg) from e
-            else:
-                errors.append(error_msg)
+            try:
+                async with MobileConfigService(lockdown) as svc:
+                    await _maybe_await(svc.install_profile_silent(keybag_path, mdm_profile_plist))
+                    mdm_enrolled = True
+            except Exception as e:
+                error_msg = f"MDM profile install failed: {e}"
+                if fail_on_mdm_error:
+                    raise EnrollmentError(error_msg) from e
+                else:
+                    errors.append(error_msg)
 
     # Step 6: Get cloud configuration result
     _progress("Verifying configuration...")

@@ -19,7 +19,7 @@ def get_device_state(udid: str) -> DeviceState:
     """Get the current state of the device."""
     async def _get():
         try:
-            lockdown = await create_using_usbmux(udid=udid)
+            lockdown = await create_using_usbmux(serial=udid)
             if lockdown.all_values.get("RecoveryMode"):
                 return DeviceState.RECOVERY
             return DeviceState.NORMAL

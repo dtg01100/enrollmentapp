@@ -136,17 +136,11 @@ class TestSupervisedPairing:
         assert cloud_config["OrganizationName"] == "Test Org"
         assert "RestoreCompleted" in cloud_config["SkipSetup"]
         assert cloud_config["SupervisorHostCertificates"]
-        svc.install_profile_silent.assert_awaited_once()
-        args, _ = svc.install_profile_silent.call_args
-        assert b"ServerURL" in args[1]
-        assert b"https://mdm.example.com/mdm" in args[1]
-        assert b"CheckInURL" in args[1]
-        assert b"https://mdm.example.com/checkin" in args[1]
-        assert b"Topic" in args[1]
-        assert b"com.example.topic" in args[1]
+        # MDM enrollment is deferred - setup assistant handles enrollment
+        # via the MDMServerURL in cloud config
         # Verify result is EnrollmentResult with correct values
         assert result.success is True
-        assert result.mdm_enrolled is True
+        assert result.mdm_enrolled is False  # Deferred, not installed
         assert result.cloud_config == {"MDMServerURL": "https://mdm.example.com/mdm"}
 
 

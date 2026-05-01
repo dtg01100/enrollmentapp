@@ -2,8 +2,8 @@
 End-to-end integration tests for enrollment flows.
 
 Demonstrates full device enrollment workflow through all supported flows:
-- SimpleSupervisedEnrollment: Fresh device → fully supervised
-- ReenrollmentFlow: Already enrolled → new organization
+- SimpleSupervisedEnrollment: Fresh device -> fully supervised
+- ReenrollmentFlow: Already enrolled -> new organization
 - Error scenarios and recovery
 """
 
@@ -18,6 +18,7 @@ from apple_device_cli.enrollment.flows import (
     FlowRegistry,
     EnrollmentResult,
 )
+from apple_device_cli.orgs.manager import Organization
 
 
 @dataclass
@@ -80,36 +81,35 @@ class TestEnrollmentFlowIntegration:
             cloud_config_applied=False,
             mdm_enrolled=False,
         )
-        print(f"\n📱 Fresh Device: {device_before}")
+        print(f"\n Fresh Device: {device_before}")
         
-        # ===== EXECUTE ENROLLMENT FLOW =====
-        flow = SimpleSupervisedEnrollment(
-            device_udid=device_udid,
-            org_name=org_config["name"],
-            cert_path=org_config["cert_path"],
-            key_path=org_config["key_path"],
+        # ===== CREATE FLOW (flow takes org + udid in execute(), not __init__) =====
+        org = Organization(
+            name=org_config["name"],
+            org_id=org_config["org_id"],
             mdm_url=org_config["mdm_url"],
             checkin_url=org_config["checkin_url"],
             mdm_topic=org_config["mdm_topic"],
+            cert_path=org_config["cert_path"],
+            key_path=org_config["key_path"],
         )
+        flow = SimpleSupervisedEnrollment()
         
         # Mock the enrollment execution
         with patch('apple_device_cli.enrollment.flows.make_supervised') as mock_make_supervised:
-            mock_make_supervised.return_value = asyncio.coroutine(lambda: None)()
+            async def mock_execute(**kwargs):
+                return EnrollmentResult(
+                    success=True,
+                    device_udid=device_udid,
+                    supervised=True,
+                    mdm_enrolled=True,
+                    errors=[],
+                )
+            mock_make_supervised.side_effect = mock_execute
             
-            # Simulate successful enrollment
-            result = EnrollmentResult(
-                success=True,
-                device_udid=device_udid,
-                supervised=True,
-                mdm_enrolled=True,
-                errors=[],
-                cloud_config={
-                    "IsSupervised": True,
-                    "OrganizationName": org_config["name"],
-                    "IsMDMUnremovable": True,
-                }
-            )
+            # Execute the flow (await since flow.execute is async)
+            import asyncio
+            result = asyncio.run(flow.execute(org=org, udid=device_udid))
             
             # ===== AFTER ENROLLMENT =====
             device_after = SimulatedDeviceState(
@@ -121,10 +121,10 @@ class TestEnrollmentFlowIntegration:
                 org_name=org_config["name"],
             )
             
-            print(f"✅ Enrolled Device:  {device_after}")
+            print(f"[OK] Enrolled Device:  {device_after}")
             print(f"   Flow: {flow.name}")
-            print(f"   Organization: {flow.org_name}")
-            print(f"   MDM: {flow.mdm_url}")
+            print(f"   Organization: {org.name}")
+            print(f"   MDM: {org.mdm_url}")
             
             # Verify enrollment succeeded
             assert result.success
@@ -145,7 +145,7 @@ class TestEnrollmentFlowIntegration:
         
         This demonstrates migration between organizations.
         """
-        new_org = {
+        new_org_config = {
             "name": "NewOrg Inc",
             "org_id": "neworg-2024",
             "mdm_url": "https://mdm.neworg.corp/enroll",
@@ -164,38 +164,41 @@ class TestEnrollmentFlowIntegration:
             mdm_enrolled=True,
             org_name="Acme Corp",
         )
-        print(f"\n📱 Existing Device:  {device_before}")
+        print(f"\n Existing Device:  {device_before}")
         
         # ===== DETECT ENROLLED STATE =====
         needs_erase = device_before.cloud_config_applied
         print(f"   Needs erase? {needs_erase} (already enrolled)")
         
-        # ===== EXECUTE REENROLLMENT FLOW =====
-        flow = ReenrollmentFlow(
-            device_udid=device_udid,
-            org_name=new_org["name"],
-            cert_path=new_org["cert_path"],
-            key_path=new_org["key_path"],
-            mdm_url=new_org["mdm_url"],
-            checkin_url=new_org["checkin_url"],
-            mdm_topic=new_org["mdm_topic"],
+        # ===== CREATE REENROLLMENT FLOW =====
+        new_org = Organization(
+            name=new_org_config["name"],
+            org_id=new_org_config["org_id"],
+            mdm_url=new_org_config["mdm_url"],
+            checkin_url=new_org_config["checkin_url"],
+            mdm_topic=new_org_config["mdm_topic"],
+            cert_path=new_org_config["cert_path"],
+            key_path=new_org_config["key_path"],
         )
+        flow = ReenrollmentFlow()
         
-        with patch('apple_device_cli.enrollment.flows.make_supervised') as mock_make_supervised:
-            mock_make_supervised.return_value = asyncio.coroutine(lambda: None)()
+        with patch('apple_device_cli.enrollment.flows.erase_device_for_reenrollment') as mock_erase, \
+             patch('apple_device_cli.enrollment.flows.make_supervised') as mock_make_supervised:
+            mock_erase.return_value = True  # Erase succeeds
             
-            result = EnrollmentResult(
-                success=True,
-                device_udid=device_udid,
-                supervised=True,
-                mdm_enrolled=True,
-                errors=[],
-                cloud_config={
-                    "IsSupervised": True,
-                    "OrganizationName": new_org["name"],
-                    "IsMDMUnremovable": True,
-                }
-            )
+            # make_supervised is synchronous, returns EnrollmentResult directly
+            def mock_execute(**kwargs):
+                return EnrollmentResult(
+                    success=True,
+                    device_udid=device_udid,
+                    supervised=True,
+                    mdm_enrolled=True,
+                    errors=[],
+                )
+            mock_make_supervised.side_effect = mock_execute
+            
+            # Execute the flow (returns tuple of erase success + result)
+            erase_ok, result = flow.execute(org=new_org, udid=device_udid)
             
             # ===== AFTER RE-ENROLLMENT =====
             device_after = SimulatedDeviceState(
@@ -204,19 +207,19 @@ class TestEnrollmentFlowIntegration:
                 is_supervised=True,
                 cloud_config_applied=True,
                 mdm_enrolled=True,
-                org_name=new_org["name"],
+                org_name=new_org_config["name"],
             )
             
-            print(f"✅ Re-enrolled Device: {device_after}")
+            print(f"[OK] Re-enrolled Device: {device_after}")
             print(f"   Flow: {flow.name}")
-            print(f"   New Organization: {flow.org_name}")
-            print(f"   New MDM: {flow.mdm_url}")
+            print(f"   New Organization: {new_org.name}")
+            print(f"   New MDM: {new_org.mdm_url}")
             
             # Verify re-enrollment succeeded
             assert result.success
             assert result.supervised
             assert result.mdm_enrolled
-            assert device_after.org_name == new_org["name"]
+            assert device_after.org_name == new_org_config["name"]
             assert device_after.org_name != "Acme Corp"
     
     def test_enrollment_with_mdm_failure_recovery(self, device_udid, org_config):
@@ -237,33 +240,34 @@ class TestEnrollmentFlowIntegration:
             cloud_config_applied=False,
             mdm_enrolled=False,
         )
-        print(f"\n📱 Fresh Device:     {device_before}")
+        print(f"\n Fresh Device:     {device_before}")
         
-        # ===== EXECUTE FLOW WITH MDM FAILURE =====
-        flow = SimpleSupervisedEnrollment(
-            device_udid=device_udid,
-            org_name=org_config["name"],
-            cert_path=org_config["cert_path"],
-            key_path=org_config["key_path"],
+        # ===== CREATE FLOW =====
+        org = Organization(
+            name=org_config["name"],
+            org_id=org_config["org_id"],
             mdm_url=org_config["mdm_url"],
             checkin_url=org_config["checkin_url"],
             mdm_topic=org_config["mdm_topic"],
-            fail_on_mdm_error=False,  # Allow partial success
+            cert_path=org_config["cert_path"],
+            key_path=org_config["key_path"],
         )
+        flow = SimpleSupervisedEnrollment()
         
-        with patch('apple_device_cli.enrollment.flows.make_supervised'):
-            # Supervision succeeds, MDM fails
-            result = EnrollmentResult(
-                success=False,  # Overall failed due to MDM
-                device_udid=device_udid,
-                supervised=True,  # But supervision worked
-                mdm_enrolled=False,  # MDM failed
-                errors=["MDM enrollment failed: connection timeout"],
-                cloud_config={
-                    "IsSupervised": True,
-                    "OrganizationName": org_config["name"],
-                }
-            )
+        with patch('apple_device_cli.enrollment.flows.make_supervised') as mock_make_supervised:
+            # Simulate MDM failure
+            async def mock_execute(**kwargs):
+                return EnrollmentResult(
+                    success=False,  # Overall failed due to MDM
+                    device_udid=device_udid,
+                    supervised=True,  # But supervision worked
+                    mdm_enrolled=False,  # MDM failed
+                    errors=["MDM enrollment failed: connection timeout"],
+                )
+            mock_make_supervised.side_effect = mock_execute
+            
+            import asyncio
+            result = asyncio.run(flow.execute(org=org, udid=device_udid))
             
             # ===== AFTER ENROLLMENT (PARTIAL) =====
             device_after = SimulatedDeviceState(
@@ -275,11 +279,10 @@ class TestEnrollmentFlowIntegration:
                 org_name=org_config["name"],
             )
             
-            print(f"⚠️  Partial Success:  {device_after}")
+            print(f"[WARN]  Partial Success:  {device_after}")
             print(f"   Flow: {flow.name}")
-            print(f"   Supervision: ✅ SUCCESS")
-            print(f"   MDM Enrollment: ❌ FAILED - {result.errors[0]}")
-            print(f"   fail_on_mdm_error: {flow.fail_on_mdm_error}")
+            print(f"   Supervision: [OK] SUCCESS")
+            print(f"   MDM Enrollment: [FAIL] FAILED - {result.errors[0]}")
             
             # Verify supervision succeeded despite MDM failure
             assert result.supervised
@@ -295,21 +298,21 @@ class TestEnrollmentFlowIntegration:
         Shows that flows are discoverable and extensible for custom implementations.
         """
         registry = FlowRegistry()
-        flows = registry.list_flows()
+        flows = registry.list()  # Changed from list_flows() to list()
         
-        print(f"\n📚 Available Enrollment Flows:")
-        for flow_name in flows:
-            flow = registry.get_flow(flow_name)
-            print(f"   • {flow.name}: {flow.description}")
+        print(f"\n[DOC] Available Enrollment Flows:")
+        for flow in flows:
+            print(f"   - {flow.name}: {flow.description}")
         
         # Verify standard flows are registered
-        assert "SimpleSupervisedEnrollment" in flows
-        assert "ReenrollmentFlow" in flows
+        flow_names = [f.name for f in flows]
+        assert "simple-supervised" in flow_names  # Changed from class name to snake_case name
+        assert "reenrollment" in flow_names
         
         # Verify flows can be retrieved
-        simple_flow = registry.get_flow("SimpleSupervisedEnrollment")
+        simple_flow = registry.get("simple-supervised")
         assert simple_flow is not None
-        assert simple_flow.name == "SimpleSupervisedEnrollment"
+        assert simple_flow.name == "simple-supervised"
 
 
 class TestDeviceStateProgression:
@@ -322,109 +325,32 @@ class TestDeviceStateProgression:
     
     def test_complete_device_lifecycle(self):
         """
-        Complete device lifecycle showing state at each enrollment phase.
+        Documents the complete state progression from fresh device to managed.
+        
+        States:
+          0. Factory Fresh: Unactivated, not supervised, no MDM
+          1. After Pairing: Activated, not supervised, no MDM
+          2. After Supervision: Activated, supervised, no MDM
+          3. After MDM Enrollment: Activated, supervised, MDM enrolled
         """
-        device_id = "iPad-Production-2024-001"
+        states = [
+            ("Factory Fresh", False, False, False),
+            ("After Pairing", True, False, False),
+            ("After Supervision", True, True, False),
+            ("After MDM Enrollment", True, True, True),
+        ]
         
-        print("\n" + "="*70)
-        print("IPAD ENROLLMENT LIFECYCLE - COMPLETE DEVICE JOURNEY")
-        print("="*70)
+        print("\n=== Device State Progression ===")
+        for i, (label, activated, supervised, mdm) in enumerate(states):
+            device = SimulatedDeviceState(
+                udid="test-udid",
+                activation_state="Activated" if activated else "Unactivated",
+                is_supervised=supervised,
+                cloud_config_applied=mdm,
+                mdm_enrolled=mdm,
+            )
+            print(f"  {i}. {label}: {device}")
         
-        # Phase 1: Factory Default
-        print("\n[Phase 1] Factory Default State")
-        print("-" * 70)
-        state1 = SimulatedDeviceState(
-            udid=device_id,
-            activation_state="Unactivated",
-            is_supervised=False,
-            cloud_config_applied=False,
-            mdm_enrolled=False,
-        )
-        print(f"iPad Status: {state1}")
-        print("✓ Device is brand new, never activated")
-        print("✓ No MDM management")
-        print("✓ Ready for enrollment")
-        
-        # Phase 2: Setup Initiated
-        print("\n[Phase 2] Enrollment Initiated")
-        print("-" * 70)
-        print("Action: Start SimpleSupervisedEnrollment flow")
-        print("  → Connecting to device via USB")
-        print("  → Entering recovery/pairing mode")
-        print("  → Downloading supervision certificate")
-        
-        # Phase 3: Cloud Config Applied
-        print("\n[Phase 3] Supervision Configuration Applied")
-        print("-" * 70)
-        state3 = SimulatedDeviceState(
-            udid=device_id,
-            activation_state="Activated",
-            is_supervised=True,
-            cloud_config_applied=True,
-            mdm_enrolled=False,
-            org_name="Acme Corp",
-        )
-        print(f"iPad Status: {state3}")
-        print("✓ Device activated through Setup Assistant")
-        print("✓ Cloud configuration applied (IsSupervised=true)")
-        print("✓ Device UUID locked to organization")
-        print("✓ Organization certificate installed")
-        
-        # Phase 4: MDM Enrollment
-        print("\n[Phase 4] MDM Enrollment Profile Installed")
-        print("-" * 70)
-        print("Action: Install MDM enrollment profile")
-        print("  → Creating MDM payload with certificate")
-        print("  → Installing mobileconfig profile")
-        print("  → Device begins MDM communication")
-        
-        state4 = SimulatedDeviceState(
-            udid=device_id,
-            activation_state="Activated",
-            is_supervised=True,
-            cloud_config_applied=True,
-            mdm_enrolled=True,
-            org_name="Acme Corp",
-        )
-        print(f"iPad Status: {state4}")
-        print("✓ MDM profile installed and active")
-        print("✓ Device communicating with MDM server")
-        print("✓ Ready to receive management policies")
-        
-        # Phase 5: Policy Application
-        print("\n[Phase 5] Management Policies Applied")
-        print("-" * 70)
-        print("Action: MDM server applies policies")
-        print("  → Restrictions configured (camera, airdrop, etc.)")
-        print("  → App Store restrictions enabled")
-        print("  → WiFi networks pushed to device")
-        print("  → Certificate profiles installed")
-        print("  → Managed apps provisioned")
-        
-        final_state = SimulatedDeviceState(
-            udid=device_id,
-            activation_state="Activated",
-            is_supervised=True,
-            cloud_config_applied=True,
-            mdm_enrolled=True,
-            org_name="Acme Corp",
-        )
-        print(f"iPad Status: {final_state}")
-        print("\n" + "="*70)
-        print("✅ ENROLLMENT COMPLETE - DEVICE FULLY MANAGED")
-        print("="*70)
-        print("\nManagement Capabilities:")
-        print("  ✓ Supervision: Remote management possible")
-        print("  ✓ MDM: Configuration and policy control")
-        print("  ✓ App Distribution: Managed apps via Acme Corp MDM")
-        print("  ✓ Restrictions: Enforced by organization")
-        print("  ✓ Passcode: Enforced by MDM policy")
-        print("  ✓ AirDrop: Restricted (Acme policy)")
-        print("  ✓ USB Restrictions: Can be enforced")
-        print("  ✓ Configuration Changes: Require Acme MDM approval")
-        
-        # Verify final state
-        assert final_state.is_supervised
-        assert final_state.mdm_enrolled
-        assert final_state.cloud_config_applied
-        assert final_state.activation_state == "Activated"
+        # Final state should be fully managed
+        final = states[-1]
+        assert final == ("After MDM Enrollment", True, True, True)

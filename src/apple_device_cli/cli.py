@@ -394,6 +394,9 @@ def interactive_enroll():
         if result.cloud_config and result.cloud_config.get("MDMServerURL"):
             typer.echo(f"  Cloud Config MDM URL: {result.cloud_config['MDMServerURL']}")
         typer.echo(f"  Skip panes: {len(skip_list)} configured")
+        if not result.mdm_enrolled and org.mdm_url:
+            typer.secho("\n  NOTE: Device will enroll with MDM on first boot via Setup Assistant.", fg=typer.colors.CYAN)
+            typer.echo("  Connect device to power and let it complete Setup Assistant.")
         if result.errors:
             typer.secho("\n  Errors:", fg=typer.colors.YELLOW)
             for error in result.errors:

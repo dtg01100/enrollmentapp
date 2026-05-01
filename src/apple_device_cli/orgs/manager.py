@@ -30,6 +30,7 @@ class Organization:
     mdm_description: str | None = None # PayloadDescription
     cert_path: str | None = None
     key_path: str | None = None
+    wifi_config_path: str | None = None  # Path to WiFi mobileconfig file
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
     def to_dict(self) -> dict:
@@ -46,6 +47,7 @@ class Organization:
             "mdm_description": self.mdm_description,
             "cert_path": str(self.cert_path) if self.cert_path else None,
             "key_path": str(self.key_path) if self.key_path else None,
+            "wifi_config_path": str(self.wifi_config_path) if self.wifi_config_path else None,
             "created_at": self.created_at,
         }
 
@@ -64,6 +66,7 @@ class Organization:
             mdm_description=data.get("mdm_description"),
             cert_path=data.get("cert_path"),
             key_path=data.get("key_path"),
+            wifi_config_path=data.get("wifi_config_path"),
             created_at=data.get("created_at") or datetime.now().isoformat(),
         )
 
@@ -72,6 +75,7 @@ class Organization:
         metadata = self.to_dict()
         del metadata["cert_path"]
         del metadata["key_path"]
+        # wifi_config_path is a reference, not a copy - keep the original path
         with open(org_dir / "org.json", "w") as f:
             json.dump(metadata, f, indent=2)
         if not skip_copy:
@@ -90,6 +94,7 @@ class Organization:
             data = json.load(f)
         data["cert_path"] = str(org_dir / "cert.der") if (org_dir / "cert.der").exists() else None
         data["key_path"] = str(org_dir / "key.der") if (org_dir / "key.der").exists() else None
+        # wifi_config_path is stored as a reference in org.json
         return cls.from_dict(data)
 
 

@@ -173,18 +173,34 @@ def interactive_enroll():
     # Step 3: WiFi Configuration (for headless enrollment)
     typer.echo("\nStep 3: WiFi Configuration")
     typer.secho("-" * 40)
+    # Pre-check if selected org has WiFi config for default behavior
+    org_wifi_available = org and org.wifi_config_path and Path(org.wifi_config_path).exists()
     typer.echo("Configure WiFi for headless enrollment (device will connect to WiFi before Setup Assistant):")
-    typer.echo("  [1] Skip (WiFi not needed)")
-    typer.echo("  [2] Enter WiFi credentials")
-    typer.echo("  [3] Use WiFi mobileconfig file")
-    wifi_choice = typer.prompt("Select option", default="1")
+    if org_wifi_available:
+        typer.echo("  [1] Use org WiFi config ({})".format(Path(org.wifi_config_path).name))
+        typer.echo("  [2] Skip (WiFi not needed)")
+        typer.echo("  [3] Enter WiFi credentials")
+        typer.echo("  [4] Use different WiFi mobileconfig file")
+        default_choice = "1"
+    else:
+        typer.echo("  [1] Skip (WiFi not needed)")
+        typer.echo("  [2] Enter WiFi credentials")
+        typer.echo("  [3] Use WiFi mobileconfig file")
+        default_choice = "1"
+    wifi_choice = typer.prompt("Select option", default=default_choice)
 
     wifi_ssid = None
     wifi_password = None
     wifi_encryption = "WPA"
     wifi_config = None
 
-    if wifi_choice == "2":
+    if org_wifi_available and wifi_choice == "1":
+        wifi_config = org.wifi_config_path
+        typer.echo(f"\nUsing org WiFi config: {wifi_config}")
+    elif wifi_choice == "1" or (not org_wifi_available and wifi_choice == "2"):
+        # No WiFi config
+        pass
+    elif (org_wifi_available and wifi_choice == "3") or (not org_wifi_available and wifi_choice == "2"):
         wifi_ssid = typer.prompt("  WiFi SSID (network name)")
         wifi_password = typer.prompt("  WiFi password", hide_input=True)
         typer.echo("  Encryption type:")
@@ -197,9 +213,12 @@ def interactive_enroll():
         elif enc_choice == "3":
             wifi_encryption = "None"
         typer.echo(f"\nWiFi: {wifi_ssid} ({wifi_encryption})")
-    elif wifi_choice == "3":
+    elif (org_wifi_available and wifi_choice == "4") or (not org_wifi_available and wifi_choice == "3"):
         wifi_config = typer.prompt("  Path to WiFi mobileconfig file")
         typer.echo(f"\nWiFi config: {wifi_config}")
+
+    if wifi_config:
+        typer.echo(f"WiFi config: {wifi_config}")
 
     # Step 4: Organization Configuration
     typer.echo("\nStep 4: Organization & Supervision Identity")
@@ -1216,6 +1235,42 @@ def org_import_mobileconfig(
         typer.echo(f"  Key: {'Yes' if org.key_path else 'No'}")
     except Exception as e:
         typer.secho(f"Import failed: {e}", fg=typer.colors.RED)
+
+
+@org_app.command("set-wifi")
+def org_set_wifi(
+    name: str = typer.Option(..., "--name"),
+    path: str = typer.Option(..., "--path"),
+):
+    """Attach a WiFi mobileconfig to an organization.
+
+    The WiFi config will be installed on devices during supervised enrollment.
+
+    Example:
+        ios-enroll org set-wifi --name "Capital Candy Company" --path wifi.mobileconfig
+    """
+    manager = OrganizationManager()
+    org = manager.get_org(name)
+    if not org:
+        typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    wifi_path = Path(path)
+    if not wifi_path.exists():
+        typer.secho(f"WiFi config file not found: {path}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    # Copy WiFi config into org directory
+    org_dir = manager.orgs_dir / manager._sanitize_name(name)
+    dest_wifi = org_dir / "wifi.mobileconfig"
+    shutil.copy(wifi_path, dest_wifi)
+
+    # Update org
+    org.wifi_config_path = str(dest_wifi)
+    org.save(org_dir, skip_copy=True)
+
+    typer.secho(f"WiFi config attached to: {org.name}", fg=typer.colors.GREEN)
+    typer.echo(f"  File: {dest_wifi}")
 
 
 @org_app.command("export")

@@ -216,26 +216,6 @@ def _retry_until(fn, *, timeout: int = _DEVICE_WAIT_TIMEOUT, interval: float = _
     raise RestoreError(f"{label} did not succeed within {timeout}s: {last_exc}")
 
 
-def _usbmuxd_socket_path() -> str:
-    try:
-        from pymobiledevice3.common import get_os_utils
-        path, _ = get_os_utils().usbmux_address
-        return path
-    except Exception:
-        return "/var/run/usbmuxd"
-
-
-def _connect_usbmuxd() -> None:
-    """Raise OSError if the usbmuxd socket is not yet connectable."""
-    import socket as _socket
-    s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-    s.settimeout(2)
-    try:
-        s.connect(_usbmuxd_socket_path())
-    finally:
-        s.close()
-
-
 def get_signed_firmwares(identifier: str) -> list[dict[str, str]]:
     """Fetch signed IPSW builds for a device identifier from ipsw.me."""
     url = IPSW_API_URL.format(identifier=identifier)

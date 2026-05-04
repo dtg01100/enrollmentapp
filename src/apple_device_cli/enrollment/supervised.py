@@ -19,7 +19,13 @@ from cryptography.hazmat.primitives.serialization import (
 )
 from cryptography.x509 import load_der_x509_certificate, load_pem_x509_certificate
 
-from pymobiledevice3.ca import create_keybag_file
+# Optional pymobiledevice3 imports - graceful degradation when not installed
+try:
+    from pymobiledevice3.ca import create_keybag_file
+    PYMOBILEDEVICE3_AVAILABLE = True
+except ImportError:
+    PYMOBILEDEVICE3_AVAILABLE = False
+    create_keybag_file = None  # type: ignore[assignment,misc]
 
 from apple_device_cli.core.redaction import (
     redact_name,

@@ -27,6 +27,7 @@ dependencies = [
     "pymobiledevice3>=9.12.0",
     "cryptography>=45.0.0",
     "ipsw-parser>=1.6.0",
+    "rich>=13.0.0",
 ]
 
 [project.scripts]

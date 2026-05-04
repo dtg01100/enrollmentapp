@@ -55,16 +55,12 @@ Organizations are stored in `~/.config/apple_device_cli/orgs/` by default. Each 
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.10+
 - pymobiledevice3 (primary device interaction library)
 - libimobiledevice (idevicepair, ideviceinfo — for basic device enumeration)
 
 ## License
 
-**GNU General Public License v3.0 (GPLv3)**
+**MIT**
 
-This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
-
-This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
+See `LICENSE` for the full license text.

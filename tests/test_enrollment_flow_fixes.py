@@ -127,6 +127,159 @@ class TestCloudConfigBugFix:
             # This is expected behavior - the config was already set correctly
             pass
 
+    def test_make_supervised_reuses_matching_existing_cloud_config(self, mock_pymobiledevice3):
+        """Test: existing matching cloud config is treated as success and MDM install continues."""
+        from apple_device_cli.enrollment import supervised
+
+        lockdown = MagicMock()
+        mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
+
+        activation_svc = MagicMock()
+        activation_svc.state = AsyncMock(return_value="Activated")
+        activation_svc.activate = AsyncMock()
+        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = activation_svc
+
+        svc = AsyncMock()
+        svc.set_cloud_configuration = AsyncMock(side_effect=CloudConfigurationAlreadyPresentError())
+        svc.install_profile_silent = AsyncMock()
+        svc.__aenter__.return_value = svc
+        svc.__aexit__.return_value = False
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cert_path = Path(tmpdir) / "cert.der"
+            key_path = Path(tmpdir) / "key.der"
+            mdm_profile_path = Path(tmpdir) / "mdm.mobileconfig"
+            mdm_profile_path.write_bytes(b"fake-mdm-profile")
+
+            private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            subject = issuer = x509.Name([
+                x509.NameAttribute(NameOID.COMMON_NAME, "Test Org"),
+            ])
+            certificate = (
+                x509.CertificateBuilder()
+                .subject_name(subject)
+                .issuer_name(issuer)
+                .public_key(private_key.public_key())
+                .serial_number(1)
+                .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
+                .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365))
+                .sign(private_key, hashes.SHA256())
+            )
+
+            cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.DER))
+            key_path.write_bytes(
+                private_key.private_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                )
+            )
+
+            existing_cloud_config: dict[str, object] = {
+                "AllowPairing": True,
+                "CloudConfigurationUIComplete": True,
+                "ConfigurationSource": 2,
+                "ConfigurationWasApplied": True,
+                "IsMandatory": True,
+                "IsMultiUser": False,
+                "IsSupervised": True,
+                "MDMServerURL": "https://mdm.example.com/mdm",
+                "OrganizationMagic": "org-123",
+                "OrganizationName": "Test Org",
+                "PostSetupProfileWasInstalled": True,
+                "IsMDMUnremovable": False,
+                "SkipSetup": ["Passcode"],
+            }
+            svc.get_cloud_configuration = AsyncMock(return_value=existing_cloud_config)
+
+            with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc):
+                result = supervised.make_supervised(
+                    cert_path=str(cert_path),
+                    key_path=str(key_path),
+                    org_name="Test Org",
+                    org_uuid="org-123",
+                    skip_list=["passcode"],
+                    mdm_url="https://mdm.example.com/mdm",
+                    mdm_mobileconfig=str(mdm_profile_path),
+                )
+
+        assert result.success is True
+        assert result.supervised is True
+        assert result.mdm_enrolled is True
+        assert result.errors == []
+        assert svc.set_cloud_configuration.await_count == 1
+        svc.install_profile_silent.assert_awaited_once()
+
+    def test_make_supervised_retries_transient_mdm_network_error(self, mock_pymobiledevice3):
+        """Test: transient MDM network errors are retried and can recover."""
+        from apple_device_cli.enrollment import supervised
+
+        lockdown = MagicMock()
+        mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
+
+        activation_svc = MagicMock()
+        activation_svc.state = AsyncMock(return_value="Activated")
+        activation_svc.activate = AsyncMock()
+        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = activation_svc
+
+        transient_error = Exception(
+            "invalid response {'ErrorChain': [{'ErrorCode': -1009, 'LocalizedDescription': 'The Internet connection appears to be offline.'}], 'Status': 'Error'}"
+        )
+
+        svc = AsyncMock()
+        svc.set_cloud_configuration = AsyncMock()
+        svc.install_profile_silent = AsyncMock(side_effect=[transient_error, None])
+        svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
+        svc.__aenter__.return_value = svc
+        svc.__aexit__.return_value = False
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cert_path = Path(tmpdir) / "cert.der"
+            key_path = Path(tmpdir) / "key.der"
+            mdm_profile_path = Path(tmpdir) / "mdm.mobileconfig"
+            mdm_profile_path.write_bytes(b"fake-mdm-profile")
+
+            private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            subject = issuer = x509.Name([
+                x509.NameAttribute(NameOID.COMMON_NAME, "Test Org"),
+            ])
+            certificate = (
+                x509.CertificateBuilder()
+                .subject_name(subject)
+                .issuer_name(issuer)
+                .public_key(private_key.public_key())
+                .serial_number(1)
+                .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
+                .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365))
+                .sign(private_key, hashes.SHA256())
+            )
+
+            cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.DER))
+            key_path.write_bytes(
+                private_key.private_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                )
+            )
+
+            with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc), \
+                 patch('apple_device_cli.enrollment.supervised.asyncio.sleep', new=AsyncMock()) as mock_sleep:
+                result = supervised.make_supervised(
+                    cert_path=str(cert_path),
+                    key_path=str(key_path),
+                    org_name="Test Org",
+                    skip_list=["passcode"],
+                    mdm_url="https://mdm.example.com/mdm",
+                    mdm_mobileconfig=str(mdm_profile_path),
+                )
+
+        assert result.success is True
+        assert result.mdm_enrolled is True
+        assert result.errors == []
+        assert svc.install_profile_silent.await_count == 2
+        mock_sleep.assert_awaited_once()
+
 
 class TestEnrollmentStateValidation:
     """Test that device state validation works correctly."""
@@ -183,6 +336,53 @@ class TestMakeSupervisedErrorHandling:
         assert result.success is False
         assert len(result.errors) > 0
         assert any("Certificate not found" in e for e in result.errors)
+
+
+class TestEnrollmentStateReadback:
+    """Test device status lookups."""
+
+    def test_get_device_enrollment_state_uses_correct_lockdown_keys(self, mock_pymobiledevice3):
+        """Test: status lookup queries lockdown with key parameter and augments from cloud config."""
+        from apple_device_cli.enrollment import supervised
+
+        lockdown = MagicMock()
+
+        async def get_value(domain=None, key=None):
+            values = {
+                "ActivationState": "Activated",
+                "IsSupervised": False,
+                "CloudConfigurationWasApplied": False,
+                "OrganizationName": None,
+                "OrganizationMagic": None,
+                "WasMandatorilyUnpaired": False,
+            }
+            return values[key]
+
+        lockdown.get_value = AsyncMock(side_effect=get_value)
+        mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
+
+        svc = AsyncMock()
+        svc.get_cloud_configuration = AsyncMock(return_value={
+            "IsSupervised": True,
+            "ConfigurationWasApplied": True,
+            "OrganizationName": "Test Org",
+            "OrganizationMagic": "org-123",
+        })
+        svc.__aenter__.return_value = svc
+        svc.__aexit__.return_value = False
+
+        with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc):
+            state = supervised.get_device_enrollment_state("test-udid")
+
+        assert state == {
+            "activation_state": "Activated",
+            "is_supervised": True,
+            "cloud_config_applied": True,
+            "org_name": "Test Org",
+            "org_magic": "org-123",
+            "is_mdm_managed": False,
+        }
+        assert lockdown.get_value.await_count == 6
 
 
 if __name__ == "__main__":

@@ -1,11 +1,23 @@
 from pathlib import Path
 import shutil
 import time
+from typing import Callable
 
 import asyncio
 import typer
 
 from apple_device_cli import __version__
+from apple_device_cli.core.redaction import (
+    redact_address,
+    redact_email,
+    redact_identifier,
+    redact_name,
+    redact_org_identifier,
+    redact_path,
+    redact_phone,
+    redact_url,
+    sanitize_text,
+)
 from apple_device_cli.device.connection import (
     ensure_device_pairing,
     get_device_info,
@@ -29,6 +41,34 @@ from apple_device_cli.enrollment.skip_panes import resolve_skip_panes
 from apple_device_cli.enrollment.supervised import make_supervised
 from apple_device_cli.enrollment.activation import activate_device
 from apple_device_cli.core.exceptions import AppleDeviceError
+
+
+def _normalize_prompted_path(path: str | None) -> str | None:
+    """Normalize a path entered interactively.
+
+    Users sometimes paste paths wrapped in shell quotes; strip those and
+    normalize surrounding whitespace so file existence checks behave as expected.
+    """
+    if path is None:
+        return None
+
+    normalized = path.strip()
+    if len(normalized) >= 2 and normalized[0] == normalized[-1] and normalized[0] in {"'", '"'}:
+        normalized = normalized[1:-1].strip()
+
+    return normalized or None
+
+
+def _display_name(value: str | None) -> str:
+    return redact_name(value)
+
+
+def _display_udid(value: str | None) -> str:
+    return redact_identifier(value, prefix=6, suffix=4)
+
+
+def _display_org_id(value: str | None) -> str:
+    return redact_org_identifier(value)
 
 app = typer.Typer(help="iOS device supervised enrollment CLI")
 device_app = typer.Typer(help="Device management commands")
@@ -88,7 +128,6 @@ def interactive_enroll():
     6. Apply configuration
     """
     from apple_device_cli.enrollment.skip_panes import PRESETS
-    from apple_device_cli.orgs.identity import generate_org_identity
 
     typer.secho("=== Apple Device Enrollment ===\n", fg=typer.colors.BLUE, bold=True)
     typer.echo("Following Apple Configurator workflow...\n")
@@ -103,7 +142,7 @@ def interactive_enroll():
     typer.echo("-" * 40)
     typer.echo("Available devices:")
     for i, d in enumerate(devices):
-        typer.echo(f"  [{i + 1}] {d.udid}  ({d.device_name})")
+        typer.echo(f"  [{i + 1}] {_display_udid(d.udid)}  ({d.device_name})")
     typer.echo()
     choice = typer.prompt("Select device number", default="1")
     try:
@@ -112,7 +151,7 @@ def interactive_enroll():
         typer.secho("Invalid selection", fg=typer.colors.RED)
         raise typer.Exit(1) from exc
 
-    typer.echo(f"\nSelected: {selected.device_name} ({selected.udid})")
+    typer.echo(f"\nSelected: {selected.device_name} ({_display_udid(selected.udid)})")
 
     # Get device state
     try:
@@ -149,7 +188,7 @@ def interactive_enroll():
         else:
             typer.echo("\nAvailable MDM servers:")
             for i, o in enumerate(orgs_with_mdm):
-                typer.echo(f"  [{i + 1}] {o.name} ({o.mdm_url})")
+                typer.echo(f"  [{i + 1}] {_display_name(o.name)} ({redact_url(o.mdm_url)})")
             choice = typer.prompt("Select MDM server", default="1")
             try:
                 selected_org = orgs_with_mdm[int(choice) - 1]
@@ -167,9 +206,9 @@ def interactive_enroll():
         mdm_topic = typer.prompt("  MDM Topic", default="")
 
     if mdm_url:
-        typer.echo(f"\nMDM Server URL: {mdm_url}")
+        typer.echo(f"\nMDM Server URL: {redact_url(mdm_url)}")
         if checkin_url:
-            typer.echo(f"Check-in URL: {checkin_url}")
+            typer.echo(f"Check-in URL: {redact_url(checkin_url)}")
 
     # Step 3: Organization Configuration (before WiFi - we need org for WiFi config)
     typer.echo("\nStep 3: Organization & Supervision Identity")
@@ -182,7 +221,7 @@ def interactive_enroll():
     typer.echo("  [n] Create new organization")
     if existing_orgs:
         for i, o in enumerate(existing_orgs):
-            typer.echo(f"  [{i + 1}] {o.name}")
+            typer.echo(f"  [{i + 1}] {_display_name(o.name)}")
     org_choice = typer.prompt("Select organization", default="n")
 
     org = None
@@ -240,7 +279,7 @@ def interactive_enroll():
             )
 
         manager.save_org(org)
-        typer.secho(f"Organization '{name}' saved.", fg=typer.colors.GREEN)
+        typer.secho(f"Organization '{_display_name(name)}' saved.", fg=typer.colors.GREEN)
     else:
         try:
             org = existing_orgs[int(org_choice) - 1]
@@ -249,7 +288,7 @@ def interactive_enroll():
                 org.checkin_url = checkin_url
                 org.mdm_topic = mdm_topic
                 manager.save_org(org, overwrite=True)
-            typer.echo(f"Using organization: {org.name}")
+            typer.echo(f"Using organization: {_display_name(org.name)}")
         except (ValueError, IndexError) as exc:
             typer.secho("Invalid organization selection", fg=typer.colors.RED)
             raise typer.Exit(1) from exc
@@ -258,10 +297,11 @@ def interactive_enroll():
     typer.echo("\nStep 4: WiFi Configuration")
     typer.secho("-" * 40)
     # Pre-check if selected org has WiFi config for default behavior
-    org_wifi_available = org and org.wifi_config_path and Path(org.wifi_config_path).expanduser().exists()
+    org_wifi_path = Path(org.wifi_config_path).expanduser() if org and org.wifi_config_path else None
+    org_wifi_available = org_wifi_path is not None and org_wifi_path.exists()
     typer.echo("Configure WiFi for headless enrollment (device will connect to WiFi before Setup Assistant):")
     if org_wifi_available:
-        typer.echo("  [1] Use org WiFi config ({})".format(Path(org.wifi_config_path).name))
+        typer.echo("  [1] Use org WiFi config ({})".format(org_wifi_path.name if org_wifi_path else "wifi.mobileconfig"))
         typer.echo("  [2] Skip (WiFi not needed)")
         typer.echo("  [3] Enter WiFi credentials")
         typer.echo("  [4] Use different WiFi mobileconfig file")
@@ -279,8 +319,8 @@ def interactive_enroll():
     wifi_config = None
 
     if org_wifi_available and wifi_choice == "1":
-        wifi_config = org.wifi_config_path
-        typer.echo(f"\nUsing org WiFi config: {wifi_config}")
+        wifi_config = str(org_wifi_path)
+        typer.echo(f"\nUsing org WiFi config: {redact_path(wifi_config)}")
     elif wifi_choice == "1":
         pass
     elif (org_wifi_available and wifi_choice == "3") or (not org_wifi_available and wifi_choice == "2"):
@@ -297,11 +337,8 @@ def interactive_enroll():
             wifi_encryption = "None"
         typer.echo(f"\nWiFi: {wifi_ssid} ({wifi_encryption})")
     elif (org_wifi_available and wifi_choice == "4") or (not org_wifi_available and wifi_choice == "3"):
-        wifi_config = typer.prompt("  Path to WiFi mobileconfig file")
-        typer.echo(f"\nWiFi config: {wifi_config}")
-
-    if wifi_config:
-        typer.echo(f"WiFi config: {wifi_config}")
+        wifi_config = _normalize_prompted_path(typer.prompt("  Path to WiFi mobileconfig file"))
+        typer.echo(f"\nWiFi config: {redact_path(wifi_config)}")
 
     # Step 5: Skip Panes
     typer.echo("\nStep 5: Setup Assistant Skip Panes")
@@ -406,9 +443,12 @@ def interactive_enroll():
 
     # Progress callback for enrollment steps
     def progress_callback(msg: str) -> None:
-        typer.echo(f"  {msg}")
+        typer.echo(f"  {sanitize_text(msg)}")
 
     try:
+        if not org.cert_path or not org.key_path:
+            typer.secho("Selected organization is missing a certificate or private key.", fg=typer.colors.RED)
+            raise typer.Exit(1)
         result = make_supervised(
             cert_path=org.cert_path,
             key_path=org.key_path,
@@ -432,15 +472,15 @@ def interactive_enroll():
         else:
             typer.secho("  Enrollment completed with errors", fg=typer.colors.YELLOW, bold=True)
         typer.secho("=" * 50, fg=typer.colors.GREEN, bold=True)
-        typer.echo(f"\n  Organization: {org.name}")
-        typer.echo(f"  Device UDID: {result.device_udid}")
+        typer.echo(f"\n  Organization: {_display_name(org.name)}")
+        typer.echo(f"  Device UDID: {_display_udid(result.device_udid)}")
         typer.echo(f" Supervised: {result.supervised}")
         typer.echo(f" MDM Enrolled: {result.mdm_enrolled}")
         typer.echo(f" WiFi Installed: {result.wifi_installed}")
         if org.mdm_url:
-            typer.echo(f"  MDM Server URL: {org.mdm_url}")
+            typer.echo(f"  MDM Server URL: {redact_url(org.mdm_url)}")
         if result.cloud_config and result.cloud_config.get("MDMServerURL"):
-            typer.echo(f"  Cloud Config MDM URL: {result.cloud_config['MDMServerURL']}")
+            typer.echo(f"  Cloud Config MDM URL: {redact_url(result.cloud_config['MDMServerURL'])}")
         typer.echo(f"  Skip panes: {len(skip_list)} configured")
         if not result.mdm_enrolled and org.mdm_url:
             typer.secho("\n NOTE: MDM profile stored for post-setup installation.", fg=typer.colors.CYAN)
@@ -448,10 +488,10 @@ def interactive_enroll():
         if result.errors:
             typer.secho("\n  Errors:", fg=typer.colors.YELLOW)
             for error in result.errors:
-                typer.echo(f"    - {error}")
+                typer.echo(f"    - {sanitize_text(error)}")
         typer.echo("\n  Connect device to power and wait for Setup Assistant...")
     except AppleDeviceError as e:
-        typer.secho(f"Enrollment failed: {e}", fg=typer.colors.RED)
+        typer.secho(f"Enrollment failed: {sanitize_text(str(e))}", fg=typer.colors.RED)
         raise typer.Exit(1)
 
 
@@ -518,9 +558,9 @@ def _prompt_for_udid(udid: str | None, allow_empty: bool = False) -> DeviceInfo 
 
     typer.echo("Available devices:")
     for i, device in enumerate(all_devices, start=1):
-        extra = f" [ECID: {device.ecid}]" if device.ecid else ""
         mode_note = " [Recovery]" if device.udid.startswith("0x") else ""
-        typer.echo(f"  [{i}] {device.udid}  ({device.device_name}){extra}{mode_note}")
+        redacted_extra = f" [ECID: {_display_udid(device.ecid)}]" if device.ecid else ""
+        typer.echo(f"  [{i}] {_display_udid(device.udid)}  ({device.device_name}){redacted_extra}{mode_note}")
     typer.echo()
     choice = typer.prompt("Select device number", default="1")
     try:
@@ -662,7 +702,7 @@ def device_list():
             typer.secho("No devices found", fg=typer.colors.YELLOW)
             return
         for d in devices:
-            typer.echo(f"{d.udid}\t{d.device_name}")
+            typer.echo(f"{_display_udid(d.udid)}\t{d.device_name}")
     except AppleDeviceError as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED)
 
@@ -678,14 +718,14 @@ def device_info(udid: str = typer.Option(None, "--udid")):
         udid = devices[0].udid
     info = get_device_info(udid)
     if info:
-        typer.echo(f"UDID: {info.udid}")
+        typer.echo(f"UDID: {_display_udid(info.udid)}")
         typer.echo(f"Name: {info.device_name}")
         typer.echo(f"Type: {info.device_type}")
         typer.echo(f"iOS: {info.firmware_version} ({info.build_version})")
         if info.ecid:
-            typer.echo(f"ECID: {info.ecid}")
+            typer.echo(f"ECID: {_display_udid(info.ecid)}")
     else:
-        typer.secho(f"Device not found: {udid}", fg=typer.colors.RED)
+        typer.secho(f"Device not found: {_display_udid(udid)}", fg=typer.colors.RED)
 
 
 @device_app.command("erase")
@@ -747,11 +787,11 @@ def device_erase(
         typer.secho("=" * 52, fg=typer.colors.RED, bold=True)
         typer.echo()
         typer.echo(f"  Device:  {device.device_name}")
-        typer.echo(f"  UDID:    {device.udid}")
+        typer.echo(f"  UDID:    {_display_udid(device.udid)}")
         if device.firmware_version:
             typer.echo(f"  iOS:     {device.firmware_version} ({device.build_version})")
         if device.ecid:
-            typer.echo(f"  ECID:    {device.ecid}")
+            typer.echo(f"  ECID:    {_display_udid(device.ecid)}")
         typer.echo()
         typer.secho("  This operation cannot be undone.", fg=typer.colors.YELLOW)
         typer.secho("  Ensure the device is charged and connected before proceeding.", fg=typer.colors.YELLOW)
@@ -853,11 +893,11 @@ def device_update(
         typer.secho("iOS Update / Upgrade", fg=typer.colors.BLUE, bold=True)
         typer.secho("-" * 40)
         typer.echo(f"  Device:  {device.device_name}")
-        typer.echo(f"  UDID:    {device.udid}")
+        typer.echo(f"  UDID:    {_display_udid(device.udid)}")
         if device.firmware_version:
             typer.echo(f"  Current iOS:  {device.firmware_version} ({device.build_version})")
         if device.ecid:
-            typer.echo(f"  ECID:    {device.ecid}")
+            typer.echo(f"  ECID:    {_display_udid(device.ecid)}")
         typer.echo()
 
         # --- Choose firmware ---
@@ -971,7 +1011,7 @@ def device_restore(
             typer.secho("Restore cancelled: IPSW path required", fg=typer.colors.YELLOW)
             return
 
-    typer.echo(f"Selected device: {device.device_name} ({device.udid})")
+    typer.echo(f"Selected device: {device.device_name} ({_display_udid(device.udid)})")
     if enter_recovery:
         typer.secho(
             "Placing device into Recovery mode before restore...",
@@ -1023,9 +1063,9 @@ def device_enter_recovery(
         typer.secho("No device selected", fg=typer.colors.RED)
         return
 
-    typer.echo(f"Device: {device.device_name} ({device.udid})")
+    typer.echo(f"Device: {device.device_name} ({_display_udid(device.udid)})")
     if device.ecid:
-        typer.echo(f"ECID: {device.ecid}")
+        typer.echo(f"ECID: {_display_udid(device.ecid)}")
     typer.echo()
 
     try:
@@ -1057,11 +1097,11 @@ def org_list():
         typer.echo("No organizations stored.")
         typer.echo(f"  Location: {manager.orgs_dir}")
         return
-    typer.echo(f"Organizations in: {manager.orgs_dir}")
+    typer.echo(f"Organizations in: {redact_path(manager.orgs_dir)}")
     for org in orgs:
-        typer.echo(f"  {org.name}")
+        typer.echo(f"  {_display_name(org.name)}")
         if org.org_id:
-            typer.echo(f"    ID: {org.org_id}")
+            typer.echo(f"    ID: {_display_org_id(org.org_id)}")
 
 
 @org_app.command("create")
@@ -1101,13 +1141,13 @@ def org_create(
         org.key_path = str(Path(key).resolve()) if key else None
     manager = OrganizationManager()
     manager.save_org(org)
-    typer.secho(f"Created organization: {org.name}", fg=typer.colors.GREEN)
+    typer.secho(f"Created organization: {_display_name(org.name)}", fg=typer.colors.GREEN)
     if mdm_url:
-        typer.echo(f"  MDM URL: {mdm_url}")
+        typer.echo(f"  MDM URL: {redact_url(mdm_url)}")
     if checkin_url:
-        typer.echo(f"  Check-in URL: {checkin_url}")
+        typer.echo(f"  Check-in URL: {redact_url(checkin_url)}")
     if mdm_topic:
-        typer.echo(f"  MDM Topic: {mdm_topic}")
+        typer.echo(f"  MDM Topic: {_display_org_id(mdm_topic)}")
 
 
 @org_app.command("delete")
@@ -1115,7 +1155,7 @@ def org_delete(name: str = typer.Option(..., "--name")):
     """Delete organization."""
     manager = OrganizationManager()
     if manager.delete_org(name):
-        typer.secho(f"Deleted organization: {name}", fg=typer.colors.GREEN)
+        typer.secho(f"Deleted organization: {_display_name(name)}", fg=typer.colors.GREEN)
     else:
         typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
 
@@ -1130,7 +1170,7 @@ def org_set_cert(name: str = typer.Option(..., "--name"), cert: str = typer.Opti
         return
     org.cert_path = str(Path(cert).resolve())
     manager.save_org(org, overwrite=True)
-    typer.secho(f"Set certificate for '{name}'", fg=typer.colors.GREEN)
+    typer.secho(f"Set certificate for '{_display_name(name)}'", fg=typer.colors.GREEN)
 
 
 @org_app.command("set-key")
@@ -1143,7 +1183,7 @@ def org_set_key(name: str = typer.Option(..., "--name"), key: str = typer.Option
         return
     org.key_path = str(Path(key).resolve())
     manager.save_org(org, overwrite=True)
-    typer.secho(f"Set private key for '{name}'", fg=typer.colors.GREEN)
+    typer.secho(f"Set private key for '{_display_name(name)}'", fg=typer.colors.GREEN)
 
 
 @org_app.command("set-mdm-url")
@@ -1156,7 +1196,7 @@ def org_set_mdm_url(name: str = typer.Option(..., "--name"), mdm_url: str = type
         return
     org.mdm_url = mdm_url
     manager.save_org(org, overwrite=True)
-    typer.secho(f"Set MDM URL for '{name}'", fg=typer.colors.GREEN)
+    typer.secho(f"Set MDM URL for '{_display_name(name)}'", fg=typer.colors.GREEN)
 
 
 @org_app.command("set-checkin-url")
@@ -1169,7 +1209,7 @@ def org_set_checkin_url(name: str = typer.Option(..., "--name"), checkin_url: st
         return
     org.checkin_url = checkin_url
     manager.save_org(org, overwrite=True)
-    typer.secho(f"Set check-in URL for '{name}'", fg=typer.colors.GREEN)
+    typer.secho(f"Set check-in URL for '{_display_name(name)}'", fg=typer.colors.GREEN)
 
 
 @org_app.command("set-mdm-topic")
@@ -1182,7 +1222,7 @@ def org_set_mdm_topic(name: str = typer.Option(..., "--name"), mdm_topic: str = 
         return
     org.mdm_topic = mdm_topic
     manager.save_org(org, overwrite=True)
-    typer.secho(f"Set MDM topic for '{name}'", fg=typer.colors.GREEN)
+    typer.secho(f"Set MDM topic for '{_display_name(name)}'", fg=typer.colors.GREEN)
 
 
 @org_app.command("show")
@@ -1193,26 +1233,26 @@ def org_show(name: str = typer.Option(..., "--name")):
     if not org:
         typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
         return
-    typer.echo(f"Name: {org.name}")
+    typer.echo(f"Name: {_display_name(org.name)}")
     if org.org_id:
-        typer.echo(f"ID: {org.org_id}")
+        typer.echo(f"ID: {_display_org_id(org.org_id)}")
     if org.address:
-        typer.echo(f"Address: {org.address}")
+        typer.echo(f"Address: {redact_address(org.address)}")
     if org.phone:
-        typer.echo(f"Phone: {org.phone}")
+        typer.echo(f"Phone: {redact_phone(org.phone)}")
     if org.email:
-        typer.echo(f"Email: {org.email}")
+        typer.echo(f"Email: {redact_email(org.email)}")
     if org.mdm_url:
-        typer.echo(f"MDM URL: {org.mdm_url}")
+        typer.echo(f"MDM URL: {redact_url(org.mdm_url)}")
     if org.checkin_url:
-        typer.echo(f"Check-in URL: {org.checkin_url}")
+        typer.echo(f"Check-in URL: {redact_url(org.checkin_url)}")
     if org.mdm_topic:
-        typer.echo(f"MDM Topic: {org.mdm_topic}")
+        typer.echo(f"MDM Topic: {_display_org_id(org.mdm_topic)}")
     if org.mdm_description:
         typer.echo(f"MDM Description: {org.mdm_description}")
     typer.echo(f"Created: {org.created_at}")
-    typer.echo(f"Cert: {org.cert_path or 'Not set'}")
-    typer.echo(f"Key: {org.key_path or 'Not set'}")
+    typer.echo(f"Cert: {redact_path(org.cert_path) if org.cert_path else 'Not set'}")
+    typer.echo(f"Key: {redact_path(org.key_path) if org.key_path else 'Not set'}")
     if org.cert_path and Path(org.cert_path).exists():
         try:
             cert_info = load_cert_info(Path(org.cert_path).read_bytes())
@@ -1232,13 +1272,13 @@ def org_import(
     manager = OrganizationManager()
     try:
         org = manager.import_org(path, password or "password")
-        typer.secho(f"Imported: {org.name}", fg=typer.colors.GREEN)
+        typer.secho(f"Imported: {_display_name(org.name)}", fg=typer.colors.GREEN)
         typer.echo(f"  Cert: {'Yes' if org.cert_path else 'No'}")
         typer.echo(f"  Key: {'Yes' if org.key_path else 'No'}")
         if org.org_id:
             typer.echo(f"  ID: {org.org_id}")
     except Exception as e:
-        typer.secho(f"Import failed: {e}", fg=typer.colors.RED)
+        typer.secho(f"Import failed: {sanitize_text(str(e))}", fg=typer.colors.RED)
 
 
 @org_app.command("import-mobileconfig")
@@ -1249,13 +1289,13 @@ def org_import_mobileconfig(
     manager = OrganizationManager()
     try:
         org = manager.import_mobileconfig(path)
-        typer.secho(f"Imported: {org.name}", fg=typer.colors.GREEN)
-        typer.echo(f"  MDM URL: {org.mdm_url or 'Not set'}")
-        typer.echo(f"  Check-in URL: {org.checkin_url or 'Not set'}")
+        typer.secho(f"Imported: {_display_name(org.name)}", fg=typer.colors.GREEN)
+        typer.echo(f"  MDM URL: {redact_url(org.mdm_url) if org.mdm_url else 'Not set'}")
+        typer.echo(f"  Check-in URL: {redact_url(org.checkin_url) if org.checkin_url else 'Not set'}")
         typer.echo(f"  Cert: {'Yes' if org.cert_path else 'No'}")
         typer.echo(f"  Key: {'Yes' if org.key_path else 'No'}")
     except Exception as e:
-        typer.secho(f"Import failed: {e}", fg=typer.colors.RED)
+        typer.secho(f"Import failed: {sanitize_text(str(e))}", fg=typer.colors.RED)
 
 
 @org_app.command("set-wifi")
@@ -1278,7 +1318,7 @@ def org_set_wifi(
 
     wifi_path = Path(path)
     if not wifi_path.exists():
-        typer.secho(f"WiFi config file not found: {path}", fg=typer.colors.RED)
+        typer.secho(f"WiFi config file not found: {redact_path(path)}", fg=typer.colors.RED)
         raise typer.Exit(1)
 
     # Copy WiFi config into org directory
@@ -1290,8 +1330,8 @@ def org_set_wifi(
     org.wifi_config_path = str(dest_wifi)
     org.save(org_dir, skip_copy=True)
 
-    typer.secho(f"WiFi config attached to: {org.name}", fg=typer.colors.GREEN)
-    typer.echo(f"  File: {dest_wifi}")
+    typer.secho(f"WiFi config attached to: {_display_name(org.name)}", fg=typer.colors.GREEN)
+    typer.echo(f"  File: {redact_path(dest_wifi)}")
 
 
 @org_app.command("export")
@@ -1299,7 +1339,7 @@ def org_export(name: str = typer.Option(..., "--name"), path: str = typer.Option
     """Export organization to directory or zip."""
     manager = OrganizationManager()
     if manager.export_org(name, path):
-        typer.secho(f"Exported '{name}' to {path}", fg=typer.colors.GREEN)
+        typer.secho(f"Exported '{_display_name(name)}' to {redact_path(path)}", fg=typer.colors.GREEN)
     else:
         typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
 
@@ -1353,13 +1393,13 @@ def org_generate(
     )
     org.save(org_dir, skip_copy=True)
 
-    typer.secho(f"Generated identity for: {name}", fg=typer.colors.GREEN)
+    typer.secho(f"Generated identity for: {_display_name(name)}", fg=typer.colors.GREEN)
     if mdm_url:
-        typer.echo(f"  MDM URL: {mdm_url}")
+        typer.echo(f"  MDM URL: {redact_url(mdm_url)}")
     if checkin_url:
-        typer.echo(f"  Check-in URL: {checkin_url}")
+        typer.echo(f"  Check-in URL: {redact_url(checkin_url)}")
     if mdm_topic:
-        typer.echo(f"  MDM Topic: {mdm_topic}")
+        typer.echo(f"  MDM Topic: {_display_org_id(mdm_topic)}")
 
 
 @enroll_app.command("make-supervised")
@@ -1401,11 +1441,12 @@ def enroll_make_supervised(
         return
 
     # Set up progress callback if verbose mode
-    progress_callback = None
+    progress_callback: Callable[[str], None] | None = None
     if verbose:
-        def progress_callback(msg: str) -> None:
-            typer.echo(f"  {msg}")
-        typer.echo(f"Supervised enrollment for: {device.device_name} ({device.udid})")
+        def _progress_callback(msg: str) -> None:
+            typer.echo(f"  {sanitize_text(msg)}")
+        progress_callback = _progress_callback
+        typer.echo(f"Supervised enrollment for: {device.device_name} ({_display_udid(device.udid)})")
 
     try:
         result = make_supervised(
@@ -1428,16 +1469,16 @@ def enroll_make_supervised(
         )
         if result.success:
             typer.secho("Device is now supervised", fg=typer.colors.GREEN)
-            typer.echo(f" UDID: {result.device_udid}")
+            typer.echo(f" UDID: {_display_udid(result.device_udid)}")
             typer.echo(f" Supervised: {result.supervised}")
             typer.echo(f" MDM Enrolled: {result.mdm_enrolled}")
             typer.echo(f" WiFi Installed: {result.wifi_installed}")
         else:
             typer.secho("Enrollment completed with errors:", fg=typer.colors.YELLOW)
             for error in result.errors:
-                typer.echo(f"  - {error}")
+                typer.echo(f"  - {sanitize_text(error)}")
     except AppleDeviceError as e:
-        typer.secho(f"Error: {e}", fg=typer.colors.RED)
+        typer.secho(f"Error: {sanitize_text(str(e))}", fg=typer.colors.RED)
 
 
 @enroll_app.command("re-enroll")
@@ -1461,7 +1502,7 @@ def enroll_reenroll(
     if not force:
         typer.echo()
         typer.secho("WARNING: This will remove supervised configuration from the device.", fg=typer.colors.YELLOW)
-        typer.echo(f"  Device: {device.device_name} ({device.udid})")
+        typer.echo(f"  Device: {device.device_name} ({_display_udid(device.udid)})")
         typer.echo()
         confirm = typer.confirm("Continue with re-enrollment preparation?")
         if not confirm:
@@ -1492,7 +1533,7 @@ def enroll_status(
         typer.secho("No device selected", fg=typer.colors.RED)
         return
 
-    typer.echo(f"Device: {device.device_name} ({device.udid})")
+    typer.echo(f"Device: {device.device_name} ({_display_udid(device.udid)})")
     typer.secho("-" * 40)
 
     try:
@@ -1505,12 +1546,12 @@ def enroll_status(
         typer.echo(f"  Supervised: {state.get('is_supervised', False)}")
         typer.echo(f"  Cloud Config Applied: {state.get('cloud_config_applied', False)}")
         if state.get('org_name'):
-            typer.echo(f"  Organization: {state['org_name']}")
+            typer.echo(f"  Organization: {_display_name(state['org_name'])}")
         if state.get('org_magic'):
-            typer.echo(f"  Organization ID: {state['org_magic']}")
+            typer.echo(f"  Organization ID: {_display_org_id(state['org_magic'])}")
         typer.echo(f"  MDM Managed: {state.get('is_mdm_managed', False)}")
     except Exception as e:
-        typer.secho(f"Error getting device status: {e}", fg=typer.colors.RED)
+        typer.secho(f"Error getting device status: {sanitize_text(str(e))}", fg=typer.colors.RED)
 
 
 @enroll_app.command("validate")
@@ -1538,7 +1579,7 @@ def enroll_validate(
         typer.secho(f"Organization not found: {org_name}", fg=typer.colors.RED)
         return
 
-    typer.echo(f"Validating organization: {org_name}")
+    typer.echo(f"Validating organization: {_display_name(org_name)}")
     typer.secho("-" * 40)
 
     # Determine MDM URL to check
@@ -1554,14 +1595,14 @@ def enroll_validate(
 
     if not errors:
         typer.secho("All prerequisites valid!", fg=typer.colors.GREEN)
-        typer.echo(f"  Certificate: {org.cert_path}")
-        typer.echo(f"  Private Key: {org.key_path}")
+        typer.echo(f"  Certificate: {redact_path(org.cert_path)}")
+        typer.echo(f"  Private Key: {redact_path(org.key_path)}")
         if target_mdm_url:
-            typer.echo(f"  MDM URL: {target_mdm_url}")
+            typer.echo(f"  MDM URL: {redact_url(target_mdm_url)}")
     else:
         typer.secho("Validation failed:", fg=typer.colors.RED)
         for error in errors:
-            typer.echo(f"  - {error}")
+            typer.echo(f"  - {sanitize_text(error)}")
 
 
 @enroll_app.command("activate")

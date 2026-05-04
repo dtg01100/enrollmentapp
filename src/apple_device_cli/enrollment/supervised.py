@@ -1,9 +1,10 @@
 """Device supervision and enrollment using pymobiledevice3."""
 from __future__ import annotations
 
+import ast
 import asyncio
 import inspect
-import plistlib
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,8 +20,14 @@ from cryptography.hazmat.primitives.serialization import (
 from cryptography.x509 import load_der_x509_certificate, load_pem_x509_certificate
 
 from pymobiledevice3.ca import create_keybag_file
-from pymobiledevice3.services.mobile_config import CloudConfigurationAlreadyPresentError
 
+from apple_device_cli.core.redaction import (
+    redact_name,
+    redact_org_identifier,
+    redact_path,
+    redact_url,
+    sanitize_text,
+)
 from apple_device_cli.core.exceptions import EnrollmentError
 
 SKIP_SETUP_MAPPING = {
@@ -230,10 +237,173 @@ def _get_mobile_config_service():
     return MobileConfigService
 
 
+def _get_cloud_configuration_already_present_error() -> type[Exception]:
+    """Get CloudConfigurationAlreadyPresentError class lazily.
+
+    This avoids holding a stale class reference across tests or mocked module swaps.
+    """
+    from pymobiledevice3.services.mobile_config import CloudConfigurationAlreadyPresentError
+    return CloudConfigurationAlreadyPresentError
+
+
 async def _maybe_await(value):
     """Await a value if it's awaitable, otherwise return it."""
     if inspect.isawaitable(value):
         return await value
+    return value
+
+
+def _normalize_optional_path(path: str | Path | None) -> Path | None:
+    """Normalize an optional filesystem path.
+
+    Handles accidental shell-style quoting in interactive input and expands `~`.
+    """
+    if path is None:
+        return None
+
+    if isinstance(path, Path):
+        return path.expanduser()
+
+    normalized = str(path).strip()
+    if len(normalized) >= 2 and normalized[0] == normalized[-1] and normalized[0] in {"'", '"'}:
+        normalized = normalized[1:-1].strip()
+
+    if not normalized:
+        return None
+
+    return Path(normalized).expanduser()
+
+
+def _extract_mobileconfig_error_payload(error: Exception) -> dict[str, Any] | None:
+    """Extract a device error payload from a pymobiledevice3 exception when possible."""
+    for arg in getattr(error, "args", ()):
+        if isinstance(arg, dict) and ("ErrorChain" in arg or "Status" in arg):
+            return arg
+
+    text = str(error)
+    if "ErrorChain" not in text:
+        return None
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+
+    try:
+        payload = ast.literal_eval(text[start:end + 1])
+    except (SyntaxError, ValueError):
+        return None
+
+    return payload if isinstance(payload, dict) else None
+
+
+def _format_mobileconfig_error(prefix: str, error: Exception) -> str:
+    """Return a concise user-facing error for profile installation failures."""
+    payload = _extract_mobileconfig_error_payload(error)
+    if not payload:
+        return f"{prefix}: {error}"
+
+    chain = payload.get("ErrorChain")
+    if not isinstance(chain, list):
+        return f"{prefix}: {error}"
+
+    descriptions: list[str] = []
+    for item in chain:
+        if not isinstance(item, dict):
+            continue
+        description = item.get("LocalizedDescription") or item.get("USEnglishDescription")
+        if description and description not in descriptions:
+            descriptions.append(description)
+
+    if not descriptions:
+        return f"{prefix}: {error}"
+
+    offline_match = next(
+        (
+            description
+            for description in descriptions
+            if re.search(r"offline|network error|internet connection", description, re.IGNORECASE)
+        ),
+        None,
+    )
+    summary = offline_match or descriptions[-1]
+    return f"{prefix}: {summary}"
+
+
+def _is_transient_mobileconfig_network_error(error: Exception) -> bool:
+    """Return True when a mobileconfig error indicates temporary network unavailability."""
+    payload = _extract_mobileconfig_error_payload(error)
+    descriptions: list[str] = []
+
+    if payload and isinstance(payload.get("ErrorChain"), list):
+        for item in payload["ErrorChain"]:
+            if not isinstance(item, dict):
+                continue
+            description = item.get("LocalizedDescription") or item.get("USEnglishDescription")
+            if description:
+                descriptions.append(description)
+
+    text = " ".join(descriptions) if descriptions else str(error)
+    return bool(re.search(r"offline|network error|internet connection", text, re.IGNORECASE))
+
+
+def _format_exception_message(prefix: str, error: Exception) -> str:
+    """Format exceptions that may have an empty string representation."""
+    detail = str(error).strip() or error.__class__.__name__
+    return f"{prefix}: {detail}"
+
+
+def _cloud_config_matches(existing: dict[str, Any], desired: dict[str, Any]) -> bool:
+    """Return True when the existing cloud config already matches the desired state."""
+    boolean_keys_with_false_default = {
+        "AllowPairing",
+        "CloudConfigurationUIComplete",
+        "ConfigurationWasApplied",
+        "IsMandatory",
+        "IsMultiUser",
+        "IsSupervised",
+        "PostSetupProfileWasInstalled",
+        "IsMDMUnremovable",
+    }
+    comparable_keys = [
+        "AllowPairing",
+        "CloudConfigurationUIComplete",
+        "ConfigurationSource",
+        "ConfigurationWasApplied",
+        "IsMandatory",
+        "IsMultiUser",
+        "IsSupervised",
+        "MDMServerURL",
+        "OrganizationMagic",
+        "OrganizationName",
+        "PostSetupProfileWasInstalled",
+        "IsMDMUnremovable",
+    ]
+
+    for key in comparable_keys:
+        existing_value = existing.get(key, False) if key in boolean_keys_with_false_default else existing.get(key)
+        desired_value = desired.get(key, False) if key in boolean_keys_with_false_default else desired.get(key)
+        if existing_value != desired_value:
+            return False
+
+    existing_skip = sorted(existing.get("SkipSetup", []))
+    desired_skip = sorted(desired.get("SkipSetup", []))
+    if existing_skip != desired_skip:
+        return False
+
+    return True
+
+
+async def _get_lockdown_value(lockdown, key: str) -> Any:
+    """Read a lockdown key using the correct domain/key calling convention."""
+    try:
+        value = lockdown.get_value(None, key)
+    except TypeError:
+        value = lockdown.get_value(key=key)
+
+    value = await _maybe_await(value)
+    if isinstance(value, dict) and "Value" in value and len(value) == 1:
+        return value["Value"]
     return value
 
 
@@ -290,13 +460,14 @@ async def do_supervised_pairing(
     create_using_usbmux = _get_create_using_usbmux()
     MobileActivationService = _get_mobile_activation_service()
     MobileConfigService = _get_mobile_config_service()
+    CloudConfigurationAlreadyPresentError = _get_cloud_configuration_already_present_error()
 
     errors: list[str] = []
     mdm_enrolled = False
 
     def _progress(msg: str) -> None:
         if progress_callback:
-            progress_callback(msg)
+            progress_callback(sanitize_text(msg))
 
     # Validate certificate and key files early
     cert_path_p = Path(cert_path)
@@ -336,7 +507,7 @@ async def do_supervised_pairing(
     # the MDM server during Setup Assistant after being supervised.
     wifi_installed = False
     if wifi_ssid and wifi_password:
-        _progress(f"Installing WiFi profile: {wifi_ssid}...")
+        _progress(f"Installing WiFi profile: {redact_name(wifi_ssid)}...")
         try:
             async with MobileConfigService(lockdown) as svc:
                 await _maybe_await(svc.install_wifi_profile(
@@ -345,13 +516,16 @@ async def do_supervised_pairing(
                     password=wifi_password,
                 ))
             wifi_installed = True
-            _progress(f"WiFi profile installed: {wifi_ssid}")
+            _progress(f"WiFi profile installed: {redact_name(wifi_ssid)}")
         except Exception as e:
             errors.append(f"WiFi profile install failed: {e}")
             _progress(f"WiFi profile install failed: {e}")
     elif wifi_config:
-        wifi_config_path = Path(wifi_config)
-        if wifi_config_path.exists():
+        wifi_config_path = _normalize_optional_path(wifi_config)
+        if wifi_config_path is None:
+            errors.append("WiFi config file not found")
+            _progress("WiFi config file not found")
+        elif wifi_config_path.exists():
             _progress(f"Installing WiFi mobileconfig: {wifi_config_path.name}...")
             try:
                 payload_bytes = wifi_config_path.read_bytes()
@@ -360,11 +534,12 @@ async def do_supervised_pairing(
                 wifi_installed = True
                 _progress(f"WiFi mobileconfig installed: {wifi_config_path.name}")
             except Exception as e:
-                errors.append(f"WiFi mobileconfig install failed: {e}")
-                _progress(f"WiFi mobileconfig install failed: {e}")
+                error_msg = _format_mobileconfig_error("WiFi mobileconfig install failed", e)
+                errors.append(error_msg)
+                _progress(error_msg)
         else:
-            errors.append(f"WiFi config file not found: {wifi_config}")
-            _progress(f"WiFi config file not found: {wifi_config}")
+            errors.append(f"WiFi config file not found: {wifi_config_path}")
+            _progress(f"WiFi config file not found: {redact_path(wifi_config_path)}")
 
     # Step 4: Supervise device (set cloud configuration)
     _progress("Applying supervision...")
@@ -410,65 +585,83 @@ async def do_supervised_pairing(
                 try:
                     cloud_config = await _wait_for_cloud_config(lockdown, timeout_ms=20000)
                     if cloud_config:
-                        _progress(f"Device confirmed supervised: {cloud_config.get('OrganizationName')}")
+                        _progress(f"Device confirmed supervised: {redact_name(cloud_config.get('OrganizationName'))}")
                     else:
                         _progress("Device processing - continuing anyway")
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     _progress("Device disconnected after config apply, will reconnect...")
                     device_disconnected = True
-        except CloudConfigurationAlreadyPresentError:
-            _progress("Cloud config already present, clearing and re-applying...")
-            try:
-                async with MobileConfigService(lockdown) as svc:
-                    await _maybe_await(svc.set_cloud_configuration({}))
-                    _progress("Cleared existing cloud config")
-                async with MobileConfigService(lockdown) as svc:
-                    await _maybe_await(svc.set_cloud_configuration(cloud_config_payload))
-                    config_set = True
-                    _progress("Cloud configuration re-applied successfully")
+        except Exception as e:
+            if isinstance(e, CloudConfigurationAlreadyPresentError):
+                _progress("Cloud config already present, clearing and re-applying...")
                 try:
-                    cloud_config = await _wait_for_cloud_config(lockdown, timeout_ms=20000)
+                    async with MobileConfigService(lockdown) as svc:
+                        existing_cloud_config = await _maybe_await(svc.get_cloud_configuration())
+
+                    if isinstance(existing_cloud_config, dict) and _cloud_config_matches(existing_cloud_config, cloud_config_payload):
+                        cloud_config = existing_cloud_config
+                        config_set = True
+                        _progress("Existing cloud configuration already matches requested settings")
+                    else:
+                        async with MobileConfigService(lockdown) as svc:
+                            await _maybe_await(svc.set_cloud_configuration({}))
+                            _progress("Cleared existing cloud config")
+                        async with MobileConfigService(lockdown) as svc:
+                            await _maybe_await(svc.set_cloud_configuration(cloud_config_payload))
+                            config_set = True
+                            _progress("Cloud configuration re-applied successfully")
+                        try:
+                            cloud_config = await _wait_for_cloud_config(lockdown, timeout_ms=20000)
+                        except (BrokenPipeError, ConnectionResetError, OSError):
+                            _progress("Device disconnected after config re-apply, will reconnect...")
+                            device_disconnected = True
                 except (BrokenPipeError, ConnectionResetError, OSError):
-                    _progress("Device disconnected after config re-apply, will reconnect...")
+                    _progress("Broken pipe during config re-apply, will reconnect...")
+                    config_set = True
                     device_disconnected = True
-            except (BrokenPipeError, ConnectionResetError, OSError):
-                _progress("Broken pipe during config re-apply, will reconnect...")
+                except Exception as reconfigure_error:
+                    errors.append(_format_exception_message("Failed to re-configure", reconfigure_error))
+            elif isinstance(e, (BrokenPipeError, ConnectionResetError, OSError)):
+                _progress("Broken pipe during config - device may be applying, will reconnect...")
                 config_set = True
                 device_disconnected = True
-            except Exception as e:
-                errors.append(f"Failed to re-configure: {e}")
-        except (BrokenPipeError, ConnectionResetError, OSError):
-            _progress("Broken pipe during config - device may be applying, will reconnect...")
-            config_set = True
-            device_disconnected = True
-        except Exception as e:
-            errors.append(f"Failed to configure: {e}")
+            else:
+                errors.append(_format_exception_message("Failed to configure", e))
 
         # Step 5: Install MDM enrollment profile (inside temp dir so keybag_path is valid)
         if mdm_url and config_set and mdm_mobileconfig:
-            mdm_mobileconfig_path = Path(mdm_mobileconfig)
-            if mdm_mobileconfig_path.exists():
-                _progress(f"Installing MDM enrollment profile...")
-                try:
-                    async with MobileConfigService(lockdown) as svc:
-                        await _maybe_await(svc.install_profile_silent(keybag_path, mdm_mobileconfig_path.read_bytes()))
-                    mdm_enrolled = True
-                    _progress(f"MDM enrollment profile installed")
-                except Exception as e:
-                    error_msg = f"MDM profile install failed: {e}"
-                    if fail_on_mdm_error:
-                        errors.append(error_msg)
-                    _progress(error_msg)
+            mdm_mobileconfig_path = _normalize_optional_path(mdm_mobileconfig)
+            if mdm_mobileconfig_path is not None and mdm_mobileconfig_path.exists():
+                _progress("Installing MDM enrollment profile...")
+                payload_bytes = mdm_mobileconfig_path.read_bytes()
+                max_attempts = 3
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        async with MobileConfigService(lockdown) as svc:
+                            await _maybe_await(svc.install_profile_silent(keybag_path, payload_bytes))
+                        mdm_enrolled = True
+                        _progress("MDM enrollment profile installed")
+                        break
+                    except Exception as e:
+                        error_msg = _format_mobileconfig_error("MDM profile install failed", e)
+                        if attempt < max_attempts and _is_transient_mobileconfig_network_error(e):
+                            _progress(f"{error_msg} Retrying shortly ({attempt}/{max_attempts})...")
+                            await asyncio.sleep(5)
+                            continue
+                        if fail_on_mdm_error:
+                            errors.append(error_msg)
+                        _progress(error_msg)
+                        break
             else:
-                errors.append(f"MDM mobileconfig not found: {mdm_mobileconfig}")
-                _progress(f"MDM mobileconfig not found: {mdm_mobileconfig}")
+                errors.append(f"MDM mobileconfig not found: {mdm_mobileconfig_path or mdm_mobileconfig}")
+                _progress(f"MDM mobileconfig not found: {redact_path(mdm_mobileconfig_path or mdm_mobileconfig)}")
         elif mdm_url and config_set:
-            _progress(f"MDM enrollment URL set in cloud config: {mdm_url}")
+            _progress(f"MDM enrollment URL set in cloud config: {redact_url(mdm_url)}")
             _progress("Device will enroll via Setup Assistant after reboot")
             if mdm_checkin_url:
-                _progress(f"Check-in URL: {mdm_checkin_url}")
+                _progress(f"Check-in URL: {redact_url(mdm_checkin_url)}")
             if mdm_topic:
-                _progress(f"MDM Topic: {mdm_topic}")
+                _progress(f"MDM Topic: {redact_org_identifier(mdm_topic)}")
             mdm_enrolled = True
 
     # Reconnect if device disconnected during config
@@ -482,7 +675,7 @@ async def do_supervised_pairing(
                 async with MobileConfigService(lockdown) as svc:
                     cloud_config = await _maybe_await(svc.get_cloud_configuration())
                     if isinstance(cloud_config, dict) and cloud_config.get("IsSupervised"):
-                        _progress(f"Supervision confirmed: {cloud_config.get('OrganizationName')}")
+                        _progress(f"Supervision confirmed: {redact_name(cloud_config.get('OrganizationName'))}")
                     else:
                         _progress("Supervision not yet confirmed, continuing with MDM install")
             except Exception as e:
@@ -738,14 +931,34 @@ def get_device_enrollment_state(udid: str) -> dict[str, Any]:
     """
     async def _get():
         create_using_usbmux = _get_create_using_usbmux()
+        MobileConfigService = _get_mobile_config_service()
         lockdown = await create_using_usbmux(serial=udid)
+        try:
+            async with MobileConfigService(lockdown) as svc:
+                cloud_config = await _maybe_await(svc.get_cloud_configuration())
+        except Exception:
+            cloud_config = None
+
+        activation_state = await _get_lockdown_value(lockdown, "ActivationState")
+        is_supervised = await _get_lockdown_value(lockdown, "IsSupervised")
+        cloud_config_applied = await _get_lockdown_value(lockdown, "CloudConfigurationWasApplied")
+        org_name = await _get_lockdown_value(lockdown, "OrganizationName")
+        org_magic = await _get_lockdown_value(lockdown, "OrganizationMagic")
+        is_mdm_managed = await _get_lockdown_value(lockdown, "WasMandatorilyUnpaired")
+
+        if isinstance(cloud_config, dict):
+            is_supervised = cloud_config.get("IsSupervised", is_supervised)
+            cloud_config_applied = cloud_config.get("ConfigurationWasApplied", cloud_config_applied)
+            org_name = cloud_config.get("OrganizationName", org_name)
+            org_magic = cloud_config.get("OrganizationMagic", org_magic)
+
         return {
-            "activation_state": await lockdown.get_value("ActivationState"),
-            "is_supervised": await lockdown.get_value("IsSupervised") or False,
-            "cloud_config_applied": await lockdown.get_value("CloudConfigurationWasApplied") or False,
-            "org_name": await lockdown.get_value("OrganizationName"),
-            "org_magic": await lockdown.get_value("OrganizationMagic"),
-            "is_mdm_managed": await lockdown.get_value("WasMandatorilyUnpaired") or False,
+            "activation_state": activation_state,
+            "is_supervised": bool(is_supervised),
+            "cloud_config_applied": bool(cloud_config_applied),
+            "org_name": org_name,
+            "org_magic": org_magic,
+            "is_mdm_managed": bool(is_mdm_managed),
         }
 
     try:

@@ -15,17 +15,10 @@ Run `ios-enroll --help` for all commands, or `ios-enroll version` for version in
 
 ## Installation
 
-### Homebrew Installation (Linux)
-
-```bash
-# Install dependencies via Homebrew
-brew install libimobiledevice
-```
-
 ### Manual Installation
 
 Requires:
-- Python 3.8+
+- Python 3.10+
 - pymobiledevice3 (primary device interaction library)
 - libimobiledevice (for basic device communication)
 
@@ -189,7 +182,7 @@ ios-enroll org show --name "My Org"
 ios-enroll org export --name "My Org" --path ./my_org.zip
 
 # Import organization (Apple Configurator .organization file)
-ios-enroll org import --path "Capital Candy Company Inc.organization"
+ios-enroll org import --path "Example Organization.organization"
 
 # Import from MDM mobileconfig
 ios-enroll org import --path profile.mobileconfig

@@ -470,7 +470,7 @@ ios-enroll org show --name "My Org"
 ios-enroll org export --name "My Org" --path ./my_org.zip
 
 # Import organization (Apple Configurator .organization file)
-ios-enroll org import --path "Capital Candy Company Inc.organization"
+ios-enroll org import --path "Example Organization.organization"
 
 # Import from MDM mobileconfig
 ios-enroll org import --path profile.mobileconfig

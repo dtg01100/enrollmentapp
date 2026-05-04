@@ -276,6 +276,84 @@ class TestSupervisedPairing:
             svc.install_profile.assert_awaited_once()
             assert result.wifi_installed is True
 
+    def test_make_supervised_normalizes_quoted_wifi_mobileconfig_path(self, mock_pymobiledevice3):
+        from apple_device_cli.enrollment import supervised
+
+        lockdown = MagicMock()
+        mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
+
+        activation_svc = MagicMock()
+        activation_svc.state = AsyncMock(return_value="Activated")
+        activation_svc.activate = AsyncMock()
+        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = activation_svc
+
+        svc = AsyncMock()
+        svc.install_profile = AsyncMock()
+        svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
+        svc.__aenter__.return_value = svc
+        svc.__aexit__.return_value = False
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cert_path = Path(tmpdir) / "cert.der"
+            key_path = Path(tmpdir) / "key.der"
+            wifi_config_path = Path(tmpdir) / "wifi.mobileconfig"
+            wifi_config_path.write_bytes(b"fake-mobileconfig-content")
+
+            private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            subject = issuer = x509.Name([
+                x509.NameAttribute(NameOID.COMMON_NAME, "Test Org"),
+            ])
+            certificate = (
+                x509.CertificateBuilder()
+                .subject_name(subject)
+                .issuer_name(issuer)
+                .public_key(private_key.public_key())
+                .serial_number(1)
+                .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
+                .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365))
+                .sign(private_key, hashes.SHA256())
+            )
+
+            cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.DER))
+            key_path.write_bytes(
+                private_key.private_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                )
+            )
+
+            with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc):
+                result = supervised.make_supervised(
+                    str(cert_path),
+                    str(key_path),
+                    "Test Org",
+                    None,
+                    ["passcode"],
+                    None,
+                    None,
+                    None,
+                    "WPA",
+                    None,
+                    None,
+                    False,
+                    f" '{wifi_config_path}' ",
+                )
+
+        svc.install_profile.assert_awaited_once()
+        assert result.wifi_installed is True
+
+    def test_mobileconfig_error_formatter_extracts_concise_network_error(self, mock_pymobiledevice3):
+        from apple_device_cli.enrollment import supervised
+
+        error = Exception(
+            "invalid response {'ErrorChain': [{'ErrorCode': 4001, 'LocalizedDescription': 'Profile Installation Failed'}, {'ErrorCode': -1009, 'LocalizedDescription': 'The Internet connection appears to be offline.'}], 'Status': 'Error'}"
+        )
+
+        formatted = supervised._format_mobileconfig_error("MDM profile install failed", error)
+
+        assert formatted == "MDM profile install failed: The Internet connection appears to be offline."
+
 
 class TestActivation:
     def test_module_imports(self, mock_pymobiledevice3):

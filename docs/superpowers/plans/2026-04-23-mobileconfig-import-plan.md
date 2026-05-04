@@ -205,9 +205,9 @@ print(f'Description: {org.mdm_description}')
 
 Expected output:
 ```
-Imported: Capital Candy Company Profile
+Imported: Example Organization Profile
 MDM URL: https://a.simplemdm.com/mdm
-CheckIn URL: https://a.simplemdm.com/checkin/dbf81daf5bd091d48b011e352bbd50c6b7bc4c02ca789e49b5720c98fb4cd0de
+CheckIn URL: https://mdm.example.com/checkin/…
 MDM Topic: com.apple.mgmt.External.205e2f7b-f2e8-4a33-8f11-097496bec56f
 Identity Ref: F459CDF1-3A0B-40FF-8AB0-5C3961DEFF6A
 Description: Elegant Apple device management with SimpleMDM
@@ -232,7 +232,7 @@ except ValueError as e:
 "
 ```
 
-Expected: `Correctly raised: Organization 'Capital Candy Company Profile' already exists`
+Expected: `Correctly raised: Organization 'Example Organization Profile' already exists`
 
 - [ ] **Step 6: Test missing PayloadOrganization rejection**
 
@@ -298,9 +298,9 @@ def make_signed_mobileconfig(payload: dict) -> Path:
 def test_import_mobileconfig_extracts_mdm_fields():
     mgr = OrganizationManager(Path(tempfile.mkdtemp()))
     org = mgr.import_mobileconfig('SimpleMDM - Default Group.mobileconfig')
-    assert org.name == 'Capital Candy Company Profile'
+    assert org.name == 'Example Organization Profile'
     assert org.mdm_url == 'https://a.simplemdm.com/mdm'
-    assert org.checkin_url == 'https://a.simplemdm.com/checkin/dbf81daf5bd091d48b011e352bbd50c6b7bc4c02ca789e49b5720c98fb4cd0de'
+    assert org.checkin_url == 'https://mdm.example.com/checkin/…'
     assert org.mdm_topic == 'com.apple.mgmt.External.205e2f7b-f2e8-4a33-8f11-097496bec56f'
     assert org.identity_ref == 'F459CDF1-3A0B-40FF-8AB0-5C3961DEFF6A'
     assert org.mdm_description == 'Elegant Apple device management with SimpleMDM'

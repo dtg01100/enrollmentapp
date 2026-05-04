@@ -85,7 +85,7 @@ class OrganizationManager:
 - Add unit test: import valid SimpleMDM mobileconfig → org has correct MDM fields
 - Add unit test: import when org already exists → raises `ValueError`
 - Add unit test: import file with missing PayloadOrganization → raises `ValueError`
-- The existing `Capital Candy Company Inc.organization` test data does not have MDM fields, so a new `.mobileconfig` fixture file is needed for testing
+- The existing `Example Organization.organization` test data does not have MDM fields, so a new `.mobileconfig` fixture file is needed for testing
 
 ## Out of Scope
 

@@ -422,6 +422,7 @@ def interactive_enroll():
             wifi_password=wifi_password,
             wifi_encryption=wifi_encryption,
             wifi_config=wifi_config,
+            mdm_mobileconfig=org.mdm_mobileconfig_path,
             udid=selected.udid,
             progress_callback=progress_callback,
         )

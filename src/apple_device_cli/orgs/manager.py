@@ -31,6 +31,7 @@ class Organization:
     cert_path: str | None = None
     key_path: str | None = None
     wifi_config_path: str | None = None  # Path to WiFi mobileconfig file
+    mdm_mobileconfig_path: str | None = None  # Path to MDM enrollment mobileconfig
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
     def to_dict(self) -> dict:
@@ -48,6 +49,7 @@ class Organization:
             "cert_path": str(self.cert_path) if self.cert_path else None,
             "key_path": str(self.key_path) if self.key_path else None,
             "wifi_config_path": str(self.wifi_config_path) if self.wifi_config_path else None,
+            "mdm_mobileconfig_path": str(self.mdm_mobileconfig_path) if self.mdm_mobileconfig_path else None,
             "created_at": self.created_at,
         }
 
@@ -67,6 +69,7 @@ class Organization:
             cert_path=data.get("cert_path"),
             key_path=data.get("key_path"),
             wifi_config_path=data.get("wifi_config_path"),
+            mdm_mobileconfig_path=data.get("mdm_mobileconfig_path"),
             created_at=data.get("created_at") or datetime.now().isoformat(),
         )
 
@@ -334,7 +337,12 @@ class OrganizationManager:
             mdm_description=payload.get('PayloadDescription'),
             cert_path=str(dest_dir / "cert.der"),
             key_path=str(dest_dir / "key.der"),
+            wifi_config_path=str(dest_dir / "wifi.mobileconfig"),
         )
+
+        # Save mobileconfig file for MDM enrollment
+        with open(dest_dir / "mdm.mobileconfig", "wb") as f:
+            f.write(result.stdout)
 
         org.save(org_dir=dest_dir, skip_copy=True)
         return org

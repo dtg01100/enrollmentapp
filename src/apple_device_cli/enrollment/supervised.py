@@ -251,6 +251,7 @@ async def do_supervised_pairing(
     mdm_topic: str | None = None,
     mdm_unremovable: bool = False,
     wifi_config: str | Path | None = None,
+    mdm_mobileconfig: str | Path | None = None,
     udid: str | None = None,
     fail_on_mdm_error: bool = True,
     progress_callback: Callable[[str], None] | None = None,
@@ -443,6 +444,33 @@ async def do_supervised_pairing(
         except Exception as e:
             errors.append(f"Failed to configure: {e}")
 
+        # Step 5: Install MDM enrollment profile (inside temp dir so keybag_path is valid)
+        if mdm_url and config_set and mdm_mobileconfig:
+            mdm_mobileconfig_path = Path(mdm_mobileconfig)
+            if mdm_mobileconfig_path.exists():
+                _progress(f"Installing MDM enrollment profile...")
+                try:
+                    async with MobileConfigService(lockdown) as svc:
+                        await _maybe_await(svc.install_profile_silent(keybag_path, mdm_mobileconfig_path.read_bytes()))
+                    mdm_enrolled = True
+                    _progress(f"MDM enrollment profile installed")
+                except Exception as e:
+                    error_msg = f"MDM profile install failed: {e}"
+                    if fail_on_mdm_error:
+                        errors.append(error_msg)
+                    _progress(error_msg)
+            else:
+                errors.append(f"MDM mobileconfig not found: {mdm_mobileconfig}")
+                _progress(f"MDM mobileconfig not found: {mdm_mobileconfig}")
+        elif mdm_url and config_set:
+            _progress(f"MDM enrollment URL set in cloud config: {mdm_url}")
+            _progress("Device will enroll via Setup Assistant after reboot")
+            if mdm_checkin_url:
+                _progress(f"Check-in URL: {mdm_checkin_url}")
+            if mdm_topic:
+                _progress(f"MDM Topic: {mdm_topic}")
+            mdm_enrolled = True
+
     # Reconnect if device disconnected during config
     if device_disconnected and config_set:
         _progress("Waiting for device to reconnect after supervision...")
@@ -463,20 +491,6 @@ async def do_supervised_pairing(
         else:
             errors.append("Device did not reconnect within timeout after supervision")
             _progress("Device did not reconnect within timeout")
-
-    # Step 5: Store MDM enrollment profile for post-setup installation
-    # store_profile queues the profile for installation by Setup Assistant after the
-    # device is supervised. This is the correct mechanism for MDM enrollment during
-    # supervised preparation — install_profile_silent fails with "invalid access rights"
-    # because MDM profiles require client identity certificates (SCEP/ACME).
-    if mdm_url and config_set:
-        _progress(f"MDM enrollment URL set in cloud config: {mdm_url}")
-        _progress("Device will enroll via Setup Assistant after reboot")
-        if mdm_checkin_url:
-            _progress(f"Check-in URL: {mdm_checkin_url}")
-        if mdm_topic:
-            _progress(f"MDM Topic: {mdm_topic}")
-        mdm_enrolled = True
 
     # Step 6: Verify final state
     _progress("Verifying configuration...")
@@ -528,6 +542,7 @@ def make_supervised(
     mdm_topic: str | None = None,
     mdm_unremovable: bool = False,
     wifi_config: str | Path | None = None,
+    mdm_mobileconfig: str | Path | None = None,
     udid: str | None = None,
     fail_on_mdm_error: bool = True,
     progress_callback: Callable[[str], None] | None = None,
@@ -574,6 +589,7 @@ def make_supervised(
                 mdm_topic=mdm_topic,
                 mdm_unremovable=mdm_unremovable,
                 wifi_config=wifi_config,
+                mdm_mobileconfig=mdm_mobileconfig,
                 udid=udid,
                 fail_on_mdm_error=fail_on_mdm_error,
                 progress_callback=progress_callback,

@@ -766,6 +766,7 @@ def make_supervised(
     Raises:
         EnrollmentError: If supervised pairing fails (except CloudConfigurationAlreadyPresent)
     """
+    CloudConfigurationAlreadyPresentError = _get_cloud_configuration_already_present_error()
     try:
         return asyncio.run(
             do_supervised_pairing(

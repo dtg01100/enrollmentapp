@@ -117,7 +117,7 @@ class ReenrollmentFlow(EnrollmentFlow):
             return (False, EnrollmentResult(
                 success=False,
                 device_udid=udid,
-                errors=[f"Failed to erase cloud config"],
+                errors=["Failed to erase cloud config"],
             ))
         
         if progress_callback:

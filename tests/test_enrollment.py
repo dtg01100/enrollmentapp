@@ -139,7 +139,9 @@ class TestSupervisedPairing:
         assert cloud_config["MDMServerURL"] == "https://mdm.example.com/mdm"
         assert result.success is True
         assert result.mdm_enrolled is True
-        svc.store_profile.assert_awaited_once()
+        # MDM enrollment uses cloud config (MDMServerURL) - the device enrolls via SCEP
+        # on first boot through Setup Assistant, so store_profile is not called
+        svc.store_profile.assert_not_called()
 
     def test_make_supervised_installs_wifi_profile(self, mock_pymobiledevice3):
         from apple_device_cli.enrollment import supervised

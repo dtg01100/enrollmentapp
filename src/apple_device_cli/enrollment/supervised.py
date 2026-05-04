@@ -470,63 +470,13 @@ async def do_supervised_pairing(
     # supervised preparation — install_profile_silent fails with "invalid access rights"
     # because MDM profiles require client identity certificates (SCEP/ACME).
     if mdm_url and config_set:
-        _progress(f"Storing MDM enrollment profile for post-setup installation...")
-        mdm_profile_plist = plistlib.dumps({
-            "PayloadContent": [{
-                "PayloadType": "com.apple.mdm",
-                "PayloadIdentifier": "com.apple.mdm.enrollment",
-                "PayloadUUID": str(uuid4()),
-                "ServerURL": mdm_url,
-                "CheckInURL": mdm_checkin_url or "",
-                "Topic": mdm_topic or "",
-                "SignalingMessage": "MDM-Enroll",
-            }],
-            "PayloadDisplayName": "MDM Enrollment",
-            "PayloadIdentifier": "com.apple.mdm.enrollment.profile",
-            "PayloadRemovalDisallowed": mdm_unremovable,
-            "PayloadType": "Configuration",
-            "PayloadUUID": str(uuid4()),
-            "PayloadVersion": 1,
-        })
-
-        try:
-            async with MobileConfigService(lockdown) as svc:
-                await _maybe_await(svc.store_profile(mdm_profile_plist))
-                mdm_enrolled = True
-                _progress(f"MDM profile stored for: {mdm_url}")
-                if mdm_checkin_url:
-                    _progress(f"Check-in URL: {mdm_checkin_url}")
-                if mdm_topic:
-                    _progress(f"MDM Topic: {mdm_topic}")
-        except (BrokenPipeError, ConnectionResetError, OSError):
-            _progress("Session stale before MDM store, reconnecting...")
-            fresh_lockdown = await _wait_for_device_reconnect(timeout_ms=30000, udid=device_udid)
-            if fresh_lockdown is not None:
-                lockdown = fresh_lockdown
-                try:
-                    async with MobileConfigService(lockdown) as svc:
-                        await _maybe_await(svc.store_profile(mdm_profile_plist))
-                        mdm_enrolled = True
-                        _progress(f"MDM profile stored (after reconnect) for: {mdm_url}")
-                except Exception as e:
-                    error_msg = f"MDM profile store failed after reconnect: {e}"
-                    if fail_on_mdm_error:
-                        errors.append(error_msg)
-                    else:
-                        _progress(error_msg)
-            else:
-                error_msg = "Could not reconnect for MDM profile store"
-                if fail_on_mdm_error:
-                    errors.append(error_msg)
-                else:
-                    _progress(error_msg)
-        except Exception as e:
-            error_msg = f"MDM profile store failed: {e}"
-            if fail_on_mdm_error:
-                errors.append(error_msg)
-            else:
-                _progress(error_msg)
-                _progress("MDM URL is in cloud config — device may still enroll via Setup Assistant")
+        _progress(f"MDM enrollment URL set in cloud config: {mdm_url}")
+        _progress("Device will enroll via Setup Assistant after reboot")
+        if mdm_checkin_url:
+            _progress(f"Check-in URL: {mdm_checkin_url}")
+        if mdm_topic:
+            _progress(f"MDM Topic: {mdm_topic}")
+        mdm_enrolled = True
 
     # Step 6: Verify final state
     _progress("Verifying configuration...")

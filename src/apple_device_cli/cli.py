@@ -21,6 +21,7 @@ from apple_device_cli.restore.erase import (
     restore_device,
     update_device,
     InsufficientSpaceError,
+    RestoreError,
 )
 from apple_device_cli.orgs.manager import OrganizationManager, Organization
 from apple_device_cli.orgs.identity import generate_org_identity, load_cert_info
@@ -170,58 +171,8 @@ def interactive_enroll():
         if checkin_url:
             typer.echo(f"Check-in URL: {checkin_url}")
 
-    # Step 3: WiFi Configuration (for headless enrollment)
-    typer.echo("\nStep 3: WiFi Configuration")
-    typer.secho("-" * 40)
-    # Pre-check if selected org has WiFi config for default behavior
-    org_wifi_available = org and org.wifi_config_path and Path(org.wifi_config_path).exists()
-    typer.echo("Configure WiFi for headless enrollment (device will connect to WiFi before Setup Assistant):")
-    if org_wifi_available:
-        typer.echo("  [1] Use org WiFi config ({})".format(Path(org.wifi_config_path).name))
-        typer.echo("  [2] Skip (WiFi not needed)")
-        typer.echo("  [3] Enter WiFi credentials")
-        typer.echo("  [4] Use different WiFi mobileconfig file")
-        default_choice = "1"
-    else:
-        typer.echo("  [1] Skip (WiFi not needed)")
-        typer.echo("  [2] Enter WiFi credentials")
-        typer.echo("  [3] Use WiFi mobileconfig file")
-        default_choice = "1"
-    wifi_choice = typer.prompt("Select option", default=default_choice)
-
-    wifi_ssid = None
-    wifi_password = None
-    wifi_encryption = "WPA"
-    wifi_config = None
-
-    if org_wifi_available and wifi_choice == "1":
-        wifi_config = org.wifi_config_path
-        typer.echo(f"\nUsing org WiFi config: {wifi_config}")
-    elif wifi_choice == "1" or (not org_wifi_available and wifi_choice == "2"):
-        # No WiFi config
-        pass
-    elif (org_wifi_available and wifi_choice == "3") or (not org_wifi_available and wifi_choice == "2"):
-        wifi_ssid = typer.prompt("  WiFi SSID (network name)")
-        wifi_password = typer.prompt("  WiFi password", hide_input=True)
-        typer.echo("  Encryption type:")
-        typer.echo("    [1] WPA/WPA2 (recommended)")
-        typer.echo("    [2] WEP")
-        typer.echo("    [3] None (open network)")
-        enc_choice = typer.prompt("Select option", default="1")
-        if enc_choice == "2":
-            wifi_encryption = "WEP"
-        elif enc_choice == "3":
-            wifi_encryption = "None"
-        typer.echo(f"\nWiFi: {wifi_ssid} ({wifi_encryption})")
-    elif (org_wifi_available and wifi_choice == "4") or (not org_wifi_available and wifi_choice == "3"):
-        wifi_config = typer.prompt("  Path to WiFi mobileconfig file")
-        typer.echo(f"\nWiFi config: {wifi_config}")
-
-    if wifi_config:
-        typer.echo(f"WiFi config: {wifi_config}")
-
-    # Step 4: Organization Configuration
-    typer.echo("\nStep 4: Organization & Supervision Identity")
+    # Step 3: Organization Configuration (before WiFi - we need org for WiFi config)
+    typer.echo("\nStep 3: Organization & Supervision Identity")
     typer.secho("-" * 40)
     manager = OrganizationManager()
     orgs = manager.list_orgs()
@@ -298,20 +249,62 @@ def interactive_enroll():
                 org.checkin_url = checkin_url
                 org.mdm_topic = mdm_topic
                 manager.save_org(org, overwrite=True)
-                typer.secho(f"Updated MDM settings for '{org.name}'", fg=typer.colors.GREEN)
+            typer.echo(f"Using organization: {org.name}")
         except (ValueError, IndexError) as exc:
-            typer.secho("Invalid selection", fg=typer.colors.RED)
+            typer.secho("Invalid organization selection", fg=typer.colors.RED)
             raise typer.Exit(1) from exc
 
-    if not org or not org.cert_path or not org.key_path:
-        typer.secho(f"\nOrganization '{org.name if org else 'unknown'}' missing cert/key.", fg=typer.colors.RED)
-        raise typer.Exit(1)
+    # Step 4: WiFi Configuration (now we have org to check for WiFi config)
+    typer.echo("\nStep 4: WiFi Configuration")
+    typer.secho("-" * 40)
+    # Pre-check if selected org has WiFi config for default behavior
+    org_wifi_available = org and org.wifi_config_path and Path(org.wifi_config_path).expanduser().exists()
+    typer.echo("Configure WiFi for headless enrollment (device will connect to WiFi before Setup Assistant):")
+    if org_wifi_available:
+        typer.echo("  [1] Use org WiFi config ({})".format(Path(org.wifi_config_path).name))
+        typer.echo("  [2] Skip (WiFi not needed)")
+        typer.echo("  [3] Enter WiFi credentials")
+        typer.echo("  [4] Use different WiFi mobileconfig file")
+        default_choice = "1"
+    else:
+        typer.echo("  [1] Skip (WiFi not needed)")
+        typer.echo("  [2] Enter WiFi credentials")
+        typer.echo("  [3] Use WiFi mobileconfig file")
+        default_choice = "1"
+    wifi_choice = typer.prompt("Select option", default=default_choice)
 
-    typer.echo(f"\nOrganization: {org.name}")
-    typer.echo(f"MDM URL: {org.mdm_url or 'Not set'}")
+    wifi_ssid = None
+    wifi_password = None
+    wifi_encryption = "WPA"
+    wifi_config = None
 
-    # Step 4: Skip panes selection
-    typer.echo("\nStep 4: Setup Assistant Skip Panes")
+    if org_wifi_available and wifi_choice == "1":
+        wifi_config = org.wifi_config_path
+        typer.echo(f"\nUsing org WiFi config: {wifi_config}")
+    elif wifi_choice == "1":
+        pass
+    elif (org_wifi_available and wifi_choice == "3") or (not org_wifi_available and wifi_choice == "2"):
+        wifi_ssid = typer.prompt("  WiFi SSID (network name)")
+        wifi_password = typer.prompt("  WiFi password", hide_input=True)
+        typer.echo("  Encryption type:")
+        typer.echo("    [1] WPA/WPA2 (recommended)")
+        typer.echo("    [2] WEP")
+        typer.echo("    [3] None (open network)")
+        enc_choice = typer.prompt("Select option", default="1")
+        if enc_choice == "2":
+            wifi_encryption = "WEP"
+        elif enc_choice == "3":
+            wifi_encryption = "None"
+        typer.echo(f"\nWiFi: {wifi_ssid} ({wifi_encryption})")
+    elif (org_wifi_available and wifi_choice == "4") or (not org_wifi_available and wifi_choice == "3"):
+        wifi_config = typer.prompt("  Path to WiFi mobileconfig file")
+        typer.echo(f"\nWiFi config: {wifi_config}")
+
+    if wifi_config:
+        typer.echo(f"WiFi config: {wifi_config}")
+
+    # Step 5: Skip Panes
+    typer.echo("\nStep 5: Setup Assistant Skip Panes")
     typer.secho("-" * 40)
     typer.echo("Select skip panes preset:")
     typer.echo("  [1] minimal - Skip most panes for unattended setup")
@@ -338,8 +331,7 @@ def interactive_enroll():
 
     typer.echo(f"\nSkipping {len(skip_list)} panes: {', '.join(skip_list[:5])}{'...' if len(skip_list) > 5 else ''}")
 
-    # Step 5: Erase if needed
-    typer.echo("\nStep 5: Device Preparation")
+    # Step 6: Device Preparation
     typer.secho("-" * 40)
 
     # Get full device state for smart erase decision
@@ -407,8 +399,8 @@ def interactive_enroll():
         time.sleep(60)
         typer.secho("Device ready for supervised pairing.", fg=typer.colors.GREEN)
 
-    # Step 6: Apply configuration
-    typer.echo("\nStep 6: Apply Configuration")
+    # Step 7: Apply configuration
+    typer.echo("\nStep 7: Apply Configuration")
     typer.secho("-" * 40)
     typer.echo("Enrolling device as supervised...")
 
@@ -441,16 +433,17 @@ def interactive_enroll():
         typer.secho("=" * 50, fg=typer.colors.GREEN, bold=True)
         typer.echo(f"\n  Organization: {org.name}")
         typer.echo(f"  Device UDID: {result.device_udid}")
-        typer.echo(f"  Supervised: {result.supervised}")
-        typer.echo(f"  MDM Enrolled: {result.mdm_enrolled}")
+        typer.echo(f" Supervised: {result.supervised}")
+        typer.echo(f" MDM Enrolled: {result.mdm_enrolled}")
+        typer.echo(f" WiFi Installed: {result.wifi_installed}")
         if org.mdm_url:
             typer.echo(f"  MDM Server URL: {org.mdm_url}")
         if result.cloud_config and result.cloud_config.get("MDMServerURL"):
             typer.echo(f"  Cloud Config MDM URL: {result.cloud_config['MDMServerURL']}")
         typer.echo(f"  Skip panes: {len(skip_list)} configured")
         if not result.mdm_enrolled and org.mdm_url:
-            typer.secho("\n  NOTE: Device will enroll with MDM on first boot via Setup Assistant.", fg=typer.colors.CYAN)
-            typer.echo("  Connect device to power and let it complete Setup Assistant.")
+            typer.secho("\n NOTE: MDM profile stored for post-setup installation.", fg=typer.colors.CYAN)
+            typer.echo(" Device will install MDM profile during Setup Assistant.")
         if result.errors:
             typer.secho("\n  Errors:", fg=typer.colors.YELLOW)
             for error in result.errors:
@@ -804,9 +797,13 @@ def device_erase(
         )
 
         current_work_dir = work_dir
+
+        def erase_progress(msg: str) -> None:
+            typer.echo(f"  {msg}")
+
         while True:
             try:
-                erase_device(device.udid, device.ecid or None, ipsw=selected_ipsw, work_dir=current_work_dir)
+                erase_device(device.udid, device.ecid or None, ipsw=selected_ipsw, work_dir=current_work_dir, progress_callback=erase_progress)
                 break
             except InsufficientSpaceError as e:
                 if current_work_dir:
@@ -816,12 +813,19 @@ def device_erase(
                     current_work_dir = None
                 else:
                     current_work_dir = str(new_dir)
+            except RestoreError as e:
+                typer.secho(f"Erase failed: {e}", fg=typer.colors.RED)
+                return
 
         typer.secho("Erase completed", fg=typer.colors.GREEN)
     except typer.Abort:
         typer.secho("Erase cancelled.", fg=typer.colors.YELLOW)
+    except RestoreError as e:
+        typer.secho(f"Erase failed: {e}", fg=typer.colors.RED)
     except AppleDeviceError as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED)
+    except Exception as e:
+        typer.secho(f"Unexpected error: {e}", fg=typer.colors.RED)
 
 
 @device_app.command("update")
@@ -916,9 +920,13 @@ def device_update(
         )
 
         current_work_dir = work_dir
+
+        def update_progress(msg: str) -> None:
+            typer.echo(f"  {msg}")
+
         while True:
             try:
-                update_device(device.udid, device.ecid or None, ipsw=selected_ipsw, work_dir=current_work_dir)
+                update_device(device.udid, device.ecid or None, ipsw=selected_ipsw, work_dir=current_work_dir, progress_callback=update_progress)
                 break
             except InsufficientSpaceError as e:
                 if current_work_dir:
@@ -928,6 +936,9 @@ def device_update(
                     current_work_dir = None
                 else:
                     current_work_dir = str(new_dir)
+            except RestoreError as e:
+                typer.secho(f"Update failed: {e}", fg=typer.colors.RED)
+                return
 
         typer.echo()
         typer.secho("Step 3/3  Update complete.", fg=typer.colors.GREEN, bold=True)
@@ -936,12 +947,14 @@ def device_update(
         typer.secho("Update cancelled.", fg=typer.colors.YELLOW)
     except AppleDeviceError as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED)
+    except Exception as e:
+        typer.secho(f"Unexpected error: {e}", fg=typer.colors.RED)
 
 
 @device_app.command("restore")
 def device_restore(
     udid: str = typer.Option(None, "--udid"),
-    ipsw: str = typer.Option(..., "--ipsw"),
+    ipsw: str = typer.Option(None, "--ipsw"),
     enter_recovery: bool = typer.Option(True, "--enter-recovery/--no-enter-recovery"),
     work_dir: str = typer.Option(None, "--work-dir", help="Directory to store IPSW file (default: current directory)"),
 ):
@@ -950,42 +963,49 @@ def device_restore(
     if device is None:
         typer.secho("No device selected", fg=typer.colors.RED)
         return
-    try:
-        typer.echo(f"Selected device: {device.device_name} ({device.udid})")
-        if enter_recovery:
-            typer.secho(
-                "Placing device into Recovery mode before restore...",
-                fg=typer.colors.YELLOW,
-            )
-            if not wait_for_udid_in_usbmux(device.udid, timeout=60):
-                raise AppleDeviceError(
-                    "Device is not visible in normal mode via usbmux. Unlock the iPad, accept Trust, and reconnect USB."
-                )
-            typer.secho("Verifying trust/pairing with device...", fg=typer.colors.YELLOW)
-            ensure_device_pairing(device.udid)
-            enter_recovery_mode(device.udid, device.ecid or None)
+
+    if not ipsw:
+        ipsw = typer.prompt("IPSW path or URL (required)")
+        if not ipsw:
+            typer.secho("Restore cancelled: IPSW path required", fg=typer.colors.YELLOW)
+            return
+
+    typer.echo(f"Selected device: {device.device_name} ({device.udid})")
+    if enter_recovery:
         typer.secho(
-            "Starting restore. pymobiledevice3 output will stream live; the device may reboot or enter Recovery mode.",
+            "Placing device into Recovery mode before restore...",
             fg=typer.colors.YELLOW,
         )
+        if not wait_for_udid_in_usbmux(device.udid, timeout=60):
+            raise AppleDeviceError(
+                "Device is not visible in normal mode via usbmux. Unlock the iPad, accept Trust, and reconnect USB."
+            )
+        typer.secho("Verifying trust/pairing with device...", fg=typer.colors.YELLOW)
+        ensure_device_pairing(device.udid)
+        enter_recovery_mode(device.udid, device.ecid or None)
+    typer.secho(
+        "Starting restore. pymobiledevice3 output will stream live; the device may reboot or enter Recovery mode.",
+        fg=typer.colors.YELLOW,
+    )
 
-        current_work_dir = work_dir
-        while True:
-            try:
-                restore_device(device.udid, ipsw, device.ecid or None, work_dir=current_work_dir)
-                break
-            except InsufficientSpaceError as e:
-                if current_work_dir:
-                    typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
-                new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
-                if new_dir is None:
-                    current_work_dir = None
-                else:
-                    current_work_dir = str(new_dir)
+    current_work_dir = work_dir
+    while True:
+        try:
+            restore_device(device.udid, ipsw, device.ecid or None, work_dir=current_work_dir, progress_callback=lambda msg: typer.echo(f"  {msg}"))
+            break
+        except InsufficientSpaceError as e:
+            if current_work_dir:
+                typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
+            new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
+            if new_dir is None:
+                current_work_dir = None
+            else:
+                current_work_dir = str(new_dir)
+        except RestoreError as e:
+            typer.secho(f"Restore failed: {e}", fg=typer.colors.RED)
+            return
 
-        typer.secho("Restore completed", fg=typer.colors.GREEN)
-    except AppleDeviceError as e:
-        typer.secho(f"Error: {e}", fg=typer.colors.RED)
+    typer.secho("Restore completed", fg=typer.colors.GREEN)
 
 
 @device_app.command("enter-recovery")
@@ -1407,9 +1427,10 @@ def enroll_make_supervised(
         )
         if result.success:
             typer.secho("Device is now supervised", fg=typer.colors.GREEN)
-            typer.echo(f"  UDID: {result.device_udid}")
-            typer.echo(f"  Supervised: {result.supervised}")
-            typer.echo(f"  MDM Enrolled: {result.mdm_enrolled}")
+            typer.echo(f" UDID: {result.device_udid}")
+            typer.echo(f" Supervised: {result.supervised}")
+            typer.echo(f" MDM Enrolled: {result.mdm_enrolled}")
+            typer.echo(f" WiFi Installed: {result.wifi_installed}")
         else:
             typer.secho("Enrollment completed with errors:", fg=typer.colors.YELLOW)
             for error in result.errors:
@@ -1493,7 +1514,7 @@ def enroll_status(
 
 @enroll_app.command("validate")
 def enroll_validate(
-    org_name: str = typer.Option(..., "--org-name"),
+    org_name: str = typer.Option(None, "--org-name"),
     mdm_url: str = typer.Option(None, "--mdm-url"),
     check_mdm: bool = typer.Option(False, "--check-mdm", help="Verify MDM server is reachable"),
 ):
@@ -1502,6 +1523,12 @@ def enroll_validate(
     Checks that the organization exists with valid cert/key and optionally
     verifies the MDM server is reachable.
     """
+    if not org_name:
+        org_name = typer.prompt("Organization name (required)")
+        if not org_name:
+            typer.secho("Validation cancelled: organization name required", fg=typer.colors.YELLOW)
+            return
+
     from apple_device_cli.enrollment.supervised import validate_enrollment_prerequisites
 
     manager = OrganizationManager()

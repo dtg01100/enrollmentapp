@@ -117,13 +117,26 @@ def test_resolve_skip_panes_multiple_invalid():
 
 
 def test_presets_minimal_contains_only_expected():
-    """minimal preset should contain exactly restore-completed and update-completed."""
-    assert PRESETS["minimal"] == ["restore-completed", "update-completed"]
+    """minimal preset should skip the first panes and post-restore/update panes."""
+    expected = {
+        "language", "region", "appearance", "language-and-locale", "express-language",
+        "restore-completed", "update-completed",
+    }
+    assert set(PRESETS["minimal"]) == expected
 
 
 def test_presets_standard_contains_expected_items():
     """standard preset should contain expected skip panes."""
-    expected = {"restore-completed", "update-completed", "appleid", "passcode", "siri", "location", "home-button"}
+    expected = {
+        "restore-completed", "update-completed",
+        "appleid", "passcode", "siri",
+        "location", "home-button", "tos",
+        "touchid", "apple-pay", "screentime",
+        "diagnostics", "software-update",
+        "privacy", "onboarding",
+        "watch-migration", "registration",
+        "cloud-storage", "device-to-device-migration",
+    }
     assert set(PRESETS["standard"]) == expected
 
 
@@ -135,4 +148,4 @@ def test_presets_all_contains_all_valid():
 def test_valid_panes_count():
     """VALID_PANES should contain expected number of panes."""
     # This is a regression test - if panes are added/removed, this test will catch it
-    assert len(VALID_PANES) == 44 # Current count
+    assert len(VALID_PANES) == 66

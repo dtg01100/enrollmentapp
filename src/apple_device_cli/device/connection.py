@@ -51,13 +51,20 @@ def get_device_info(udid: str) -> DeviceInfo | None:
 async def _get_device_info_async(udid: str) -> DeviceInfo | None:
     """Get device info using lockdown service."""
     try:
-        lockdown = await create_using_usbmux(serial=udid)
+        # Try without serial first (works when only one device connected)
+        try:
+            lockdown = await create_using_usbmux()
+            actual_udid = getattr(lockdown, 'udid', None) or udid
+        except Exception:
+            # Fall back to serial when multiple devices might be connected
+            lockdown = await create_using_usbmux(serial=udid)
+            actual_udid = udid
         vals = lockdown.all_values
         # UniqueChipID is the ECID (hex string needed by pymobiledevice3 restore)
         unique_chip_id = vals.get("UniqueChipID", "")
         ecid = hex(unique_chip_id) if isinstance(unique_chip_id, int) else str(unique_chip_id)
         return DeviceInfo(
-            udid=udid,
+            udid=actual_udid,
             device_name=vals.get("DeviceName", "Unknown"),
             device_type=vals.get("ProductType", "Unknown"),
             build_version=vals.get("BuildVersion", "Unknown"),
@@ -115,7 +122,7 @@ def ensure_device_pairing(udid: str, timeout: int = 45) -> None:
     """
     cmd = [sys.executable, "-m", "pymobiledevice3", "lockdown", "pair", "--udid", udid]
     try:
-        result = subprocess.run(cmd, text=True, timeout=timeout, check=False)
+        result = subprocess.run(cmd, text=True, timeout=timeout, check=False, capture_output=True)
     except subprocess.TimeoutExpired:
         # Best effort only: pairing may not be required on already-trusted hosts.
         print(
@@ -125,8 +132,12 @@ def ensure_device_pairing(udid: str, timeout: int = 45) -> None:
         return
     if result.returncode != 0:
         # Best effort only: proceed and let the next step surface actionable errors.
+        stderr = result.stderr.strip() if result.stderr else ""
+        msg = f"pairing check failed (rc={result.returncode})"
+        if stderr:
+            msg += f": {stderr}"
         print(
-            "Warning: pairing check failed. Continuing; if prompted on device, unlock and tap Trust.",
+            f"Warning: {msg}. Continuing; if prompted on device, unlock and tap Trust.",
             file=sys.stderr,
         )
 

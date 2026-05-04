@@ -167,12 +167,13 @@ def _download_ipsw(url: str, timeout: int = 600, work_dir: str | Path | None = N
         raise RestoreError(f"Failed to download IPSW from {url}: {e}") from e
 
 
-def _ensure_ipsw_local(ipsw: str | Path, work_dir: str | Path | None = None) -> Path:
+def _ensure_ipsw_local(ipsw: str | Path, work_dir: str | Path | None = None, progress_callback: Callable[[str], None] | None = None) -> Path:
     """Ensure IPSW path is a local file, downloading if necessary.
 
     Args:
         ipsw: IPSW path (local file or URL)
         work_dir: Directory to store downloaded IPSW (default: cwd)
+        progress_callback: Optional callback for progress messages
 
     Returns:
         Path to local IPSW file
@@ -183,7 +184,7 @@ def _ensure_ipsw_local(ipsw: str | Path, work_dir: str | Path | None = None) -> 
     ipsw_str = str(ipsw)
 
     if ipsw_str.startswith(("http://", "https://")):
-        return _download_ipsw(ipsw_str, work_dir=work_dir)
+        return _download_ipsw(ipsw_str, work_dir=work_dir, progress_callback=progress_callback)
 
     local_path = Path(ipsw_str)
     if not local_path.exists():
@@ -327,6 +328,7 @@ def _restore_with_api(
     ipsw_path: str | Path,
     behavior: Behavior,
     work_dir: str | Path | None = None,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> None:
     """Perform a restore operation using the pymobiledevice3 Python API.
 
@@ -335,6 +337,7 @@ def _restore_with_api(
         ipsw_path:   Path to the IPSW file (local path or URL).
         behavior:    Restore behavior (Update, Erase, etc.).
         work_dir:    Directory for IPSW storage (default: cwd).
+        progress_callback: Optional callback for progress messages.
 
     Raises:
         RestoreError: If any step fails.
@@ -345,7 +348,7 @@ def _restore_with_api(
         raise RestoreError("pymobiledevice3 restore components not available")
 
     target_dir = _get_work_dir(work_dir)
-    local_ipsw = _ensure_ipsw_local(ipsw_path, work_dir=work_dir)
+    local_ipsw = _ensure_ipsw_local(ipsw_path, work_dir=work_dir, progress_callback=progress_callback)
     ipsw_size = local_ipsw.stat().st_size
     min_required = int(ipsw_size * 1.2)
     has_space, available = _check_disk_space(local_ipsw, min_required)
@@ -364,7 +367,7 @@ def _restore_with_api(
     asyncio.run(_do_restore())
 
 
-def erase_device(udid: str, ecid: str | None = None, ipsw: str | Path | None = None, work_dir: str | Path | None = None) -> bool:
+def erase_device(udid: str, ecid: str | None = None, ipsw: str | Path | None = None, work_dir: str | Path | None = None, progress_callback: Callable[[str], None] | None = None) -> bool:
     """Erase device using pymobiledevice3.
 
     Args:
@@ -372,6 +375,7 @@ def erase_device(udid: str, ecid: str | None = None, ipsw: str | Path | None = N
         ecid: Device ECID hex string (e.g. '0xe28e921780032').
         ipsw: IPSW path (required).
         work_dir: Directory for IPSW storage (default: cwd).
+        progress_callback: Optional callback for progress messages.
 
     Returns:
         True if erase succeeded.
@@ -386,13 +390,13 @@ def erase_device(udid: str, ecid: str | None = None, ipsw: str | Path | None = N
     ecid_int = int(ecid, 16)
     target = f"Erase for device {udid}"
     try:
-        _restore_with_api(ecid_int, ipsw, Behavior.Erase, work_dir=work_dir)
+        _restore_with_api(ecid_int, ipsw, Behavior.Erase, work_dir=work_dir, progress_callback=progress_callback)
         return True
     except Exception as e:
         raise RestoreError(f"{target} failed: {e}") from e
 
 
-def update_device(udid: str, ecid: str | None = None, ipsw: str | Path | None = None, work_dir: str | Path | None = None) -> bool:
+def update_device(udid: str, ecid: str | None = None, ipsw: str | Path | None = None, work_dir: str | Path | None = None, progress_callback: Callable[[str], None] | None = None) -> bool:
     """Update device to latest iOS.
 
     Args:
@@ -400,6 +404,7 @@ def update_device(udid: str, ecid: str | None = None, ipsw: str | Path | None = 
         ecid: Device ECID hex string (e.g. '0xe28e921780032').
         ipsw: IPSW path (required).
         work_dir: Directory for IPSW storage (default: cwd).
+        progress_callback: Optional callback for progress messages.
 
     Returns:
         True if update succeeded.
@@ -414,13 +419,13 @@ def update_device(udid: str, ecid: str | None = None, ipsw: str | Path | None = 
     ecid_int = int(ecid, 16)
     target = f"Update for device {udid}"
     try:
-        _restore_with_api(ecid_int, ipsw, Behavior.Update, work_dir=work_dir)
+        _restore_with_api(ecid_int, ipsw, Behavior.Update, work_dir=work_dir, progress_callback=progress_callback)
         return True
     except Exception as e:
         raise RestoreError(f"{target} failed: {e}") from e
 
 
-def restore_device(udid: str, ipsw: str | Path, ecid: str | None = None, work_dir: str | Path | None = None) -> bool:
+def restore_device(udid: str, ipsw: str | Path, ecid: str | None = None, work_dir: str | Path | None = None, progress_callback: Callable[[str], None] | None = None) -> bool:
     """Restore device with specific IPSW.
 
     Args:

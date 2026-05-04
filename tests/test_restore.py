@@ -236,4 +236,4 @@ class TestEnsureIpswLocal:
     def test_url_downloads(self, mock_download, tmp_path):
         mock_download.return_value = tmp_path / "downloaded.ipsw"
         _ensure_ipsw_local("https://example.com/test.ipsw", work_dir=str(tmp_path))
-        mock_download.assert_called_once_with("https://example.com/test.ipsw", work_dir=str(tmp_path))
+        mock_download.assert_called_once_with("https://example.com/test.ipsw", work_dir=str(tmp_path), progress_callback=None)

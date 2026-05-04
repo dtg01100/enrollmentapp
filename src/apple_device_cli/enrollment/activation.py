@@ -15,7 +15,10 @@ async def do_activate(udid: str | None = None) -> bool:
     Note: pymobiledevice3 handles activation automatically during pairing,
     but this is available for explicit activation if needed.
     """
-    lockdown = await create_using_usbmux(serial=udid)
+    try:
+        lockdown = await create_using_usbmux()
+    except Exception:
+        lockdown = await create_using_usbmux(serial=udid)
     # pymobiledevice3 handles activation automatically during pairing
     # This function is here for explicit activation if needed
     state = await lockdown.get_value("ActivationState")

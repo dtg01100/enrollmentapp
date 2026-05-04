@@ -1,104 +1,49 @@
-# Enrollment Flow Architecture & Improvements
+# Enrollment Flow Architecture
 
 ## Overview
 
-This document describes the iOS device enrollment flow architecture, recent improvements, and design patterns.
+This document describes the enrollment flow architecture in `ios-enroll`.
 
 ## What Are Enrollment Flows?
 
-An **enrollment flow** is a sequence of operations that prepares an iOS device for supervised management. The main flows are:
+An **enrollment flow** is a sequence of operations that prepares an iOS device for supervised management. Flows are implemented as standalone, reusable classes in `enrollment/flows.py`.
 
-1. **Simple Supervised** — Apply supervision to a clean device
-2. **Reenrollment** — Clear cloud config and re-enroll with new organization/MDM
-3. **Guided (Interactive)** — Interactive workflow combining device selection, org setup, and supervision
+The main flows are:
 
-## Architecture Improvements
+1. **Simple Supervised** — Apply supervision to a clean device (no erase needed)
+2. **Reenrollment** — Clear cloud config and re-enroll with a new organization or MDM server
+3. **Guided (Interactive)** — CLI workflow combining device selection, org setup, skip panes, and supervision
 
-### 1. Fixed Cloud Configuration Bug
+## Architecture
 
-**Problem**: Cloud configuration was only set when `skip_list` was provided. This caused `IsSupervised` state to be incorrectly reported as `False` when no panes were being skipped.
+### Design Principles
 
-**Fix**: Cloud configuration is now **always set** after supervision, regardless of skip_list. Skip panes are conditionally included only if `skip_list` is provided.
+- **Reusable**: Flows live in `enrollment/flows.py` and can be called from any UI (CLI, API, TUI).
+- **Idempotent where possible**: Operations like cloud config application detect existing matching configuration and treat it as success.
+- **Progressive**: Complex operations (guided enrollment) are composed from simpler reusable flows.
+- **Observable**: All flows report progress via an optional callback and return a structured `EnrollmentResult`.
 
-**Impact**: Device supervision state is now always correctly reported.
+### EnrollmentResult
 
-```python
-# Before: Only set if skip_list provided
-if skip_list:
-    await svc.set_cloud_configuration({...})
-
-# After: Always set, skip_list is optional within
-cloud_config = {...}  # Base config
-if skip_list:
-    cloud_config["SkipSetup"] = _map_skip_setup(skip_list)
-await svc.set_cloud_configuration(cloud_config)
-```
-
-### 2. Simplified Device State Machine
-
-**Problem**: Erase decision logic had multiple overlapping conditions and a fallthrough `else` clause that always erased. This made state transitions unclear and hard to verify.
-
-**Fix**: Replaced with explicit state machine:
-
-```
-Device State → Erase Needed?
-───────────────────────────
-Has cloud config → YES (any state)
-Supervised without cloud config → YES (error state)
-Activated & clean → NO
-Unactivated & clean → NO
-```
-
-**Benefits**:
-- No fallthrough cases
-- Impossible states caught explicitly
-- Clear reasoning about each decision
-- Simpler to test and maintain
-
-### 3. Created Reusable Flows Module
-
-**Problem**: All business logic was embedded in CLI commands, making it impossible to reuse for other UIs (API, TUI, etc.).
-
-**Fix**: Created `enrollment/flows.py` with high-level flow classes:
+All flows return an `EnrollmentResult`:
 
 ```python
-from apple_device_cli.enrollment.flows import (
-    SimpleSupervisedEnrollment,
-    ReenrollmentFlow,
-    FlowRegistry,
-)
-
-# Use from any UI
-flow = FlowRegistry.get("simple-supervised")
-result = flow.execute(org=org, udid=udid, skip_list=[...])
+@dataclass
+class EnrollmentResult:
+    success: bool              # Operation completed without error
+    device_udid: str            # Device UDID
+    supervised: bool            # Device supervision state
+    mdm_enrolled: bool          # MDM enrollment state
+    cloud_config_applied: bool  # Cloud config was applied
+    errors: list[str]           # Error messages encountered
+    warnings: list[str]         # Non-fatal warnings
 ```
 
-**Benefits**:
-- Business logic decoupled from CLI
-- Flows can be composed and extended
-- Easy to test without TUI mocking
-- Enables API and other UIs
-
-### 4. Standardized Error Handling
-
-**Problem**: Different flows used different error handling patterns (raise, return result, swallow), making behavior unpredictable.
-
-**Fix**: All flows now return `EnrollmentResult` with:
-- `success: bool` — Operation succeeded
-- `device_udid: str` — Device that was enrolled
-- `supervised: bool` — Device supervision state
-- `mdm_enrolled: bool` — MDM enrollment state
-- `errors: list[str]` — Any errors encountered
-- `cloud_config: dict` — Final cloud config state
-
-## Flow Design Patterns
+## Flow Reference
 
 ### SimpleSupervisedEnrollment
 
-Direct supervision without erase. Use for:
-- Fresh devices
-- Devices already in correct activation state
-- When erase is handled separately
+Direct device supervision without erase. Use for clean devices where no existing enrollment needs to be cleared.
 
 ```python
 from apple_device_cli.enrollment.flows import SimpleSupervisedEnrollment
@@ -112,17 +57,23 @@ result = flow.execute(
 )
 
 if result.success:
-    print(f"✓ Device {result.device_udid} supervised")
+    print(f"Device {result.device_udid} supervised")
 else:
-    print(f"✗ Errors: {result.errors}")
+    print(f"Errors: {result.errors}")
 ```
+
+**When to use:**
+- Fresh devices with no prior enrollment
+- Devices already activated but not yet supervised
+- When erase is handled separately by the caller
+
+**When not to use:**
+- Device already has cloud config from a prior enrollment → use `ReenrollmentFlow`
+- Device is in an error state (supervised but no cloud config) → erase first
 
 ### ReenrollmentFlow
 
-Clear cloud config and re-enroll. Use for:
-- Devices already enrolled but need new org
-- Changing MDM servers
-- Re-enrollment after policy changes
+Clear existing cloud config and re-enroll with a new or updated organization/MDM configuration.
 
 ```python
 from apple_device_cli.enrollment.flows import ReenrollmentFlow
@@ -131,152 +82,108 @@ flow = ReenrollmentFlow()
 erase_ok, result = flow.execute(org=new_org, udid=udid)
 
 if not erase_ok:
-    print("✗ Failed to clear cloud config")
+    print("Failed to clear cloud config")
 elif result.success:
-    print("✓ Device re-enrolled with new org")
+    print("Device re-enrolled with new org")
 else:
-    print(f"✗ Enrollment errors: {result.errors}")
+    print(f"Enrollment errors: {result.errors}")
 ```
 
-### GuidedEnrollmentWorkflow (CLI-specific)
+**When to use:**
+- Device already enrolled under a different organization
+- Changing MDM servers
+- Re-enrollment after policy changes
 
-Still exists in `cli.py` but now uses flows internally and provides interactive prompts.
+**When not to use:**
+- Fresh device with no cloud config → use `SimpleSupervisedEnrollment`
+
+### GuidedEnrollmentWorkflow
+
+The interactive CLI workflow (`ios-enroll enroll guided-enroll`). Combines device selection, MDM server configuration, organization setup, skip pane selection, erase decision, and supervision in a single command.
+
+Not a reusable class — this is the CLI's primary user-facing enrollment interface.
 
 ## Device State Machine
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                  DEVICE STATE MACHINE                    │
-└─────────────────────────────────────────────────────────┘
+[Unactivated / Clean / No cloud config]
+    │
+    ├─── No erase needed
+    │       │
+    │       └── SimpleSupervisedEnrollment ──→ [Supervised / MDM enrolled]
 
-Fresh Device (Unactivated, not supervised, no cloud config)
-    ↓ [No erase needed]
-    ├─→ Activate (if needed)
-    └─→ SimpleSupervisedEnrollment → Supervised
+[Activated / Supervised / Cloud config present]
+    │
+    ├─── Erase required
+    │       │
+    │       ├── ReenrollmentFlow (erase + clear config)
+    │       │           │
+    │       │           └── Fresh device state → SimpleSupervisedEnrollment
+    │       │
+    │       └── Device re-enrolled with new org
 
-Activated Clean (Activated, not supervised, no cloud config)
-    ↓ [No erase needed]
-    └─→ SimpleSupervisedEnrollment → Supervised
-
-Already Enrolled (Activated, supervised, cloud config)
-    ↓ [ERASE REQUIRED]
-    └─→ ReenrollmentFlow (erase) → Fresh → Supervised with new org
-
-Error State (Supervised without cloud config)
-    ↓ [ERASE REQUIRED - shouldn't happen]
-    └─→ Full erase/restore
+[Supervised / No cloud config — error state]
+    │
+    └─── Erase + full restore required
 ```
+
+## Key Functions
+
+### Low-level (in `supervised.py`)
+
+| Function | Purpose |
+|----------|---------|
+| `make_supervised()` | Core async supervision implementation |
+| `erase_device_for_reenrollment()` | Clear cloud config from device |
+| `get_device_enrollment_state()` | Read back current enrollment state |
+
+### Flow orchestration (in `flows.py`)
+
+| Class | Purpose |
+|-------|---------|
+| `SimpleSupervisedEnrollment` | Direct supervision without erase |
+| `ReenrollmentFlow` | Clear config and re-enroll |
 
 ## Testing
 
-### Test Coverage
-
-- **Cloud Config Bug Fix**: Tests verify cloud config always set
-- **State Validation**: Tests verify invalid states caught
-- **Error Handling**: Tests verify errors properly reported
-- **Flow Registry**: Tests verify flows discoverable and extensible
-- **Integration**: Tests verify flows produce correct EnrollmentResult
-
-### Running Tests
-
 ```bash
 # All enrollment tests
-pytest tests/test_enrollment*.py -v
+python -m pytest tests/test_enrollment*.py -v
 
-# New flow tests
-pytest tests/test_enrollment_flows.py -v
+# Flow-only tests
+python -m pytest tests/test_enrollment_flow*.py -v
 
-# Specific test class
-pytest tests/test_enrollment_flow_fixes.py::TestCloudConfigBugFix -v
+# Specific regression test
+python -m pytest tests/test_enrollment_flow_fixes.py::TestCloudConfigBugFix -v
 ```
 
-## Future Work
+### Test categories
 
-### Short Term
-- Add device state verification before operations (safety check)
-- Add logging to flows for better debugging
-- Improve progress callback granularity
-
-### Medium Term
-- Create API endpoint wrapper for flows
-- Add flow cancellation/rollback support
-- Support parallel enrollment of multiple devices
-
-### Long Term
-- Async/await unification across codebase
-- Event-driven flow orchestration
-- Advanced state machine with explicit transitions
-- Enrollment flow analytics and metrics
-
-## Code References
-
-### Main Files
-
-- `src/apple_device_cli/enrollment/flows.py` — Enrollment flows
-- `src/apple_device_cli/enrollment/supervised.py` — Supervision implementation
-- `src/apple_device_cli/cli.py` — CLI commands (uses flows)
-- `tests/test_enrollment_flow*.py` — Flow tests
-
-### Key Classes
-
-```python
-EnrollmentResult         # Standard result with errors, state
-EnrollmentFlow          # Base class for flows
-SimpleSupervisedEnrollment  # Direct supervision flow
-ReenrollmentFlow        # Clear config and re-enroll
-FlowRegistry            # Extensible flow registry
-```
-
-### Key Functions
-
-```python
-make_supervised()               # Low-level supervision
-erase_device_for_reenrollment() # Cloud config erase
-validate_enrollment_prerequisites()  # Pre-flight checks
-```
-
-## Migration Guide
-
-### For CLI Commands
-
-Old pattern (direct calls):
-```python
-from apple_device_cli.enrollment.supervised import make_supervised
-
-result = make_supervised(cert_path, key_path, org_name, skip_list=...)
-```
-
-New pattern (using flows):
-```python
-from apple_device_cli.enrollment.flows import SimpleSupervisedEnrollment
-
-flow = SimpleSupervisedEnrollment()
-result = flow.execute(org=org, udid=udid, skip_list=...)
-```
-
-### For Testing
-
-Old pattern (mocking CLI):
-```python
-# Complex mocking of CLI prompts and device state
-```
-
-New pattern (mocking flows):
-```python
-flow = SimpleSupervisedEnrollment()
-# Pass mocked org, device info; test result
-result = flow.execute(org=mock_org, udid="test-udid")
-assert result.supervised
-```
+- **Unit tests** (`test_enrollment.py`): Individual functions, error formatting, path normalization
+- **Flow tests** (`test_enrollment_flows.py`): Flow classes and state machine logic
+- **Regression tests** (`test_enrollment_flow_fixes.py`): Bug-specific fixes (cloud config reuse, MDM retry, status readback)
+- **Integration tests** (`test_enrollment_integration.py`): Full end-to-end flows with mocked device layer
+- **Redaction tests** (`test_redaction.py`): Privacy sanitization output
 
 ## Troubleshooting
 
-### Cloud Config Not Applied
+### MDM silent install fails with "network error"
 
-Check that:
-1. No exceptions in set_cloud_configuration() call
-2. Device is connected and responding
-3. Device can reach lockdown service
+This is usually a transient timing issue: the device's WiFi may not be fully established yet when MDM profile install is attempted. The `make_supervised()` flow retries automatically up to 3 times with a 5-second backoff. If it continues to fail, try:
+1. Verify the device has a working WiFi connection
+2. Run MDM profile install manually after Setup Assistant completes
+3. Check MDM server URL is reachable from the device's network
+
+### "Failed to re-configure" error
+
+When cloud config already exists and matches the requested configuration, this is now treated as success. If you see this error with no actionable detail, check:
+1. Device lockdown service is responding
+2. The supervision identity (cert/key) hasn't expired
+3. MDM URLs in the org match what the MDM server expects
+
+### Device shows "Supervised: True" but MDM not enrolled
+
+This is the normal deferred enrollment pattern. MDM profile installation is deferred to Setup Assistant when the device is powered. The MDM profile is stored in the org directory and installed during the guided Setup Assistant flow.
 
 ### Device State Unclear
 

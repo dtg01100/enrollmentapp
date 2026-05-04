@@ -21,8 +21,13 @@ htmlcov/
 # AI/agent tools
 .opencode/
 .crush/
+.clio/
+.agents/
+agents/
 
-# iOS firmware & restore artifacts
+# Memory & state
+.memories/
+workspaceStorage/
 *.ipsw
 *.ipsw.lock
 restore_*.log

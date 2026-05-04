@@ -2,9 +2,12 @@ from pathlib import Path
 import shutil
 import time
 from typing import Callable
+import json
 
 import asyncio
 import typer
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
 from apple_device_cli import __version__
 from apple_device_cli.core.redaction import (
@@ -78,6 +81,47 @@ enroll_app = typer.Typer(help="Enrollment commands")
 app.add_typer(device_app, name="device")
 app.add_typer(org_app, name="org")
 app.add_typer(enroll_app, name="enroll")
+
+console = Console()
+
+
+def _make_rich_progress_callback(description: str = "Processing") -> tuple[Progress | None, Callable[[str], None] | None]:
+    """Create a rich progress bar for operations with progress callbacks.
+
+    Returns (progress, callback) tuple. If rich is available, returns a progress bar
+    and callback. Otherwise returns (None, None) and messages go to typer.echo.
+    """
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+        transient=True,
+    )
+    task_id = progress.add_task(description, total=100)
+
+    def callback(msg: str) -> None:
+        if "Downloaded" in msg and "%" in msg:
+            try:
+                pct = float(msg.split("(")[1].split("%")[0])
+                progress.update(task_id, completed=pct)
+            except (IndexError, ValueError):
+                progress.update(task_id, description=f"  {sanitize_text(msg)}")
+        elif "Download complete" in msg:
+            progress.update(task_id, description="  Complete", completed=100)
+        elif msg.startswith("  Downloaded"):
+            try:
+                parts = msg.split("(")[1].split("%")[0]
+                pct = float(parts)
+                progress.update(task_id, completed=pct)
+            except (IndexError, ValueError):
+                progress.update(task_id, description=f"  {sanitize_text(msg)}")
+        else:
+            progress.update(task_id, description=f"  {sanitize_text(msg)}")
+
+    return progress, callback
+
 
 @app.callback(invoke_without_command=True)
 def cli_main(ctx: typer.Context):
@@ -694,21 +738,43 @@ def version():
 
 
 @device_app.command("list")
-def device_list():
+def device_list(
+    verbose: bool = typer.Option(False, "--verbose", help="Show detailed device info"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
     """List connected devices."""
     try:
         devices = list_devices()
         if not devices:
             typer.secho("No devices found", fg=typer.colors.YELLOW)
             return
-        for d in devices:
-            typer.echo(f"{_display_udid(d.udid)}\t{d.device_name}")
+        if json_output:
+            output = [{
+                "udid": d.udid,
+                "name": d.device_name,
+                "type": d.device_type,
+                "ios_version": d.firmware_version,
+                "build_version": d.build_version,
+                "ecid": d.ecid,
+            } for d in devices]
+            typer.echo(json.dumps(output, indent=2))
+        else:
+            for d in devices:
+                if verbose:
+                    typer.echo(f"{_display_udid(d.udid)}\t{d.device_name}\t{d.device_type}\t{d.firmware_version}\t{d.build_version}")
+                    if d.ecid:
+                        typer.echo(f"  ECID: {_display_udid(d.ecid)}")
+                else:
+                    typer.echo(f"{_display_udid(d.udid)}\t{d.device_name}")
     except AppleDeviceError as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED)
 
 
 @device_app.command("info")
-def device_info(udid: str = typer.Option(None, "--udid")):
+def device_info(
+    udid: str = typer.Option(None, "--udid"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
     """Get device info."""
     if not udid:
         devices = list_devices()
@@ -718,12 +784,23 @@ def device_info(udid: str = typer.Option(None, "--udid")):
         udid = devices[0].udid
     info = get_device_info(udid)
     if info:
-        typer.echo(f"UDID: {_display_udid(info.udid)}")
-        typer.echo(f"Name: {info.device_name}")
-        typer.echo(f"Type: {info.device_type}")
-        typer.echo(f"iOS: {info.firmware_version} ({info.build_version})")
-        if info.ecid:
-            typer.echo(f"ECID: {_display_udid(info.ecid)}")
+        if json_output:
+            output = {
+                "udid": info.udid,
+                "name": info.device_name,
+                "type": info.device_type,
+                "ios_version": info.firmware_version,
+                "build_version": info.build_version,
+                "ecid": info.ecid,
+            }
+            typer.echo(json.dumps(output, indent=2))
+        else:
+            typer.echo(f"UDID: {_display_udid(info.udid)}")
+            typer.echo(f"Name: {info.device_name}")
+            typer.echo(f"Type: {info.device_type}")
+            typer.echo(f"iOS: {info.firmware_version} ({info.build_version})")
+            if info.ecid:
+                typer.echo(f"ECID: {_display_udid(info.ecid)}")
     else:
         typer.secho(f"Device not found: {_display_udid(udid)}", fg=typer.colors.RED)
 
@@ -733,10 +810,10 @@ def device_erase(
     udid: str = typer.Option(None, "--udid"),
     ipsw: str = typer.Option(None, "--ipsw"),
     ios_version: str = typer.Option(None, "--version"),
-    force: bool = typer.Option(False, "--force", help="Skip confirmation prompt"),
     enter_recovery: bool = typer.Option(True, "--enter-recovery/--no-enter-recovery"),
     yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation prompt"),
     work_dir: str = typer.Option(None, "--work-dir", help="Directory to store IPSW file (default: current directory)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would happen without making changes"),
 ):
     """Erase all data on a device and restore to factory state.
 
@@ -797,15 +874,21 @@ def device_erase(
         typer.secho("  Ensure the device is charged and connected before proceeding.", fg=typer.colors.YELLOW)
         typer.echo()
 
-        if not yes and not force:
+        if not yes:
             typer.confirm("Proceed with erase?", default=True, abort=True)
-        if not force:
             confirm_name = typer.prompt(
                 f'  Type the device name "{device.device_name}" to confirm erase'
             )
             if confirm_name.strip() != device.device_name:
                 typer.secho("Confirmation did not match. Erase cancelled.", fg=typer.colors.RED)
                 raise typer.Exit(1)
+
+        if dry_run:
+            typer.secho("[DRY RUN] Would perform erase operation:", fg=typer.colors.CYAN)
+            typer.echo(f"  Device: {device.device_name} ({_display_udid(device.udid)})")
+            typer.echo(f"  Firmware: {selected_ipsw}")
+            typer.echo(f"  Enter Recovery: {enter_recovery}")
+            return
 
         if enter_recovery:
             # Check if device is already in Recovery mode
@@ -839,24 +922,42 @@ def device_erase(
 
         current_work_dir = work_dir
 
-        def erase_progress(msg: str) -> None:
-            typer.echo(f"  {msg}")
-
-        while True:
-            try:
-                erase_device(device.udid, device.ecid or None, ipsw=selected_ipsw, work_dir=current_work_dir, progress_callback=erase_progress)
-                break
-            except InsufficientSpaceError as e:
-                if current_work_dir:
-                    typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
-                new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
-                if new_dir is None:
-                    current_work_dir = None
-                else:
-                    current_work_dir = str(new_dir)
-            except RestoreError as e:
-                typer.secho(f"Erase failed: {e}", fg=typer.colors.RED)
-                return
+        rich_progress, erase_callback = _make_rich_progress_callback("Erasing device")
+        if rich_progress:
+            with rich_progress:
+                while True:
+                    try:
+                        erase_device(device.udid, device.ecid or None, ipsw=selected_ipsw, work_dir=current_work_dir, progress_callback=erase_callback)
+                        break
+                    except InsufficientSpaceError as e:
+                        if current_work_dir:
+                            typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
+                        new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
+                        if new_dir is None:
+                            current_work_dir = None
+                        else:
+                            current_work_dir = str(new_dir)
+                    except RestoreError as e:
+                        typer.secho(f"Erase failed: {e}", fg=typer.colors.RED)
+                        return
+        else:
+            def erase_progress(msg: str) -> None:
+                typer.echo(f"  {msg}")
+            while True:
+                try:
+                    erase_device(device.udid, device.ecid or None, ipsw=selected_ipsw, work_dir=current_work_dir, progress_callback=erase_progress)
+                    break
+                except InsufficientSpaceError as e:
+                    if current_work_dir:
+                        typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
+                    new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
+                    if new_dir is None:
+                        current_work_dir = None
+                    else:
+                        current_work_dir = str(new_dir)
+                except RestoreError as e:
+                    typer.secho(f"Erase failed: {e}", fg=typer.colors.RED)
+                    return
 
         typer.secho("Erase completed", fg=typer.colors.GREEN)
     except typer.Abort:
@@ -877,6 +978,7 @@ def device_update(
     enter_recovery: bool = typer.Option(True, "--enter-recovery/--no-enter-recovery"),
     yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation prompt"),
     work_dir: str = typer.Option(None, "--work-dir", help="Directory to store IPSW file (default: current directory)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would happen without making changes"),
 ):
     """Update device to a signed iOS version (preserves user data)."""
     device = _prompt_for_udid(udid)
@@ -942,6 +1044,13 @@ def device_update(
         if not yes:
             typer.confirm("Proceed with update?", default=True, abort=True)
 
+        if dry_run:
+            typer.secho("[DRY RUN] Would perform update operation:", fg=typer.colors.CYAN)
+            typer.echo(f"  Device: {device.device_name} ({_display_udid(device.udid)})")
+            typer.echo(f"  Firmware: {selected_ipsw}")
+            typer.echo(f"  Enter Recovery: {enter_recovery}")
+            return
+
         if enter_recovery:
             typer.secho(
                 "\nStep 1/3  Placing device into Recovery mode (waiting up to 3 min)...",
@@ -962,24 +1071,42 @@ def device_update(
 
         current_work_dir = work_dir
 
-        def update_progress(msg: str) -> None:
-            typer.echo(f"  {msg}")
-
-        while True:
-            try:
-                update_device(device.udid, device.ecid or None, ipsw=selected_ipsw, work_dir=current_work_dir, progress_callback=update_progress)
-                break
-            except InsufficientSpaceError as e:
-                if current_work_dir:
-                    typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
-                new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
-                if new_dir is None:
-                    current_work_dir = None
-                else:
-                    current_work_dir = str(new_dir)
-            except RestoreError as e:
-                typer.secho(f"Update failed: {e}", fg=typer.colors.RED)
-                return
+        rich_progress, update_callback = _make_rich_progress_callback("Updating device")
+        if rich_progress:
+            with rich_progress:
+                while True:
+                    try:
+                        update_device(device.udid, device.ecid or None, ipsw=selected_ipsw, work_dir=current_work_dir, progress_callback=update_callback)
+                        break
+                    except InsufficientSpaceError as e:
+                        if current_work_dir:
+                            typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
+                        new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
+                        if new_dir is None:
+                            current_work_dir = None
+                        else:
+                            current_work_dir = str(new_dir)
+                    except RestoreError as e:
+                        typer.secho(f"Update failed: {e}", fg=typer.colors.RED)
+                        return
+        else:
+            def update_progress(msg: str) -> None:
+                typer.echo(f"  {msg}")
+            while True:
+                try:
+                    update_device(device.udid, device.ecid or None, ipsw=selected_ipsw, work_dir=current_work_dir, progress_callback=update_progress)
+                    break
+                except InsufficientSpaceError as e:
+                    if current_work_dir:
+                        typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
+                    new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
+                    if new_dir is None:
+                        current_work_dir = None
+                    else:
+                        current_work_dir = str(new_dir)
+                except RestoreError as e:
+                    typer.secho(f"Update failed: {e}", fg=typer.colors.RED)
+                    return
 
         typer.echo()
         typer.secho("Step 3/3  Update complete.", fg=typer.colors.GREEN, bold=True)
@@ -1030,23 +1157,44 @@ def device_restore(
     )
 
     current_work_dir = work_dir
-    while True:
-        try:
-            restore_device(device.udid, ipsw, device.ecid or None, work_dir=current_work_dir, progress_callback=lambda msg: typer.echo(f"  {msg}"))
-            break
-        except InsufficientSpaceError as e:
-            if current_work_dir:
-                typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
-            new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
-            if new_dir is None:
-                current_work_dir = None
-            else:
-                current_work_dir = str(new_dir)
-        except RestoreError as e:
-            typer.secho(f"Restore failed: {e}", fg=typer.colors.RED)
-            return
+
+    rich_progress, restore_callback = _make_rich_progress_callback("Restoring device")
+    if rich_progress:
+        with rich_progress:
+            while True:
+                try:
+                    restore_device(device.udid, ecid=device.ecid or None, ipsw=ipsw, work_dir=current_work_dir, progress_callback=restore_callback)
+                    break
+                except InsufficientSpaceError as e:
+                    if current_work_dir:
+                        typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
+                    new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
+                    if new_dir is None:
+                        current_work_dir = None
+                    else:
+                        current_work_dir = str(new_dir)
+                except RestoreError as e:
+                    typer.secho(f"Restore failed: {e}", fg=typer.colors.RED)
+                    return
+    else:
+        while True:
+            try:
+                restore_device(device.udid, ecid=device.ecid or None, ipsw=ipsw, work_dir=current_work_dir, progress_callback=lambda msg: typer.echo(f"  {msg}"))
+                break
+            except InsufficientSpaceError as e:
+                if current_work_dir:
+                    typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
+                new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
+                if new_dir is None:
+                    current_work_dir = None
+                else:
+                    current_work_dir = str(new_dir)
+            except RestoreError as e:
+                typer.secho(f"Restore failed: {e}", fg=typer.colors.RED)
+                return
 
     typer.secho("Restore completed", fg=typer.colors.GREEN)
+    return
 
 
 @device_app.command("enter-recovery")
@@ -1089,7 +1237,10 @@ def device_enter_recovery(
 
 
 @org_app.command("list")
-def org_list():
+def org_list(
+    verbose: bool = typer.Option(False, "--verbose", help="Show MDM URL and certificate status"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
     """List organizations."""
     manager = OrganizationManager()
     orgs = manager.list_orgs()
@@ -1097,11 +1248,33 @@ def org_list():
         typer.echo("No organizations stored.")
         typer.echo(f"  Location: {manager.orgs_dir}")
         return
-    typer.echo(f"Organizations in: {redact_path(manager.orgs_dir)}")
-    for org in orgs:
-        typer.echo(f"  {_display_name(org.name)}")
-        if org.org_id:
-            typer.echo(f"    ID: {_display_org_id(org.org_id)}")
+    if json_output:
+        output = []
+        for org in orgs:
+            org_data = {
+                "name": org.name,
+                "org_id": org.org_id,
+                "mdm_url": org.mdm_url,
+                "has_cert": org.cert_path is not None and Path(org.cert_path).exists(),
+                "has_key": org.key_path is not None and Path(org.key_path).exists(),
+            }
+            output.append(org_data)
+        typer.echo(json.dumps(output, indent=2))
+    else:
+        typer.echo(f"Organizations in: {redact_path(manager.orgs_dir)}")
+        for org in orgs:
+            typer.echo(f"  {_display_name(org.name)}")
+            if verbose:
+                if org.org_id:
+                    typer.echo(f"    ID: {_display_org_id(org.org_id)}")
+                if org.mdm_url:
+                    typer.echo(f"    MDM URL: {redact_url(org.mdm_url)}")
+                has_cert = org.cert_path is not None and Path(org.cert_path).exists()
+                has_key = org.key_path is not None and Path(org.key_path).exists()
+                typer.echo(f"    Cert: {'Yes' if has_cert else 'No'}")
+                typer.echo(f"    Key: {'Yes' if has_key else 'No'}")
+            elif org.org_id:
+                typer.echo(f"    ID: {_display_org_id(org.org_id)}")
 
 
 @org_app.command("create")
@@ -1167,7 +1340,7 @@ def org_set_cert(name: str = typer.Option(..., "--name"), cert: str = typer.Opti
     org = manager.get_org(name)
     if not org:
         typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
-        return
+        raise typer.Exit(1)
     org.cert_path = str(Path(cert).resolve())
     manager.save_org(org, overwrite=True)
     typer.secho(f"Set certificate for '{_display_name(name)}'", fg=typer.colors.GREEN)
@@ -1180,7 +1353,7 @@ def org_set_key(name: str = typer.Option(..., "--name"), key: str = typer.Option
     org = manager.get_org(name)
     if not org:
         typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
-        return
+        raise typer.Exit(1)
     org.key_path = str(Path(key).resolve())
     manager.save_org(org, overwrite=True)
     typer.secho(f"Set private key for '{_display_name(name)}'", fg=typer.colors.GREEN)
@@ -1193,7 +1366,7 @@ def org_set_mdm_url(name: str = typer.Option(..., "--name"), mdm_url: str = type
     org = manager.get_org(name)
     if not org:
         typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
-        return
+        raise typer.Exit(1)
     org.mdm_url = mdm_url
     manager.save_org(org, overwrite=True)
     typer.secho(f"Set MDM URL for '{_display_name(name)}'", fg=typer.colors.GREEN)
@@ -1206,7 +1379,7 @@ def org_set_checkin_url(name: str = typer.Option(..., "--name"), checkin_url: st
     org = manager.get_org(name)
     if not org:
         typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
-        return
+        raise typer.Exit(1)
     org.checkin_url = checkin_url
     manager.save_org(org, overwrite=True)
     typer.secho(f"Set check-in URL for '{_display_name(name)}'", fg=typer.colors.GREEN)
@@ -1219,7 +1392,7 @@ def org_set_mdm_topic(name: str = typer.Option(..., "--name"), mdm_topic: str = 
     org = manager.get_org(name)
     if not org:
         typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
-        return
+        raise typer.Exit(1)
     org.mdm_topic = mdm_topic
     manager.save_org(org, overwrite=True)
     typer.secho(f"Set MDM topic for '{_display_name(name)}'", fg=typer.colors.GREEN)
@@ -1232,7 +1405,7 @@ def org_show(name: str = typer.Option(..., "--name")):
     org = manager.get_org(name)
     if not org:
         typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
-        return
+        raise typer.Exit(1)
     typer.echo(f"Name: {_display_name(org.name)}")
     if org.org_id:
         typer.echo(f"ID: {_display_org_id(org.org_id)}")

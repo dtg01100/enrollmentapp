@@ -79,14 +79,14 @@ def test_update_device_with_ecid(mock_restore_api):
 @patch("apple_device_cli.restore.erase._restore_with_api")
 def test_restore_device_success(mock_restore_api):
     mock_restore_api.return_value = None
-    result = restore_device("test-udid", "/path/to/ipsw", ecid="0xe28e921780032")
+    result = restore_device("test-udid", ecid="0xe28e921780032", ipsw="/path/to/ipsw")
     assert result is True
 
 
 @patch("apple_device_cli.restore.erase._restore_with_api")
 def test_restore_device_with_ecid(mock_restore_api):
     mock_restore_api.return_value = None
-    result = restore_device("test-udid", "/path/to/ipsw", ecid="0xe28e921780032")
+    result = restore_device("test-udid", ecid="0xe28e921780032", ipsw="/path/to/ipsw")
     assert result is True
     call_args = mock_restore_api.call_args[0]
     assert call_args[0] == int("0xe28e921780032", 16)
@@ -96,7 +96,7 @@ def test_restore_device_with_ecid(mock_restore_api):
 def test_restore_device_raises_on_failure(mock_restore_api):
     mock_restore_api.side_effect = RuntimeError("restore failed")
     with pytest.raises(RestoreError):
-        restore_device("test-udid", "/path/to/ipsw")
+        restore_device("test-udid", ecid="0xe28e921780032", ipsw="/path/to/ipsw")
 
 
 @patch("apple_device_cli.restore.erase.asyncio.run")

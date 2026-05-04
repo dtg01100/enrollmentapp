@@ -425,13 +425,13 @@ def update_device(udid: str, ecid: str | None = None, ipsw: str | Path | None = 
         raise RestoreError(f"{target} failed: {e}") from e
 
 
-def restore_device(udid: str, ipsw: str | Path, ecid: str | None = None, work_dir: str | Path | None = None, progress_callback: Callable[[str], None] | None = None) -> bool:
+def restore_device(udid: str, ecid: str | None = None, ipsw: str | Path | None = None, work_dir: str | Path | None = None, progress_callback: Callable[[str], None] | None = None) -> bool:
     """Restore device with specific IPSW.
 
     Args:
         udid: Device UDID (used for identification/logging).
-        ipsw: Path to IPSW file.
         ecid: Device ECID hex string (e.g. '0xe28e921780032').
+        ipsw: Path to IPSW file.
         work_dir: Directory for IPSW storage (default: cwd).
 
     Returns:
@@ -442,10 +442,12 @@ def restore_device(udid: str, ipsw: str | Path, ecid: str | None = None, work_di
     """
     if ecid is None:
         raise RestoreError("restore_device requires an ECID")
+    if ipsw is None:
+        raise RestoreError("restore_device requires an IPSW path")
     ecid_int = int(ecid, 16)
     target = f"Restore for device {udid}"
     try:
-        _restore_with_api(ecid_int, ipsw, Behavior.Erase, work_dir=work_dir)
+        _restore_with_api(ecid_int, ipsw, Behavior.Erase, work_dir=work_dir, progress_callback=progress_callback)
         return True
     except Exception as e:
         raise RestoreError(f"{target} failed: {e}") from e

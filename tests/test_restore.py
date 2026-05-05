@@ -17,36 +17,6 @@ from apple_device_cli.core.exceptions import RestoreError
 
 
 @pytest.fixture(autouse=True)
-def mock_pymobiledevice3_restore():
-    """Mock pymobiledevice3 restore components when not installed."""
-    from apple_device_cli.restore import erase
-    
-    # Store original values
-    original_irecv = erase.IRecv
-    original_device = erase.Device
-    original_restore = erase.Restore
-    original_behavior = erase.Behavior
-    
-    # Create mock Behavior enum
-    class MockBehavior:
-        class Update:
-            name = "Update"
-        class Erase:
-            name = "Erase"
-    
-    # Patch the module-level None values
-    erase.Behavior = MockBehavior
-    
-    yield
-    
-    # Restore original values (even if they were None)
-    erase.IRecv = original_irecv
-    erase.Device = original_device
-    erase.Restore = original_restore
-    erase.Behavior = original_behavior
-
-
-@pytest.fixture(autouse=True)
 def mock_usbmuxd_wait():
     """No longer needed - _connect_usbmuxd was removed."""
     yield
@@ -132,36 +102,29 @@ def test_restore_device_raises_on_failure(mock_restore_api):
 @patch("apple_device_cli.restore.erase.IRecv")
 def test_enter_recovery_mode_with_ecid(mock_irecv, mock_asyncio_run):
     """Test entering recovery mode with specific ECID."""
-    # Mock pymobiledevice3.lockdown to avoid import error
-    mock_pm3_lockdown = MagicMock()
-    mock_pm3_lockdown.create_using_usbmux = AsyncMock()
-    
-    with patch.dict("sys.modules", {"pymobiledevice3": MagicMock(), "pymobiledevice3.lockdown": mock_pm3_lockdown}):
-        mock_asyncio_run.return_value = None
-        mock_irecv_instance = MagicMock()
-        mock_irecv_instance._device = MagicMock()
-        mock_irecv.return_value = mock_irecv_instance
-        result = enter_recovery_mode("test-udid", ecid="0xe28e921780032")
-        assert result is True
-        mock_asyncio_run.assert_called_once()
-        mock_irecv.assert_called_once()
+    mock_asyncio_run.return_value = None
+    mock_irecv_instance = MagicMock()
+    mock_irecv_instance._device = MagicMock()
+    mock_irecv.return_value = mock_irecv_instance
+
+    result = enter_recovery_mode("test-udid", ecid="0xe28e921780032")
+    assert result is True
+    mock_asyncio_run.assert_called_once()
+    mock_irecv.assert_called_once()
 
 
 @patch("apple_device_cli.restore.erase.asyncio.run")
 @patch("apple_device_cli.restore.erase.IRecv")
 def test_enter_recovery_mode_without_ecid(mock_irecv, mock_asyncio_run):
     """Test entering recovery mode without specifying ECID."""
-    mock_pm3_lockdown = MagicMock()
-    mock_pm3_lockdown.create_using_usbmux = AsyncMock()
-    
-    with patch.dict("sys.modules", {"pymobiledevice3": MagicMock(), "pymobiledevice3.lockdown": mock_pm3_lockdown}):
-        mock_asyncio_run.return_value = None
-        mock_irecv_instance = MagicMock()
-        mock_irecv_instance._device = MagicMock()
-        mock_irecv.return_value = mock_irecv_instance
-        result = enter_recovery_mode("test-udid")
-        assert result is True
-        mock_asyncio_run.assert_called_once()
+    mock_asyncio_run.return_value = None
+    mock_irecv_instance = MagicMock()
+    mock_irecv_instance._device = MagicMock()
+    mock_irecv.return_value = mock_irecv_instance
+
+    result = enter_recovery_mode("test-udid")
+    assert result is True
+    mock_asyncio_run.assert_called_once()
 
 
 @patch("apple_device_cli.restore.erase.urlopen")

@@ -11,32 +11,13 @@ from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
+from pymobiledevice3.irecv import IRecv
+from pymobiledevice3.restore.device import Device
+from pymobiledevice3.restore.restore import Restore
+from pymobiledevice3.restore.base_restore import Behavior
+from ipsw_parser.ipsw import IPSW
+
 from apple_device_cli.core.exceptions import RestoreError
-
-try:
-    from pymobiledevice3.irecv import IRecv
-except ImportError:  # not available without the package installed
-    IRecv = None  # type: ignore[assignment,misc]
-
-try:
-    from pymobiledevice3.restore.device import Device
-except ImportError:
-    Device = None  # type: ignore[assignment,misc]
-
-try:
-    from pymobiledevice3.restore.restore import Restore
-except ImportError:
-    Restore = None  # type: ignore[assignment,misc]
-
-try:
-    from pymobiledevice3.restore.base_restore import Behavior
-except ImportError:
-    Behavior = None  # type: ignore[assignment,misc]
-
-try:
-    from ipsw_parser.ipsw import IPSW
-except ImportError:
-    IPSW = None  # type: ignore[assignment,misc]
 
 IPSW_API_URL = "https://api.ipsw.me/v4/device/{identifier}?type=ipsw"
 
@@ -194,8 +175,6 @@ def _ensure_ipsw_local(ipsw: str | Path, work_dir: str | Path | None = None, pro
 
 def get_irecv():
     """Return a live IRecv handle (used for Recovery/DFU device communication)."""
-    if IRecv is None:
-        raise RestoreError("pymobiledevice3.irecv not available")
     return IRecv(timeout=5, is_recovery=True)
 
 
@@ -214,6 +193,17 @@ def _retry_until(fn, *, timeout: int = _DEVICE_WAIT_TIMEOUT, interval: float = _
             last_exc = exc
             time.sleep(interval)
     raise RestoreError(f"{label} did not succeed within {timeout}s: {last_exc}")
+
+
+def _send_recovery_cmd(udid: str) -> None:
+    """Send the enter-recovery command to a device via lockdown."""
+    from pymobiledevice3.lockdown import create_using_usbmux
+
+    async def _enter() -> None:
+        lockdown = await create_using_usbmux(serial=udid)
+        await lockdown.enter_recovery()
+
+    asyncio.run(_enter())
 
 
 def get_signed_firmwares(identifier: str) -> list[dict[str, str]]:
@@ -268,28 +258,15 @@ def enter_recovery_mode(udid: str, ecid: str | None = None, timeout: int = 180) 
     """
     # Step 1: send the recovery command (requires the device to currently be in
     # normal mode and usbmuxd to be up).
-    def _send_recovery_cmd() -> None:
-        from pymobiledevice3.lockdown import create_using_usbmux
-
-        async def _enter() -> None:
-            lockdown = await create_using_usbmux(serial=udid)
-            await lockdown.enter_recovery()
-
-        asyncio.run(_enter())
-
-    _retry_until(_send_recovery_cmd, timeout=30, interval=2, label=f"send recovery command to {udid}")
+    _send_recovery_cmd(udid)
 
     # Step 2: wait for the device to boot into Recovery/DFU.  The device
     # disappears from the USB bus while rebooting (errno 5 / IOError) so we
     # retry each short IRecv probe until one succeeds.
-    _IRecv = IRecv
-    if _IRecv is None:
-        raise RestoreError("pymobiledevice3.irecv not available")
-
     ecid_int = int(ecid, 16) if ecid else None
 
     def _probe_recovery() -> None:
-        irecv = _IRecv(ecid=ecid_int, timeout=2, is_recovery=True)
+        irecv = IRecv(ecid=ecid_int, timeout=2, is_recovery=True)
         if irecv._device is not None:
             try:
                 irecv._device.reset()
@@ -322,11 +299,6 @@ def _restore_with_api(
     Raises:
         RestoreError: If any step fails.
     """
-    if IPSW is None:
-        raise RestoreError("ipsw_parser not available")
-    if Restore is None or Device is None or Behavior is None:
-        raise RestoreError("pymobiledevice3 restore components not available")
-
     target_dir = _get_work_dir(work_dir)
     local_ipsw = _ensure_ipsw_local(ipsw_path, work_dir=work_dir, progress_callback=progress_callback)
     ipsw_size = local_ipsw.stat().st_size

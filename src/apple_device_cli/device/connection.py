@@ -6,19 +6,11 @@ import subprocess
 import sys
 import time
 
-from apple_device_cli.device.info import DeviceInfo
+from pymobiledevice3.lockdown import create_using_usbmux
+from pymobiledevice3 import usbmux
+from pymobiledevice3.exceptions import ConnectionFailedToUsbmuxdError
 
-# Optional pymobiledevice3 imports - graceful degradation when not installed
-try:
-    from pymobiledevice3.lockdown import create_using_usbmux
-    from pymobiledevice3 import usbmux
-    from pymobiledevice3.exceptions import ConnectionFailedToUsbmuxdError
-    PYMOBILEDEVICE3_AVAILABLE = True
-except ImportError:
-    PYMOBILEDEVICE3_AVAILABLE = False
-    create_using_usbmux = None  # type: ignore[assignment,misc]
-    usbmux = None  # type: ignore[assignment,misc]
-    ConnectionFailedToUsbmuxdError = None  # type: ignore[assignment,misc]
+from apple_device_cli.device.info import DeviceInfo
 
 
 def list_devices() -> list[DeviceInfo]:
@@ -28,9 +20,6 @@ def list_devices() -> list[DeviceInfo]:
     Apple device is connected — the daemon starts on-demand via socket
     activation and is simply absent when only Recovery/DFU devices are present).
     """
-    if not PYMOBILEDEVICE3_AVAILABLE:
-        return []
-
     async def _list():
         try:
             devs = await usbmux.list_devices()
@@ -51,9 +40,6 @@ def list_devices() -> list[DeviceInfo]:
 
 def get_device_info(udid: str) -> DeviceInfo | None:
     """Get device information for a specific UDID."""
-    if not PYMOBILEDEVICE3_AVAILABLE:
-        return None
-
     async def _get():
         try:
             return await asyncio.wait_for(_get_device_info_async(udid), timeout=8)
@@ -64,8 +50,6 @@ def get_device_info(udid: str) -> DeviceInfo | None:
 
 async def _get_device_info_async(udid: str) -> DeviceInfo | None:
     """Get device info using lockdown service."""
-    if not create_using_usbmux:
-        return None
     try:
         # Try without serial first (works when only one device connected)
         try:
@@ -136,9 +120,6 @@ def ensure_device_pairing(udid: str, timeout: int = 45) -> None:
     already paired, and prompts the user to trust the host when pairing is
     needed.
     """
-    if not PYMOBILEDEVICE3_AVAILABLE:
-        return
-
     cmd = [sys.executable, "-m", "pymobiledevice3", "lockdown", "pair", "--udid", udid]
     try:
         result = subprocess.run(cmd, text=True, timeout=timeout, check=False, capture_output=True)
@@ -163,9 +144,6 @@ def ensure_device_pairing(udid: str, timeout: int = 45) -> None:
 
 def wait_for_udid_in_usbmux(udid: str, timeout: int = 60, interval: float = 2.0) -> bool:
     """Wait until *udid* is visible via usbmux (normal-mode device path)."""
-    if not PYMOBILEDEVICE3_AVAILABLE:
-        return False
-
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:

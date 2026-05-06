@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 @dataclass
@@ -7,6 +9,7 @@ class DeviceInfo:
     device_type: str
     build_version: str
     firmware_version: str
+    is_recovery: bool = False  # True when device is in Recovery/DFU mode
     model: str = ""
     serial_number: str = ""
     ecid: str = ""

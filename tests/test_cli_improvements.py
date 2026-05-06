@@ -68,11 +68,7 @@ class TestDeviceInfoJsonOutput:
     """Tests for device info --json output."""
 
     @patch("apple_device_cli.cli.get_device_info")
-    @patch("apple_device_cli.cli.list_devices")
-    def test_device_info_json_output(self, mock_list, mock_info):
-        mock_list.return_value = [
-            MagicMock(udid="[REDACTED]ABCDEF")
-        ]
+    def test_device_info_json_output(self, mock_info):
         mock_info.return_value = MagicMock(
             udid="1234567890ABCDEF",
             device_name="iPhone",
@@ -81,7 +77,7 @@ class TestDeviceInfoJsonOutput:
             build_version="21A342",
             ecid="0xe28e921780032",
         )
-        result = runner.invoke(device_app, ["info", "--json"])
+        result = runner.invoke(device_app, ["info", "--udid", "1234567890ABCDEF", "--json"])
         assert result.exit_code == 0
         output = json.loads(result.stdout)
         assert output["udid"] == "1234567890ABCDEF"

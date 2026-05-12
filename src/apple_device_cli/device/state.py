@@ -24,7 +24,7 @@ def get_device_state(udid: str) -> DeviceState:
                 return DeviceState.RECOVERY
             return DeviceState.NORMAL
         except ConnectionFailedToUsbmuxdError:
-            return DeviceState.RECOVERY
+            return DeviceState.UNKNOWN
         except Exception:
             return DeviceState.UNKNOWN
     return asyncio.run(_get())

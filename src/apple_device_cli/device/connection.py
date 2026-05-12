@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import subprocess
 import sys
 import time
@@ -125,10 +126,7 @@ def ensure_device_pairing(udid: str, timeout: int = 45) -> None:
         result = subprocess.run(cmd, text=True, timeout=timeout, check=False, capture_output=True)
     except subprocess.TimeoutExpired:
         # Best effort only: pairing may not be required on already-trusted hosts.
-        print(
-            "Warning: pairing check timed out. If a Trust prompt is visible, unlock the device and tap Trust.",
-            file=sys.stderr,
-        )
+        logging.warning("pairing check timed out. If a Trust prompt is visible, unlock the device and tap Trust.")
         return
     if result.returncode != 0:
         # Best effort only: proceed and let the next step surface actionable errors.
@@ -136,10 +134,7 @@ def ensure_device_pairing(udid: str, timeout: int = 45) -> None:
         msg = f"pairing check failed (rc={result.returncode})"
         if stderr:
             msg += f": {stderr}"
-        print(
-            f"Warning: {msg}. Continuing; if prompted on device, unlock and tap Trust.",
-            file=sys.stderr,
-        )
+        logging.warning(f"{msg}. Continuing; if prompted on device, unlock and tap Trust.")
 
 
 def wait_for_udid_in_usbmux(udid: str, timeout: int = 60, interval: float = 2.0) -> bool:

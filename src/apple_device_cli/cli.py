@@ -508,9 +508,9 @@ def interactive_enroll():
         typer.secho("=" * 50, fg=typer.colors.GREEN, bold=True)
         typer.echo(f"\n  Organization: {_display_name(org.name)}")
         typer.echo(f"  Device UDID: {_display_udid(result.device_udid)}")
-        typer.echo(f" Supervised: {result.supervised}")
-        typer.echo(f" MDM Enrolled: {result.mdm_enrolled}")
-        typer.echo(f" WiFi Installed: {result.wifi_installed}")
+        typer.echo(f"  Supervised: {result.supervised}")
+        typer.echo(f"  MDM Enrolled: {result.mdm_enrolled}")
+        typer.echo(f"  WiFi Installed: {result.wifi_installed}")
         if org.mdm_url:
             typer.echo(f"  MDM Server URL: {redact_url(org.mdm_url)}")
         if result.cloud_config and result.cloud_config.get("MDMServerURL"):
@@ -767,7 +767,7 @@ def device_info(
         if not devices:
             typer.secho("No device found", fg=typer.colors.RED)
             raise typer.Exit(1)
-        typer.echo(f"Multiple devices found. Use --udid to specify.\n")
+        typer.echo("Multiple devices found. Use --udid to specify.\n")
         for i, d in enumerate(devices):
             typer.echo(f"  [{i + 1}] {_display_udid(d.udid)}  ({d.device_name})")
         typer.echo()
@@ -1326,7 +1326,7 @@ def org_delete(name: str = typer.Option(..., "--name")):
     if manager.delete_org(name):
         typer.secho(f"Deleted organization: {_display_name(name)}", fg=typer.colors.GREEN)
     else:
-        typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
+        typer.secho(f"Organization not found: {_display_name(name)}", fg=typer.colors.RED)
 
 
 @org_app.command("set-cert")
@@ -1335,7 +1335,7 @@ def org_set_cert(name: str = typer.Option(..., "--name"), cert: str = typer.Opti
     manager = OrganizationManager()
     org = manager.get_org(name)
     if not org:
-        typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
+        typer.secho(f"Organization not found: {_display_name(name)}", fg=typer.colors.RED)
         raise typer.Exit(1)
     org.cert_path = str(Path(cert).resolve())
     manager.save_org(org, overwrite=True)
@@ -1348,7 +1348,7 @@ def org_set_key(name: str = typer.Option(..., "--name"), key: str = typer.Option
     manager = OrganizationManager()
     org = manager.get_org(name)
     if not org:
-        typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
+        typer.secho(f"Organization not found: {_display_name(name)}", fg=typer.colors.RED)
         raise typer.Exit(1)
     org.key_path = str(Path(key).resolve())
     manager.save_org(org, overwrite=True)
@@ -1520,7 +1520,7 @@ def org_export(name: str = typer.Option(..., "--name"), path: str = typer.Option
     if manager.export_org(name, path):
         typer.secho(f"Exported '{_display_name(name)}' to {redact_path(path)}", fg=typer.colors.GREEN)
     else:
-        typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
+        typer.secho(f"Organization not found: {_display_name(name)}", fg=typer.colors.RED)
 
 
 @org_app.command("generate")

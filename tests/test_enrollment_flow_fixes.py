@@ -105,7 +105,7 @@ class TestCloudConfigBugFix:
             )
 
             with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc):
-                result = supervised.make_supervised(
+                supervised.make_supervised(
                     str(cert_path),
                     str(key_path),
                     "Test Org",

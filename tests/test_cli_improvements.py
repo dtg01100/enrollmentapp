@@ -1,10 +1,9 @@
 """Tests for CLI improvements: --json, --verbose, --dry-run, exit codes."""
 import json
-import pytest
 from unittest.mock import patch, MagicMock
 from typer.testing import CliRunner
 
-from apple_device_cli.cli import app, device_app, org_app, enroll_app
+from apple_device_cli.cli import device_app, org_app
 
 
 runner = CliRunner()

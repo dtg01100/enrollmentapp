@@ -7,10 +7,9 @@ Demonstrates full device enrollment workflow through all supported flows:
 - Error scenarios and recovery
 """
 
-import asyncio
 import pytest
 from dataclasses import dataclass
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 from apple_device_cli.enrollment.flows import (
     SimpleSupervisedEnrollment,
@@ -281,7 +280,7 @@ class TestEnrollmentFlowIntegration:
             
             print(f"[WARN]  Partial Success:  {device_after}")
             print(f"   Flow: {flow.name}")
-            print(f"   Supervision: [OK] SUCCESS")
+            print("   Supervision: [OK] SUCCESS")
             print(f"   MDM Enrollment: [FAIL] FAILED - {result.errors[0]}")
             
             # Verify supervision succeeded despite MDM failure
@@ -300,7 +299,7 @@ class TestEnrollmentFlowIntegration:
         registry = FlowRegistry()
         flows = registry.list()  # Changed from list_flows() to list()
         
-        print(f"\n[DOC] Available Enrollment Flows:")
+        print("\n[DOC] Available Enrollment Flows:")
         for flow in flows:
             print(f"   - {flow.name}: {flow.description}")
         

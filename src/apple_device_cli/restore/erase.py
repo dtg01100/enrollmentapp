@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import logging
 import time
 from pathlib import Path
 from typing import Callable
@@ -89,8 +90,6 @@ def _download_ipsw(url: str, timeout: int = 600, work_dir: str | Path | None = N
         RestoreError: If download fails
         InsufficientSpaceError: If not enough disk space
     """
-    import logging
-
     filename = url.split("/")[-1]
     target_dir = _get_work_dir(work_dir)
     tmp_path = target_dir / filename

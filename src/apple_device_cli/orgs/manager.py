@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import plistlib
+import logging
 import shutil
 import subprocess
 import tempfile
@@ -109,7 +110,6 @@ class OrganizationManager:
         self.orgs_dir.mkdir(parents=True, exist_ok=True)
 
     def list_orgs(self) -> list[Organization]:
-        import logging
         orgs = []
         failed = 0
         for item in self.orgs_dir.iterdir():

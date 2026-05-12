@@ -5,6 +5,7 @@ Each flow is a sequence of steps that handles device supervision and MDM enrollm
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -118,7 +119,6 @@ class ReenrollmentFlow(EnrollmentFlow):
         
         if progress_callback:
             progress_callback("Waiting 30s for device reset...")
-        import time
         time.sleep(30)
         
         # Step 2: Re-enroll with new org

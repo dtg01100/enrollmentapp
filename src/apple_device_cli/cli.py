@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import plistlib
 import shutil
 from typing import Callable
 import json
@@ -609,13 +610,8 @@ def _device_is_in_recovery_mode(ecid: str | None) -> bool:
     if not ecid:
         return False
     try:
-        from apple_device_cli.restore.erase import get_irecv
-        IRecv = get_irecv.__globals__.get("IRecv")
-        if IRecv is None:
-            from pymobiledevice3.irecv import IRecv as _IRecv
-        else:
-            _IRecv = IRecv
-        irecv = _IRecv(ecid=int(ecid, 16), timeout=2, is_recovery=True)
+        from pymobiledevice3.irecv import IRecv
+        irecv = IRecv(ecid=int(ecid, 16), timeout=2, is_recovery=True)
         return irecv._device is not None
     except Exception:
         return False
@@ -1498,7 +1494,13 @@ def org_set_wifi(
         typer.secho(f"WiFi config file not found: {redact_path(path)}", fg=typer.colors.RED)
         raise typer.Exit(1)
 
-    # Copy WiFi config into org directory
+    try:
+        with open(wifi_path, "rb") as f:
+            plistlib.load(f)
+    except Exception:
+        typer.secho(f"Invalid mobileconfig: {redact_path(path)} is not a valid plist", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
     org_dir = manager.orgs_dir / manager._sanitize_name(name)
     dest_wifi = org_dir / "wifi.mobileconfig"
     shutil.copy(wifi_path, dest_wifi)
@@ -1647,9 +1649,9 @@ def enroll_make_supervised(
         if result.success:
             typer.secho("Device is now supervised", fg=typer.colors.GREEN)
             typer.echo(f" UDID: {_display_udid(result.device_udid)}")
-            typer.echo(f" Supervised: {result.supervised}")
-            typer.echo(f" MDM Enrolled: {result.mdm_enrolled}")
-            typer.echo(f" WiFi Installed: {result.wifi_installed}")
+            typer.echo(f" Supervised: {'Yes' if result.supervised else 'No'}")
+            typer.echo(f" MDM Enrolled: {'Yes' if result.mdm_enrolled else 'No'}")
+            typer.echo(f" WiFi Installed: {'Yes' if result.wifi_installed else 'No'}")
         else:
             typer.secho("Enrollment completed with errors:", fg=typer.colors.YELLOW)
             for error in result.errors:

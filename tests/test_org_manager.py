@@ -344,8 +344,8 @@ def test_export_org_to_directory():
         result = manager.export_org("Test Org", export_dir)
         assert result is True
         
-        # Export creates subdirectory with org name: exported/Test Org/
-        org_export_dir = export_dir / "Test Org"
+        # Export creates subdirectory with sanitized org name: exported/Test_Org/
+        org_export_dir = export_dir / "Test_Org"
         assert (org_export_dir / "org.json").exists()
         
         # Load and verify MDM fields

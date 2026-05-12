@@ -326,7 +326,7 @@ class TestExportOrg:
         result = manager.export_org("Export Test", dest)
         
         assert result is True
-        assert (dest / "Export Test" / "org.json").exists()
+        assert (dest / "Export_Test" / "org.json").exists()
 
     def test_export_org_to_zip(self, manager, temp_orgs_dir):
         """Should export org to .zip file."""

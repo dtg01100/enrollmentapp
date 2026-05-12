@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock
 from apple_device_cli.restore.erase import (
     _check_disk_space,
     _download_ipsw,
@@ -102,7 +102,7 @@ def test_restore_device_raises_on_failure(mock_restore_api):
 @patch("apple_device_cli.restore.erase.IRecv")
 def test_enter_recovery_mode_with_ecid(mock_irecv, mock_asyncio_run):
     """Test entering recovery mode with specific ECID."""
-    mock_asyncio_run.return_value = None
+    mock_asyncio_run.side_effect = lambda coro: coro.close()
     mock_irecv_instance = MagicMock()
     mock_irecv_instance._device = MagicMock()
     mock_irecv.return_value = mock_irecv_instance
@@ -117,7 +117,7 @@ def test_enter_recovery_mode_with_ecid(mock_irecv, mock_asyncio_run):
 @patch("apple_device_cli.restore.erase.IRecv")
 def test_enter_recovery_mode_without_ecid(mock_irecv, mock_asyncio_run):
     """Test entering recovery mode without specifying ECID."""
-    mock_asyncio_run.return_value = None
+    mock_asyncio_run.side_effect = lambda coro: coro.close()
     mock_irecv_instance = MagicMock()
     mock_irecv_instance._device = MagicMock()
     mock_irecv.return_value = mock_irecv_instance

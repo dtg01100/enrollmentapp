@@ -362,5 +362,5 @@ class OrganizationManager:
             shutil.make_archive(str(dest_path.with_suffix("")), "zip", org_dir)
         else:
             dest_path.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(org_dir, dest_path / org.name, dirs_exist_ok=True)
+            shutil.copytree(org_dir, dest_path / self._sanitize_name(org.name), dirs_exist_ok=True)
         return True

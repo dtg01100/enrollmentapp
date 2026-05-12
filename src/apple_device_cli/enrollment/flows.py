@@ -19,13 +19,9 @@ from apple_device_cli.orgs.manager import Organization
 @dataclass
 class EnrollmentFlow:
     """Base class for enrollment flows."""
-    
+
     name: str
     description: str
-    
-    def execute(self, **kwargs) -> EnrollmentResult:
-        """Execute the enrollment flow."""
-        raise NotImplementedError
 
 
 class SimpleSupervisedEnrollment(EnrollmentFlow):
@@ -44,8 +40,8 @@ class SimpleSupervisedEnrollment(EnrollmentFlow):
         self,
         org: Organization,
         udid: str,
-        skip_list: Optional[list[str]] = None,
-        progress_callback: Optional[Callable[[str], None]] = None,
+        skip_list: list[str] | None = None,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> EnrollmentResult:
         """Apply supervision to a clean device.
         
@@ -88,8 +84,8 @@ class ReenrollmentFlow(EnrollmentFlow):
         self,
         org: Organization,
         udid: str,
-        skip_list: Optional[list[str]] = None,
-        progress_callback: Optional[Callable[[str], None]] = None,
+        skip_list: list[str] | None = None,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> tuple[bool, EnrollmentResult]:
         """Clear cloud config and re-enroll device.
         

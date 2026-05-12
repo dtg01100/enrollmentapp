@@ -263,7 +263,12 @@ def enter_recovery_mode(udid: str, ecid: str | None = None, timeout: int = 180) 
     # Step 2: wait for the device to boot into Recovery/DFU.  The device
     # disappears from the USB bus while rebooting (errno 5 / IOError) so we
     # retry each short IRecv probe until one succeeds.
-    ecid_int = int(ecid, 16) if ecid else None
+    ecid_int = None
+    if ecid:
+        try:
+            ecid_int = int(ecid, 16)
+        except ValueError:
+            raise RestoreError(f"Invalid ECID format '{ecid}': must be a valid hex string (e.g., '0xe28e921780032')")
 
     def _probe_recovery() -> None:
         irecv = IRecv(ecid=ecid_int, timeout=2, is_recovery=True)

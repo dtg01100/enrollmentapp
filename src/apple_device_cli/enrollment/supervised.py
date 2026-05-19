@@ -599,34 +599,16 @@ async def do_supervised_pairing(
                     device_disconnected = True
         except Exception as e:
             if isinstance(e, CloudConfigurationAlreadyPresentError):
-                _progress("Cloud config already present, clearing and re-applying...")
-                try:
-                    async with MobileConfigService(lockdown) as svc:
-                        existing_cloud_config = await _maybe_await(svc.get_cloud_configuration())
-
-                    if isinstance(existing_cloud_config, dict) and _cloud_config_matches(existing_cloud_config, cloud_config_payload):
-                        cloud_config = existing_cloud_config
-                        config_set = True
-                        _progress("Existing cloud configuration already matches requested settings")
-                    else:
-                        async with MobileConfigService(lockdown) as svc:
-                            await _maybe_await(svc.set_cloud_configuration({}))
-                            _progress("Cleared existing cloud config")
-                        async with MobileConfigService(lockdown) as svc:
-                            await _maybe_await(svc.set_cloud_configuration(cloud_config_payload))
-                            config_set = True
-                            _progress("Cloud configuration re-applied successfully")
-                        try:
-                            cloud_config = await _wait_for_cloud_config(lockdown, timeout_ms=20000)
-                        except (BrokenPipeError, ConnectionResetError, OSError):
-                            _progress("Device disconnected after config re-apply, will reconnect...")
-                            device_disconnected = True
-                except (BrokenPipeError, ConnectionResetError, OSError):
-                    _progress("Broken pipe during config re-apply, will reconnect...")
-                    config_set = True
-                    device_disconnected = True
-                except Exception as reconfigure_error:
-                    errors.append(_format_exception_message("Failed to re-configure", reconfigure_error))
+                _progress("Cloud config already present - enrollment will proceed via Setup Assistant")
+                config_set = True
+                # Cloud config exists with MDM URL - device will enroll during Setup Assistant
+                if mdm_url:
+                    _progress(f"MDM enrollment URL in existing cloud config: {redact_url(mdm_url)}")
+                    if mdm_checkin_url:
+                        _progress(f"Check-in URL: {redact_url(mdm_checkin_url)}")
+                    if mdm_topic:
+                        _progress(f"MDM Topic: {redact_org_identifier(mdm_topic)}")
+                    mdm_enrolled = True
             elif isinstance(e, (BrokenPipeError, ConnectionResetError, OSError)):
                 _progress("Broken pipe during config - device may be applying, will reconnect...")
                 config_set = True
@@ -971,8 +953,27 @@ def get_device_enrollment_state(udid: str) -> dict[str, Any]:
             "is_mdm_managed": bool(is_mdm_managed),
         }
 
+    from pymobiledevice3.exceptions import MissingValueError, DeviceNotFoundError
+
     try:
         return asyncio.run(_get())
+    except DeviceNotFoundError:
+        return {
+            "error": "Device not found or disconnected",
+            "activation_state": "Unknown",
+            "is_supervised": False,
+            "cloud_config_applied": False,
+        }
+    except MissingValueError:
+        # Device connected but some lockdown keys are missing - return partial state
+        return {
+            "activation_state": "Unknown",
+            "is_supervised": False,
+            "cloud_config_applied": False,
+            "org_name": None,
+            "org_magic": None,
+            "is_mdm_managed": False,
+        }
     except Exception as e:
         return {
             "error": str(e),

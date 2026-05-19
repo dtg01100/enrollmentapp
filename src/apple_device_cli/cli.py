@@ -1655,6 +1655,7 @@ def enroll_make_supervised(
     wifi_encryption: str = typer.Option("WPA", "--wifi-encryption"),
     mdm_unremovable: bool = typer.Option(False, "--mdm-unremovable"),
     wifi_config: str = typer.Option(None, "--wifi-config"),
+    mdm_mobileconfig: str = typer.Option(None, "--mdm-mobileconfig", help="Path to MDM enrollment mobileconfig"),
     fail_on_mdm_error: bool = typer.Option(True, "--fail-on-mdm-error/--no-fail-on-mdm-error"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show progress updates"),
 ):
@@ -1691,6 +1692,9 @@ def enroll_make_supervised(
         typer.echo(f"Supervised enrollment for: {device.device_name} ({_display_udid(device.udid)})")
 
     try:
+        # Use CLI-provided MDM mobileconfig, or fall back to org's configured path
+        effective_mdm_mobileconfig = mdm_mobileconfig or org.mdm_mobileconfig_path
+
         result = make_supervised(
             cert_path=org.cert_path,
             key_path=org.key_path,
@@ -1705,6 +1709,7 @@ def enroll_make_supervised(
             mdm_topic=org.mdm_topic,
             mdm_unremovable=mdm_unremovable,
             wifi_config=wifi_config,
+            mdm_mobileconfig=effective_mdm_mobileconfig,
             udid=device.udid,
             fail_on_mdm_error=fail_on_mdm_error,
             progress_callback=progress_callback,

@@ -781,12 +781,12 @@ def make_supervised(
             )
         )
     except CloudConfigurationAlreadyPresentError:
+        # This should not happen - do_supervised_pairing handles this internally.
+        # But handle it gracefully just in case by returning a failure result.
         return EnrollmentResult(
-            success=True,
+            success=False,
             device_udid=udid,
-            supervised=True,
-            mdm_enrolled=False,
-            errors=["Cloud configuration already present"],
+            errors=["Cloud configuration already present - device may need erase"],
         )
     except Exception as e:
         raise EnrollmentError(f"Supervised pairing failed: {e}") from e

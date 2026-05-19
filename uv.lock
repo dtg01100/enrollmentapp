@@ -611,6 +611,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "ipsw-parser" },
     { name = "pymobiledevice3" },
+    { name = "rich" },
     { name = "typer" },
 ]
 
@@ -619,6 +620,7 @@ requires-dist = [
     { name = "cryptography", specifier = ">=45.0.0" },
     { name = "ipsw-parser", specifier = ">=1.6.0" },
     { name = "pymobiledevice3", specifier = ">=9.12.0" },
+    { name = "rich", specifier = ">=13.0.0" },
     { name = "typer", specifier = ">=0.25.0" },
 ]
 

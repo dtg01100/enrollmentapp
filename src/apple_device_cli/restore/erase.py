@@ -313,6 +313,9 @@ def _restore_with_api(
         needed_mb = min_required // (1024**2)
         raise InsufficientSpaceError(needed_mb, available_mb, target_dir)
     irecv = IRecv(ecid=ecid_int, timeout=5, is_recovery=True)
+    # NOTE: Always pass str() to IPSW.create_from_path() — ipsw_parser >= 1.6.0 has a bug
+    # where Path objects cause AttributeError (Path has no .startswith() method).
+    # This regression has appeared multiple times; str() conversion is the workaround.
     ipsw = IPSW.create_from_path(str(local_ipsw))
     device = Device(irecv=irecv)
 

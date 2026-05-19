@@ -4,12 +4,15 @@ from __future__ import annotations
 import ast
 import asyncio
 import inspect
+import logging
 import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
+
+_logger = logging.getLogger(__name__)
 
 from cryptography.hazmat.primitives.serialization import (
     Encoding,
@@ -20,6 +23,7 @@ from cryptography.hazmat.primitives.serialization import (
 from cryptography.x509 import load_der_x509_certificate, load_pem_x509_certificate
 
 from pymobiledevice3.ca import create_keybag_file
+from pymobiledevice3.services.mobile_config import MobileConfigService, Purpose
 
 from apple_device_cli.core.redaction import (
     redact_name,
@@ -103,9 +107,10 @@ SKIP_SETUP_MAPPING = {
 async def _wait_for_cloud_config(lockdown, timeout_ms: int = 15000) -> dict[str, Any] | None:
     """Poll for cloud configuration to be applied."""
     MobileConfigService = _get_mobile_config_service()
-    start = asyncio.get_event_loop().time() * 1000
+    loop = asyncio.get_running_loop()
+    start = loop.time() * 1000
     while True:
-        elapsed = asyncio.get_event_loop().time() * 1000 - start
+        elapsed = loop.time() * 1000 - start
         if elapsed > timeout_ms:
             return None
         try:
@@ -114,7 +119,7 @@ async def _wait_for_cloud_config(lockdown, timeout_ms: int = 15000) -> dict[str,
                 if isinstance(config, dict) and config.get("IsSupervised"):
                     return config
         except Exception:
-            pass
+            _logger.debug("Error polling for cloud config, will retry")
         await asyncio.sleep(0.5)
 
 
@@ -124,9 +129,10 @@ async def _wait_for_device_reconnect(timeout_ms: int = 30000, udid: str | None =
     Returns a fresh lockdown object on success, or None on timeout.
     """
     create_using_usbmux = _get_create_using_usbmux()
-    start = asyncio.get_event_loop().time() * 1000
+    loop = asyncio.get_running_loop()
+    start = loop.time() * 1000
     while True:
-        elapsed = asyncio.get_event_loop().time() * 1000 - start
+        elapsed = loop.time() * 1000 - start
         if elapsed > timeout_ms:
             return None
         try:
@@ -137,7 +143,7 @@ async def _wait_for_device_reconnect(timeout_ms: int = 30000, udid: str | None =
                 lockdown = await create_using_usbmux()
                 return lockdown
             except Exception:
-                pass
+                _logger.debug("Error waiting for device reconnect, will retry")
         await asyncio.sleep(1)
 
 
@@ -628,22 +634,25 @@ async def do_supervised_pairing(
             else:
                 errors.append(_format_exception_message("Failed to configure", e))
 
-        # Step 5: Install MDM enrollment profile (inside temp dir so keybag_path is valid)
+        # Step 5: Store MDM enrollment profile for post-setup installation
         if mdm_url and config_set and mdm_mobileconfig:
             mdm_mobileconfig_path = _normalize_optional_path(mdm_mobileconfig)
             if mdm_mobileconfig_path is not None and mdm_mobileconfig_path.exists():
-                _progress("Installing MDM enrollment profile...")
+                _progress("Storing MDM enrollment profile for Setup Assistant...")
                 payload_bytes = mdm_mobileconfig_path.read_bytes()
                 max_attempts = 3
                 for attempt in range(1, max_attempts + 1):
                     try:
                         async with MobileConfigService(lockdown) as svc:
-                            await _maybe_await(svc.install_profile_silent(keybag_path, payload_bytes))
+                            # IMPORTANT: Use store_profile with PostSetupInstallation — NOT install_profile_silent.
+                            # install_profile_silent triggers immediate MDM enrollment which fails if device can't reach server.
+                            # store_profile stores the profile for Setup Assistant enrollment later.
+                            await _maybe_await(svc.store_profile(payload_bytes, Purpose.PostSetupInstallation))
                         mdm_enrolled = True
-                        _progress("MDM enrollment profile installed")
+                        _progress("MDM enrollment profile stored for post-setup installation")
                         break
                     except Exception as e:
-                        error_msg = _format_mobileconfig_error("MDM profile install failed", e)
+                        error_msg = _format_mobileconfig_error("MDM profile store failed", e)
                         if attempt < max_attempts and _is_transient_mobileconfig_network_error(e):
                             _progress(f"{error_msg} Retrying shortly ({attempt}/{max_attempts})...")
                             await asyncio.sleep(5)

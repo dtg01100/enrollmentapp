@@ -35,3 +35,7 @@ ios-enroll = "apple_device_cli.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/apple_device_cli"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

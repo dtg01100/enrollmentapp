@@ -80,9 +80,69 @@ device_app = typer.Typer(help="Device management commands")
 org_app = typer.Typer(help="Organization management commands")
 enroll_app = typer.Typer(help="Enrollment commands")
 
-app.add_typer(device_app, name="device")
-app.add_typer(org_app, name="org")
-app.add_typer(enroll_app, name="enroll")
+app.add_typer(device_app, name="device", invoke_without_command=True)
+app.add_typer(org_app, name="org", invoke_without_command=True)
+app.add_typer(enroll_app, name="enroll", invoke_without_command=True)
+
+
+def _device_help() -> None:
+    """Help message for incomplete device commands."""
+    typer.secho("ios-enroll device - Device management commands\n", fg=typer.colors.BLUE, bold=True)
+    typer.echo("Commands:")
+    typer.echo("  ios-enroll device list            List connected devices")
+    typer.echo("  ios-enroll device info            Show device details")
+    typer.echo("  ios-enroll device erase           Erase and restore device")
+    typer.echo("  ios-enroll device update          Update device firmware")
+    typer.echo("  ios-enroll device restore         Full restore device")
+    typer.echo("  ios-enroll device enter-recovery  Enter recovery mode")
+    typer.echo("\nExample: ios-enroll device list")
+
+
+def _org_help() -> None:
+    """Help message for incomplete org commands."""
+    typer.secho("ios-enroll org - Organization management commands\n", fg=typer.colors.BLUE, bold=True)
+    typer.echo("Commands:")
+    typer.echo("  ios-enroll org list               List organizations")
+    typer.echo("  ios-enroll org create             Create new organization")
+    typer.echo("  ios-enroll org show               Show organization details")
+    typer.echo("  ios-enroll org set-wifi           Configure WiFi for device")
+    typer.echo("  ios-enroll org import             Import .organization file")
+    typer.echo("  ios-enroll org generate           Generate supervision identity")
+    typer.echo("\nExample: ios-enroll org list")
+
+
+def _enroll_help() -> None:
+    """Help message for incomplete enroll commands."""
+    typer.secho("ios-enroll enroll - Enrollment commands\n", fg=typer.colors.BLUE, bold=True)
+    typer.echo("Commands:")
+    typer.echo("  ios-enroll enroll guided-enroll   Start guided enrollment workflow")
+    typer.echo("  ios-enroll enroll make-supervised Prepare device for supervised enrollment")
+    typer.echo("  ios-enroll enroll re-enroll        Re-enroll existing device")
+    typer.echo("  ios-enroll enroll status          Check enrollment status")
+    typer.echo("  ios-enroll enroll validate        Validate enrollment prerequisites")
+    typer.echo("  ios-enroll enroll activate        Activate device")
+    typer.echo("\nExample: ios-enroll enroll guided-enroll")
+
+
+@device_app.callback(invoke_without_command=True)
+def device_group(ctx: typer.Context):
+    """Device management commands."""
+    if ctx.invoked_subcommand is None:
+        _device_help()
+
+
+@org_app.callback(invoke_without_command=True)
+def org_group(ctx: typer.Context):
+    """Organization management commands."""
+    if ctx.invoked_subcommand is None:
+        _org_help()
+
+
+@enroll_app.callback(invoke_without_command=True)
+def enroll_group(ctx: typer.Context):
+    """Enrollment commands."""
+    if ctx.invoked_subcommand is None:
+        _enroll_help()
 
 console = Console()
 

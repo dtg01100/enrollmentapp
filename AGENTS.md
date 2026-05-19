@@ -227,12 +227,27 @@ resolve_skip_panes(preset: str | None, extra_panes: list[str] | None) -> list[st
 - `supervised.py` uses `MobileConfigService` and `MobileActivationService`
 - Type checkers may report missing imports — expected without the package
 
+### MDM Profile Installation (regression risk)
+- **Use `store_profile(payload_bytes, Purpose.PostSetupInstallation)`** — stores profile for Setup Assistant enrollment
+- **NEVER use `install_profile_silent(keybag_path, payload_bytes)`** — triggers immediate MDM enrollment which fails if device can't reach server during enrollment flow
+- **Failure mode**: `install_profile_silent` attempts immediate enrollment → device can't reach SimpleMDM → "A network error has occurred" → MDM profile never stored
+- **Device must complete**: WiFi connection + MDM enrollment via Setup Assistant. Profile stored now, enrollment happens later.
+- **Retry logic**: `_maybe_await(svc.store_profile())` with transient network error detection and 3 retries with 5s backoff
+- **Critical ordering**: Cloud config → WiFi → MDM profile (Step 4 → 5 in enrollment flow)
+
 ### Restore (restore/erase.py)
 - Uses **Python API** (`Restore(...).update()`) not the broken CLI subprocess
 - `_restore_with_api(ecid_int, ipsw_path, Behavior.Update/Erase)` handles all restore operations
 - All three functions (`erase_device`, `update_device`, `restore_device`) require `ecid` and `ipsw` parameters
 - `IRecv(ecid=int, timeout=5, is_recovery=True)` connects to Recovery/DFU devices via libusb
 - `asyncio.run()` wraps the async `Restore.update()` call
+
+### ipsw_parser Path Bug (regression risk)
+- **Bug**: `ipsw_parser.ipsw.IPSW.create_from_path()` crashes with `AttributeError: 'PosixPath' object has no attribute 'startswith'`
+- **Cause**: The method expects `str` but receives `Path` objects. `Path.startswith()` doesn't exist.
+- **Affected**: `pymobiledevice3 restore update` CLI when downloading IPSW files
+- **Safe**: Our code converts to `str(local_ipsw)` before calling `IPSW.create_from_path()` — always do this, never pass `Path` objects directly
+- **Version**: Affects ipsw_parser >= 1.6.0. Monitor for upstream fix.
 
 ---
 
@@ -296,12 +311,22 @@ grep -r "already exists" src/
 ## Anti-Patterns (What NOT To Do)
 
 | Anti-Pattern | Why It's Wrong | What To Do |
-|--------------|----------------|------------|
+|--------------|----------------|--------------|
 | Skip tests before commit | Causes regressions | Run `PYTHONPATH=src python -m pytest tests/` |
 | Change error messages without updating tests | Tests assert exact strings | Update tests first |
 | Assume pymobiledevice3 behavior | Library may not be installed | Read source or mock in tests |
 | Check if usbmuxd is "running" | usbmuxd is on-demand, not a daemon | Let it auto-start when device plugged in |
 | Pass `--ecid` to restore CLI | Broken for Recovery mode | Use Python API or auto-detect |
+
+### CLI Help Messages
+
+Incomplete commands show helpful guidance instead of errors:
+- `ios-enroll` alone → shows main commands
+- `ios-enroll device` → shows device subcommands
+- `ios-enroll org` → shows org subcommands
+- `ios-enroll enroll` → shows enrollment subcommands
+
+Each subapp (`device_app`, `org_app`, `enroll_app`) has `invoke_without_command=True` and a callback that displays available commands. Do not remove these — they improve UX for incomplete commands.
 
 ---
 

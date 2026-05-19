@@ -75,10 +75,13 @@ def _display_udid(value: str | None) -> str:
 def _display_org_id(value: str | None) -> str:
     return redact_org_identifier(value)
 
-app = typer.Typer(help="iOS device supervised enrollment CLI")
+app = typer.Typer(
+    help="iOS device supervised enrollment CLI",
+)
 device_app = typer.Typer(help="Device management commands")
 org_app = typer.Typer(help="Organization management commands")
 enroll_app = typer.Typer(help="Enrollment commands")
+
 
 app.add_typer(device_app, name="device", invoke_without_command=True)
 app.add_typer(org_app, name="org", invoke_without_command=True)
@@ -186,11 +189,17 @@ def _make_rich_progress_callback(description: str = "Processing") -> tuple[Progr
 
 
 @app.callback(invoke_without_command=True)
-def cli_main(ctx: typer.Context):
+def cli_main(
+    ctx: typer.Context,
+    version: bool = typer.Option(False, "--version", help="Show version and exit"),
+):
     """Apple Configurator-like CLI for Linux.
 
     Manage iOS device enrollment with supervised pairing.
     """
+    if version:
+        typer.echo(f"ios-enroll {__version__}")
+        raise typer.Exit(0)
     if ctx.invoked_subcommand is None:
         typer.secho("ios-enroll - iOS device supervised enrollment CLI\n", fg=typer.colors.BLUE, bold=True)
         typer.echo("Manage iOS device enrollment with supervised pairing.\n")
@@ -775,12 +784,6 @@ def _create_org_interactive(manager: OrganizationManager) -> Organization:
     manager.save_org(org)
     typer.secho(f"Organization '{name}' saved.", fg=typer.colors.GREEN)
     return org
-
-
-@app.command()
-def version():
-    """Show version."""
-    typer.echo(f"ios-enroll {__version__}")
 
 
 @device_app.command("list")

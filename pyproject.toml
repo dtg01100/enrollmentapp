@@ -31,7 +31,7 @@ dependencies = [
 ]
 
 [project.scripts]
-ios-enroll = "apple_device_cli.cli:main"
+ios-enroll = "apple_device_cli.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/apple_device_cli"]

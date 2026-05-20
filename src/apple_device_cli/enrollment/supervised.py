@@ -120,7 +120,7 @@ async def _wait_for_cloud_config(lockdown, timeout_ms: int = 15000) -> dict[str,
                 config = await _maybe_await(svc.get_cloud_configuration())
                 if isinstance(config, dict) and config.get("IsSupervised"):
                     return config
-        except Exception:
+        except (OSError, TimeoutError):
             _logger.debug("Error polling for cloud config, will retry")
         await asyncio.sleep(0.5)
 
@@ -140,11 +140,11 @@ async def _wait_for_device_reconnect(timeout_ms: int = 30000, udid: str | None =
         try:
             lockdown = await create_using_usbmux(serial=udid)
             return lockdown
-        except Exception:
+        except ConnectionError:
             try:
                 lockdown = await create_using_usbmux()
                 return lockdown
-            except Exception:
+            except ConnectionError:
                 _logger.debug("Error waiting for device reconnect, will retry")
         await asyncio.sleep(1)
 
@@ -510,7 +510,7 @@ async def do_supervised_pairing(
         else:
             lockdown = await create_using_usbmux()
             device_udid = getattr(lockdown, "udid", None)
-    except Exception:
+    except ConnectionError:
         if udid:
             # Fallback if serial-specific connect failed for some reason
             lockdown = await create_using_usbmux()
@@ -852,7 +852,7 @@ async def _erase_device_for_reenrollment_async(udid: str | None = None):
             lockdown = await create_using_usbmux(serial=udid)
         else:
             lockdown = await create_using_usbmux()
-    except Exception:
+    except ConnectionError:
         if udid:
             # Fallback for older devices or usbmuxd edge cases
             lockdown = await create_using_usbmux()
@@ -872,7 +872,7 @@ async def _erase_device_for_reenrollment_async(udid: str | None = None):
             await asyncio.sleep(3)
             lockdown = await create_using_usbmux(serial=udid)
             break
-        except Exception:
+        except ConnectionError:
             if attempt >= 19:
                 raise EnrollmentError("Device did not reconnect after erase")
 
@@ -983,7 +983,7 @@ def get_device_enrollment_state(udid: str) -> dict[str, Any]:
         try:
             async with MobileConfigService(lockdown) as svc:
                 cloud_config = await _maybe_await(svc.get_cloud_configuration())
-        except Exception:
+        except (ConnectionError, TimeoutError):
             cloud_config = None
 
         activation_state = await _get_lockdown_value(lockdown, "ActivationState")

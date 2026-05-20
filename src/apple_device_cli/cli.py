@@ -426,7 +426,7 @@ def interactive_enroll():
         lockdown = asyncio.run(_get_device_activation_state(selected.udid))
         is_supervised = lockdown.get("IsSupervised", False)
         has_cloud_config = lockdown.get("CloudConfigurationWasApplied", False)
-    except Exception:
+    except (ConnectionError, TimeoutError):
         is_supervised = False
         has_cloud_config = False
 
@@ -851,7 +851,7 @@ def org_show(name: str = typer.Option(..., "--name")):
             cn = cert_info.get("2.5.4.3", None)
             if cn:
                 typer.echo(f"Cert CN: {cn}")
-        except Exception:
+        except (OSError, ValueError):
             pass  # Cert info is optional; non-fatal
 
 
@@ -920,7 +920,7 @@ def org_set_wifi(
     try:
         with open(wifi_path, "rb") as f:
             plistlib.load(f)
-    except Exception:
+    except (OSError, plistlib.InvalidFileException):
         typer.secho(f"Invalid mobileconfig: {redact_path(path)} is not a valid plist", fg=typer.colors.RED)
         raise typer.Exit(1)
 

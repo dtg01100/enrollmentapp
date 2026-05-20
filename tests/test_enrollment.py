@@ -222,6 +222,7 @@ class TestSupervisedPairing:
 
         svc = AsyncMock()
         svc.install_profile = AsyncMock()
+        svc.get_profile_list = AsyncMock(return_value={})
         svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
         svc.__aenter__.return_value = svc
         svc.__aexit__.return_value = False
@@ -289,6 +290,7 @@ class TestSupervisedPairing:
 
         svc = AsyncMock()
         svc.install_profile = AsyncMock()
+        svc.get_profile_list = AsyncMock(return_value={})
         svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
         svc.__aenter__.return_value = svc
         svc.__aexit__.return_value = False

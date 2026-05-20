@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 import plistlib
 import shutil
@@ -1046,9 +1047,12 @@ def enroll_make_supervised(
         # No CLI wifi options provided, offer org's known wifi config
         wifi_path = Path(org.wifi_config_path)
         if wifi_path.exists():
-            typer.echo()
             typer.echo(f"Organization has known WiFi config: {wifi_path.name}")
-            include_wifi = typer.confirm("Include WiFi profile in enrollment?", default=True)
+            # Use org's WiFi config by default (auto-install in non-interactive, ask in interactive)
+            if sys.stdin.isatty():
+                include_wifi = typer.confirm("Include WiFi profile in enrollment?", default=True)
+            else:
+                include_wifi = True  # Non-interactive: default to yes
             if include_wifi:
                 effective_wifi_config = str(wifi_path)
                 typer.echo(f"  Will install WiFi profile: {wifi_path.name}")

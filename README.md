@@ -15,9 +15,6 @@ uv tool install .
 ```bash
 ios-enroll device list                                   # List connected devices
 ios-enroll device info [--udid <UDID>]                   # Get device info
-ios-enroll device erase --udid <UDID>                    # Erase device
-ios-enroll device update --udid <UDID>                   # Update device to latest iOS
-ios-enroll device restore --udid <UDID> --ipsw <PATH>    # Restore with IPSW
 ```
 
 ### Organization Commands

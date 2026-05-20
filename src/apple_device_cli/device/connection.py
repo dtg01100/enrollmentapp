@@ -52,6 +52,7 @@ def get_device_info(udid: str) -> DeviceInfo | None:
 async def _get_device_info_async(udid: str) -> DeviceInfo | None:
     """Get device info using lockdown service."""
     try:
+        actual_udid: str | None = None
         # Prioritize specified serial
         if udid:
             try:
@@ -71,7 +72,7 @@ async def _get_device_info_async(udid: str) -> DeviceInfo | None:
         unique_chip_id = vals.get("UniqueChipID", "")
         ecid = hex(unique_chip_id) if isinstance(unique_chip_id, int) else str(unique_chip_id)
         return DeviceInfo(
-            udid=actual_udid,
+            udid=actual_udid or "Unknown",
             device_name=vals.get("DeviceName", "Unknown"),
             device_type=vals.get("ProductType", "Unknown"),
             build_version=vals.get("BuildVersion", "Unknown"),

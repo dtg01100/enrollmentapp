@@ -22,11 +22,10 @@ Requires:
 - pymobiledevice3 (primary device interaction library)
 - libimobiledevice (for basic device communication)
 
-## Key URLs 
+## Key URLs
 
 - Device Activation: `https://albert.apple.com/deviceservices/deviceActivation`
 - DRM Handshake: `https://albert.apple.com/deviceservices/drmHandshake`
-- Firmware Builds: `https://purplerestore.apple.com/index/v5_all_builds.plist`
 
 ## Core Components
 
@@ -42,8 +41,6 @@ Requires:
 
 ### 3. Device States
 - Normal: Device booted to iOS
-- Recovery: Device in restore mode
-- DFU: Device in DFU mode for restore
 
 ## Organization Management
 
@@ -79,24 +76,6 @@ List connected iOS devices via usbmuxd. Uses pymobiledevice3 and libimobiledevic
 ### info
 Get device properties (UDID, deviceName, deviceType, buildVersion, firmwareVersion).
 
-### erase
-Erase device (wipe all content and settings):
-- Requires: --udid
-- Optional: --skip-esim (skip erasing embedded eSIMs)
-- Uses pymobiledevice3 for restore operations
-
-### update
-Update device to latest available iOS version:
-- Requires: --udid
-- Optional: --skip-software-update, --skip-update-completed
-- Fetches latest build from purplerestore.apple.com
-
-### restore
-Restore IPSW on device:
-- Requires: --udid, --ipsw
-- Optional: --skip-restore-completed, --skip-update-completed
-- Uses pymobiledevice3 for restore operations
-
 ### make-supervised
 Make device supervised using certificate:
 - Requires: --org-name
@@ -106,7 +85,24 @@ Make device supervised using certificate:
 Activate paired device using albert.apple.com/deviceActivation.
 
 ### guided-enroll
-Guided interactive enrollment workflow combining device selection, org selection, skip panes, erase, and supervised pairing.
+Guided interactive enrollment workflow combining device selection, org selection, skip panes, and supervised pairing.
+
+### make-supervised
+Make device supervised using certificate:
+- Requires: --org-name
+- Optional: --skip-preset, --skip, --wifi-ssid, --wifi-password, --wifi-encryption
+
+### re-enroll
+Erase device cloud config to allow fresh re-enrollment.
+
+### status
+Show enrollment status of a connected device.
+
+### validate
+Validate enrollment prerequisites without touching devices.
+
+### activate
+Activate paired device using albert.apple.com/deviceActivation.
 
 ## Skip Panes (from cfgutil strings)
 
@@ -157,10 +153,8 @@ Guided interactive enrollment workflow combining device selection, org selection
 ## Technical Notes
 
 - Uses plist protocol for lockdown communication
-- SRP (Secure Remote Password) authentication for some operations
-- Device must be erased before restore
 - Activation requires supervision identity for supervised devices
-- Uses pymobiledevice3 for device communication and restore operations
+- Uses pymobiledevice3 for device communication
 - Uses libimobiledevice for basic device enumeration (idevicepair, ideviceinfo)
 
 ## Usage Examples
@@ -190,9 +184,6 @@ ios-enroll org import --path profile.mobileconfig
 # Get device info
 ios-enroll device info --udid <UDID>
 
-# Erase device (wipe)
-ios-enroll device erase --udid <UDID>
-
 # Guided interactive enrollment
 ios-enroll enroll guided-enroll
 
@@ -217,10 +208,9 @@ enrollmentapp/
 │   ├── __init__.py         # Version
 │   ├── cli.py              # Typer CLI entrypoint
 │   ├── core/               # Exceptions, utilities
-│   ├── device/             # Device connection, info, state
+│   ├── device/             # Device connection, info
 │   ├── enrollment/         # Supervised pairing, activation
-│   ├── orgs/               # Organization management (manager, identity)
-│   └── restore/            # Erase, restore helpers
+│   └── orgs/               # Organization management (manager, identity)
 ├── tests/                  # pytest test suite
 ├── scripts/           # Utility scripts
 ```

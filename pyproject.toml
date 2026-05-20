@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ios-enroll"
-version = "0.1.0"
+version = "1.0.0b"
 description = "iOS device supervised enrollment CLI"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 keywords = ["ios", "apple", "supervision", "enrollment", "mdm", "mobile-device-management"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: System Administrators",
     "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
@@ -26,7 +26,6 @@ dependencies = [
     "typer>=0.25.0",
     "pymobiledevice3>=9.12.0",
     "cryptography>=45.0.0",
-    "ipsw-parser>=1.6.0",
     "rich>=13.0.0",
 ]
 

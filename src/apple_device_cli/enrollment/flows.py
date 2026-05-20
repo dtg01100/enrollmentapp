@@ -56,8 +56,8 @@ class SimpleSupervisedEnrollment(EnrollmentFlow):
             EnrollmentResult with operation details
         """
         return make_supervised(
-            cert_path=org.cert_path,
-            key_path=org.key_path,
+            cert_path=org.cert_path,  # type: ignore[arg-type]
+            key_path=org.key_path,  # type: ignore[arg-type]
             org_name=org.name,
             org_uuid=org.org_id,
             skip_list=skip_list,
@@ -125,8 +125,8 @@ class ReenrollmentFlow(EnrollmentFlow):
         if progress_callback:
             progress_callback("Applying new supervision configuration...")
         result = make_supervised(
-            cert_path=org.cert_path,
-            key_path=org.key_path,
+            cert_path=org.cert_path,  # type: ignore[arg-type]
+            key_path=org.key_path,  # type: ignore[arg-type]
             org_name=org.name,
             org_uuid=org.org_id,
             skip_list=skip_list,

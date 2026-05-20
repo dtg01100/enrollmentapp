@@ -7,12 +7,12 @@ import inspect
 import logging
 import re
 import tempfile
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
-
-_logger = logging.getLogger(__name__)
 
 from cryptography.hazmat.primitives.serialization import (
     Encoding,
@@ -23,7 +23,7 @@ from cryptography.hazmat.primitives.serialization import (
 from cryptography.x509 import load_der_x509_certificate, load_pem_x509_certificate
 
 from pymobiledevice3.ca import create_keybag_file
-from pymobiledevice3.services.mobile_config import MobileConfigService, Purpose
+from pymobiledevice3.services.mobile_config import Purpose
 
 from apple_device_cli.core.redaction import (
     redact_name,
@@ -33,6 +33,8 @@ from apple_device_cli.core.redaction import (
     sanitize_text,
 )
 from apple_device_cli.core.exceptions import EnrollmentError
+
+_logger = logging.getLogger(__name__)
 
 SKIP_SETUP_MAPPING = {
     "location": "Location",
@@ -477,6 +479,7 @@ async def do_supervised_pairing(
     errors: list[str] = []
     mdm_enrolled = False
     cloud_config: dict[str, Any] | None = None
+    device_udid: str | None = None
 
     def _progress(msg: str) -> None:
         if progress_callback:
@@ -535,7 +538,7 @@ async def do_supervised_pairing(
     else:
         create_keybag_file(keybag_path, org_name)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with tempfile.TemporaryDirectory():
         # Build cloud configuration payload
         cloud_config_payload = {
             "AllowPairing": True,
@@ -954,7 +957,6 @@ def validate_enrollment_prerequisites(
         # Check MDM reachability if requested
         if check_mdm_reachability:
             try:
-                import urllib.request
                 req = urllib.request.Request(mdm_url, method="HEAD")
                 urllib.request.urlopen(req, timeout=10)
             except urllib.error.URLError:

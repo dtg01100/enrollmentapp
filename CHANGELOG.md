@@ -7,7 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## v0.1.0 (2026-04-27) - Current release
+## v1.0.0b (2026-05-20) - Beta release
+
+### Features
+- **CLI**: Typer-based `ios-enroll` command for device management
+- **Organizations**: Create, delete, show, import, export with PKCS12 identity support
+- **Device operations**: list, info
+- **Enrollment**: supervised pairing, activation, guided-enroll, re-enroll, status, validate
+- **Skip panes**: Presets for Setup Assistant configuration (66 panes supported)
+- **Import**: Apple Configurator `.organization` and MDM `.mobileconfig` files
+- **Identity**: Self-signed CA and server certificate generation
+- **WiFi configuration**: Headless enrollment via WiFi mobileconfig
+- **Linux support**: USB/udev rules for Apple devices
+
+### Bug Fixes
+- **Cloud config reuse**: Devices with existing matching cloud config are now treated as success rather than failure
+- **MDM install retry**: Silent MDM profile install now retries up to 3 times on transient network errors
+- **Error message formatting**: Simplified, human-readable error messages for mobileconfig failures
+- **Quoted path handling**: WiFi mobileconfig paths entered with quotes are now normalized before use
+- **Status readback**: Device enrollment state now correctly reads lockdown keys and cloud configuration
+
+### Privacy
+- **Output redaction**: All user-facing CLI output is sanitized to prevent accidental exposure of PII/secrets
+
+### Technical
+- Built on `pymobiledevice3` and `libimobiledevice`
+- Organization storage in `~/.config/apple_device_cli/orgs/`
+- Comprehensive test suite with unit, integration, and redaction coverage
+
+## v0.1.0 (2026-04-27)
 
 ### Features
 - **CLI**: Typer-based `ios-enroll` command for device management

@@ -81,6 +81,7 @@ class Organization:
         metadata = self.to_dict()
         del metadata["cert_path"]
         del metadata["key_path"]
+        del metadata["mdm_mobileconfig_path"]
         # wifi_config_path is a reference, not a copy - keep the original path
         with open(org_dir / "org.json", "w") as f:
             json.dump(metadata, f, indent=2)
@@ -93,6 +94,10 @@ class Organization:
                 dest_key = org_dir / "key.der"
                 if Path(self.key_path) != dest_key:
                     shutil.copy(self.key_path, dest_key)
+            if self.mdm_mobileconfig_path and Path(self.mdm_mobileconfig_path).exists():
+                dest_mdm = org_dir / "mdm.mobileconfig"
+                if Path(self.mdm_mobileconfig_path) != dest_mdm:
+                    shutil.copy(self.mdm_mobileconfig_path, dest_mdm)
 
     @classmethod
     def load(cls, org_dir: Path) -> "Organization":
@@ -100,6 +105,7 @@ class Organization:
             data = json.load(f)
         data["cert_path"] = str(org_dir / "cert.der") if (org_dir / "cert.der").exists() else None
         data["key_path"] = str(org_dir / "key.der") if (org_dir / "key.der").exists() else None
+        data["mdm_mobileconfig_path"] = str(org_dir / "mdm.mobileconfig") if (org_dir / "mdm.mobileconfig").exists() else None
         # wifi_config_path is stored as a reference in org.json
         return cls.from_dict(data)
 

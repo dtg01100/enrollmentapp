@@ -88,13 +88,35 @@ def test_organization_save_load_with_mdm_fields():
         )
         org.save(Path(tmpdir))
         loaded = Organization.load(Path(tmpdir))
-        
+
         assert loaded.name == "Test Org"
         assert loaded.mdm_url == "https://mdm.example.com/mdm"
         assert loaded.checkin_url == "https://mdm.example.com/checkin"
         assert loaded.mdm_topic == "com.test.topic"
         assert loaded.mdm_description == "Test MDM Provider"
         assert loaded.identity_ref == "cert-uuid-123"
+
+
+def test_organization_save_load_with_mdm_mobileconfig():
+    """Test that save/load copies mdm.mobileconfig file to org directory."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        external_mdm_config = tmpdir_path / "external_mdm.mobileconfig"
+        external_mdm_config.write_bytes(b"mock mobileconfig content")
+
+        org = Organization(
+            name="Test Org",
+            mdm_mobileconfig_path=str(external_mdm_config),
+        )
+        save_dir = tmpdir_path / "saved_org"
+        save_dir.mkdir()
+        org.save(save_dir)
+
+        assert (save_dir / "mdm.mobileconfig").exists()
+        assert (save_dir / "mdm.mobileconfig").read_bytes() == b"mock mobileconfig content"
+
+        loaded = Organization.load(save_dir)
+        assert loaded.mdm_mobileconfig_path == str(save_dir / "mdm.mobileconfig")
 
 
 def test_organization_save_load_with_cert_and_key():

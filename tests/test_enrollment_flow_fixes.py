@@ -191,7 +191,7 @@ class TestCloudConfigBugFix:
                 "SkipSetup": ["Passcode"],
             }
             svc.get_cloud_configuration = AsyncMock(return_value=existing_cloud_config)
-            svc.store_profile = AsyncMock()
+            svc.install_profile_silent = AsyncMock()
             svc.__aenter__.return_value = svc
             svc.__aexit__.return_value = False
 
@@ -211,7 +211,7 @@ class TestCloudConfigBugFix:
         assert result.mdm_enrolled is True
         assert result.errors == []
         assert svc.set_cloud_configuration.await_count == 1
-        svc.store_profile.assert_awaited_once()
+        svc.install_profile_silent.assert_awaited_once()
 
     def test_make_supervised_retries_transient_mdm_network_error(self, mock_pymobiledevice3):
         """Test: transient MDM network errors are retried and can recover."""
@@ -231,7 +231,7 @@ class TestCloudConfigBugFix:
 
         svc = AsyncMock()
         svc.set_cloud_configuration = AsyncMock()
-        svc.store_profile = AsyncMock(side_effect=[transient_error, None])
+        svc.install_profile_silent = AsyncMock(side_effect=[transient_error, None])
         svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
         svc.__aenter__.return_value = svc
         svc.__aexit__.return_value = False
@@ -280,7 +280,7 @@ class TestCloudConfigBugFix:
         assert result.success is True
         assert result.mdm_enrolled is True
         assert result.errors == []
-        assert svc.store_profile.await_count == 2
+        assert svc.install_profile_silent.await_count == 2
         mock_sleep.assert_awaited_once()
 
 

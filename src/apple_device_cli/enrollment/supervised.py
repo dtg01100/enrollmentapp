@@ -527,14 +527,15 @@ async def do_supervised_pairing(
     _progress("Applying supervision...")
     config_set = False
     device_disconnected = False
+
+    # Create keybag BEFORE tempdir block - needed for MDM install after tempdir closes
+    keybag_path = Path(tempfile.gettempdir()) / f"ios_enroll_keybag_{uuid4().hex[:8]}"
+    if Path(cert_path).exists() and Path(key_path).exists():
+        _create_keybag_file_from_identity(keybag_path, cert_path, key_path)
+    else:
+        create_keybag_file(keybag_path, org_name)
+
     with tempfile.TemporaryDirectory() as tmpdir:
-        keybag_path = Path(tmpdir) / "keybag"
-
-        if Path(cert_path).exists() and Path(key_path).exists():
-            _create_keybag_file_from_identity(keybag_path, cert_path, key_path)
-        else:
-            create_keybag_file(keybag_path, org_name)
-
         # Build cloud configuration payload
         cloud_config_payload = {
             "AllowPairing": True,

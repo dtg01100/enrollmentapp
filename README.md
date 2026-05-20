@@ -40,7 +40,14 @@ sudo udevadm trigger
 ### Install ios-enroll
 
 ```bash
+# With uv (recommended)
 uv tool install .
+
+# With pip
+pip install .
+
+# Editable/dev install
+pip install -e .
 ```
 
 ## Usage

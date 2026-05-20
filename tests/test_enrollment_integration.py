@@ -182,7 +182,8 @@ class TestEnrollmentFlowIntegration:
         flow = ReenrollmentFlow()
         
         with patch('apple_device_cli.enrollment.flows.erase_device_for_reenrollment') as mock_erase, \
-             patch('apple_device_cli.enrollment.flows.make_supervised') as mock_make_supervised:
+             patch('apple_device_cli.enrollment.flows.make_supervised') as mock_make_supervised, \
+             patch('apple_device_cli.enrollment.flows.time.sleep') as mock_sleep:
             mock_erase.return_value = True  # Erase succeeds
             
             # make_supervised is synchronous, returns EnrollmentResult directly

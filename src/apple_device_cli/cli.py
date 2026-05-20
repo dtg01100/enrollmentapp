@@ -9,7 +9,7 @@ import json
 import asyncio
 import typer
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+
 
 from apple_device_cli import __version__
 from apple_device_cli.core.redaction import (
@@ -24,22 +24,11 @@ from apple_device_cli.core.redaction import (
     sanitize_text,
 )
 from apple_device_cli.device.connection import (
-    ensure_device_pairing,
     get_device_info,
     list_devices,
-    wait_for_udid_in_usbmux,
 )
 from apple_device_cli.device.info import DeviceInfo
-from apple_device_cli.restore.erase import (
-    enter_recovery_mode,
-    erase_device,
-    get_signed_firmwares,
-    resolve_firmware_url,
-    restore_device,
-    update_device,
-    InsufficientSpaceError,
-    RestoreError,
-)
+
 from apple_device_cli.orgs.manager import OrganizationManager, Organization
 from apple_device_cli.orgs.identity import generate_org_identity, load_cert_info
 from apple_device_cli.enrollment.skip_panes import resolve_skip_panes
@@ -94,10 +83,6 @@ def _device_help() -> None:
     typer.echo("Commands:")
     typer.echo("  ios-enroll device list            List connected devices")
     typer.echo("  ios-enroll device info            Show device details")
-    typer.echo("  ios-enroll device erase           Erase and restore device")
-    typer.echo("  ios-enroll device update          Update device firmware")
-    typer.echo("  ios-enroll device restore         Full restore device")
-    typer.echo("  ios-enroll device enter-recovery  Enter recovery mode")
     typer.echo("\nExample: ios-enroll device list")
 
 
@@ -149,43 +134,6 @@ def enroll_group(ctx: typer.Context):
 
 console = Console()
 
-
-def _make_rich_progress_callback(description: str = "Processing") -> tuple[Progress | None, Callable[[str], None] | None]:
-    """Create a rich progress bar for operations with progress callbacks.
-
-    Returns (progress, callback) tuple. If rich is available, returns a progress bar
-    and callback. Otherwise returns (None, None) and messages go to typer.echo.
-    """
-    progress = Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        console=console,
-        transient=True,
-    )
-    task_id = progress.add_task(description, total=100)
-
-    def callback(msg: str) -> None:
-        if "Downloaded" in msg and "%" in msg:
-            try:
-                pct = float(msg.split("(")[1].split("%")[0])
-                progress.update(task_id, completed=pct)
-            except (IndexError, ValueError):
-                progress.update(task_id, description=f"  {sanitize_text(msg)}")
-        elif "Download complete" in msg:
-            progress.update(task_id, description="  Complete", completed=100)
-        elif msg.startswith("  Downloaded"):
-            try:
-                parts = msg.split("(")[1].split("%")[0]
-                pct = float(parts)
-                progress.update(task_id, completed=pct)
-            except (IndexError, ValueError):
-                progress.update(task_id, description=f"  {sanitize_text(msg)}")
-        else:
-            progress.update(task_id, description=f"  {sanitize_text(msg)}")
-
-    return progress, callback
 
 
 @app.callback(invoke_without_command=True)
@@ -517,27 +465,12 @@ def interactive_enroll():
         needs_erase = False
 
     if needs_erase:
-        typer.echo("Erasing device...")
-        if not selected.ecid:
-            typer.secho("Cannot erase: device ECID not available. Connect device in normal mode first.", fg=typer.colors.RED)
-            raise typer.Exit(1)
-        try:
-            firmware_url = resolve_firmware_url(selected.device_type, "latest")
-            typer.echo(f"Using latest signed iOS for {selected.device_type}...")
-        except Exception as e:
-            typer.secho(f"Failed to resolve IPSW: {e}", fg=typer.colors.RED)
-            typer.echo("Provide --ipsw or --version to override, or ensure device is connected in normal mode.")
-            raise typer.Exit(1)
-        try:
-            erase_device(selected.udid, selected.ecid, ipsw=firmware_url)
-        except Exception as e:
-            typer.secho(f"Erase failed: {e}", fg=typer.colors.RED)
-            raise typer.Exit(1)
-        typer.secho("Device erased. Waiting for boot...", fg=typer.colors.YELLOW)
-        if not wait_for_udid_in_usbmux(selected.udid, timeout=120):
-            typer.secho("Device did not reappear after 2 minutes. Check USB connection.", fg=typer.colors.YELLOW)
-        else:
-            typer.secho("Device ready for supervised pairing.", fg=typer.colors.GREEN)
+        typer.secho("Device needs erase before re-enrollment.", fg=typer.colors.YELLOW)
+        typer.echo("  Use pymobiledevice3 to erase:")
+        typer.echo(f"    pymobiledevice3 restore update --udid {selected.udid}")
+        typer.echo("  After erase completes, re-connect the device and run this enrollment again.")
+        typer.secho("Aborted.", fg=typer.colors.YELLOW)
+        raise typer.Exit(1)
 
     # Step 7: Apply configuration
     typer.echo("\nStep 7: Apply Configuration")
@@ -601,20 +534,9 @@ def interactive_enroll():
 def _prompt_for_udid(udid: str | None, allow_empty: bool = False) -> DeviceInfo | None:
     """Resolve a device selection, prompting the user when needed."""
     if udid:
-        # For explicit UDID, try IRecv first since the device is likely in
-        # Recovery mode (usbmuxd not serving Recovery devices). Use udid as
-        # serial to match, but IRecv.connect() will use the ECID from the
-        # connected device.
-        from apple_device_cli.device.connection import get_device_info_for_recovery
-
-        info = get_device_info_for_recovery(udid)
-        if info and info.device_type not in ("", "Unknown"):
-            return info
-        # Also try normal-mode lockdown in case device is in normal mode
         info = get_device_info(udid)
         if info and info.device_type not in ("", "Unknown"):
             return info
-        # Last resort: return stub (caller can still proceed with --ipsw)
         return DeviceInfo(
             udid=udid,
             device_name="Unknown",
@@ -623,88 +545,24 @@ def _prompt_for_udid(udid: str | None, allow_empty: bool = False) -> DeviceInfo 
             firmware_version="Unknown",
         )
 
-    # Start with normal-mode devices
     devices = list_devices()
-    recovery_devices: list[DeviceInfo] = []
 
-    # Also check for Recovery/DFU mode devices
-    try:
-        from apple_device_cli.restore.erase import get_irecv
-        irecv = get_irecv()
-        # IRecv connects to Recovery mode device and populates attributes directly
-        ecid_val = getattr(irecv, 'ecid', None)
-        if ecid_val:
-            ecid_str = hex(ecid_val)
-            try:
-                iboot = irecv.iboot_version
-            except Exception:
-                iboot = "Unknown"
-            recovery_devices.append(DeviceInfo(
-                udid=ecid_str,
-                device_name=getattr(irecv, 'display_name', None) or "Recovery Mode Device",
-                device_type=getattr(irecv, 'product_type', None) or "Unknown",
-                build_version=iboot,
-                firmware_version="",
-                ecid=ecid_str,
-                is_recovery=True,
-            ))
-    except Exception:
-        pass
-
-    # Combine normal and recovery devices for selection
-    all_devices = devices + recovery_devices
-
-    if not all_devices:
+    if not devices:
         if allow_empty:
             return None
         typer.secho("No devices found. Connect a device and try again.", fg=typer.colors.RED)
         raise typer.Exit(1)
 
     typer.echo("Available devices:")
-    for i, device in enumerate(all_devices, start=1):
-        mode_note = " [Recovery]" if device.is_recovery else ""
-        redacted_extra = f" [ECID: {_display_udid(device.ecid)}]" if device.ecid else ""
-        typer.echo(f"  [{i}] {_display_udid(device.udid)}  ({device.device_name}){redacted_extra}{mode_note}")
+    for i, device in enumerate(devices, start=1):
+        typer.echo(f"  [{i}] {_display_udid(device.udid)}  ({device.device_name})")
     typer.echo()
     choice = typer.prompt("Select device number", default="1")
     try:
-        return all_devices[int(choice) - 1]
+        return devices[int(choice) - 1]
     except (ValueError, IndexError) as exc:
         typer.secho("Invalid selection", fg=typer.colors.RED)
         raise typer.Exit(1) from exc
-
-
-def _device_is_in_recovery_mode(ecid: str | None) -> bool:
-    """Check if a device with the given ECID is currently in Recovery mode."""
-    if not ecid:
-        return False
-    try:
-        from pymobiledevice3.irecv import IRecv
-        irecv = IRecv(ecid=int(ecid, 16), timeout=2, is_recovery=True)
-        return irecv._device is not None
-    except Exception:
-        return False
-
-
-def _prompt_for_signed_firmware(device: DeviceInfo) -> str:
-    """Prompt the user to choose a signed IPSW URL for a device type."""
-    firmwares = get_signed_firmwares(device.device_type)
-    typer.echo("Signed iOS versions:")
-    for i, firmware in enumerate(firmwares, start=1):
-        typer.echo(f"  [{i}] {firmware['version']} ({firmware['buildid']})")
-    typer.echo()
-    choice = typer.prompt("Select iOS version", default="1")
-    try:
-        selected = firmwares[int(choice) - 1]
-    except (ValueError, IndexError) as exc:
-        typer.secho("Invalid version selection", fg=typer.colors.RED)
-        raise typer.Exit(1) from exc
-
-    typer.secho(
-        f"Using signed build {selected['version']} ({selected['buildid']})",
-        fg=typer.colors.GREEN,
-    )
-    return selected["url"]
 
 
 async def _get_device_activation_state(udid: str):
@@ -712,78 +570,6 @@ async def _get_device_activation_state(udid: str):
 
     lockdown = await create_using_usbmux(serial=udid)
     return lockdown.all_values
-
-
-def _prompt_for_work_dir(needed_mb: int, available_mb: int, error_msg: str) -> Path | None:
-    """Prompt user for a work directory with enough space.
-
-    Args:
-        needed_mb: Minimum space needed in MB
-        available_mb: Current available space in MB
-        error_msg: The original error message
-
-    Returns:
-        Path to selected directory, or None if cancelled
-    """
-    typer.secho(f"\n{error_msg}", fg=typer.colors.RED)
-    typer.echo(f"Need {needed_mb} MB but only {available_mb} MB available.")
-    typer.echo()
-
-    choice = typer.prompt(
-        "Choose an action: [1] Specify different directory, [2] Use current anyway, [3] Cancel",
-        default="1"
-    )
-
-    if choice == "2":
-        typer.secho("Proceeding without guaranteed space (may fail)...", fg=typer.colors.YELLOW)
-        return None
-    elif choice == "3":
-        typer.secho("Cancelled.", fg=typer.colors.YELLOW)
-        raise typer.Exit(1)
-    else:
-        new_dir = typer.prompt("Enter path to directory with more space (e.g. /mnt/drive)")
-        return Path(new_dir)
-
-
-def _create_org_interactive(manager: OrganizationManager) -> Organization:
-    name = typer.prompt("Organization name")
-    org_id = typer.prompt("Organization ID (e.g. com.example)", default="")
-    mdm_url = typer.prompt("MDM Server URL (leave blank to skip)", default="")
-
-    generate = typer.confirm("Generate a new supervising identity now?")
-    if generate:
-        valid_days = typer.prompt("Certificate validity (days)", default=str(365 * 5))
-        cert_der, key_der = generate_org_identity(name, int(valid_days))
-        org_dir = manager.orgs_dir / manager._sanitize_name(name)
-        if org_dir.exists():
-            typer.secho(f"Overwriting existing organization directory '{org_dir}'.", fg=typer.colors.YELLOW)
-            shutil.rmtree(org_dir)
-        org_dir.mkdir(parents=True, exist_ok=True)
-        with open(org_dir / "cert.der", "wb") as f:
-            f.write(cert_der)
-        with open(org_dir / "key.der", "wb") as f:
-            f.write(key_der)
-        org = Organization(
-            name=name,
-            org_id=org_id or None,
-            mdm_url=mdm_url or None,
-            cert_path=str(org_dir / "cert.der"),
-            key_path=str(org_dir / "key.der"),
-        )
-    else:
-        cert_path = typer.prompt("Path to certificate (DER)", default="")
-        key_path = typer.prompt("Path to private key (DER)", default="")
-        org = Organization(
-            name=name,
-            org_id=org_id or None,
-            mdm_url=mdm_url or None,
-            cert_path=cert_path or None,
-            key_path=key_path or None,
-        )
-
-    manager.save_org(org)
-    typer.secho(f"Organization '{name}' saved.", fg=typer.colors.GREEN)
-    return org
 
 
 @device_app.command("list")
@@ -861,438 +647,6 @@ def device_info(
                 typer.echo(f"ECID: {_display_udid(info.ecid)}")
     else:
         typer.secho(f"Device not found: {_display_udid(udid)}", fg=typer.colors.RED)
-
-
-@device_app.command("erase")
-def device_erase(
-    udid: str = typer.Option(None, "--udid"),
-    ipsw: str = typer.Option(None, "--ipsw"),
-    ios_version: str = typer.Option(None, "--version"),
-    enter_recovery: bool = typer.Option(True, "--enter-recovery/--no-enter-recovery"),
-    yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation prompt"),
-    work_dir: str = typer.Option(None, "--work-dir", help="Directory to store IPSW file (default: current directory)"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would happen without making changes"),
-):
-    """Erase all data on a device and restore to factory state.
-
-    Requires an IPSW file (provide --ipsw or --version)."""
-    device = _prompt_for_udid(udid)
-    if device is None:
-        typer.secho("No device selected", fg=typer.colors.RED)
-        raise typer.Exit(1)
-    if ipsw and ios_version:
-        typer.secho("Use either --ipsw or --version, not both.", fg=typer.colors.RED)
-        raise typer.Exit(1)
-
-    # --- Choose firmware ---
-    try:
-        if ipsw:
-            selected_ipsw = ipsw
-        elif ios_version:
-            if device.device_type in ("", "Unknown"):
-                typer.secho(
-                    "Cannot resolve --version without device type. Provide --ipsw URL/path.",
-                    fg=typer.colors.RED,
-                )
-                raise typer.Exit(1)
-            typer.secho(f"Resolving signed build for iOS {ios_version}...", fg=typer.colors.YELLOW)
-            selected_ipsw = resolve_firmware_url(device.device_type, ios_version)
-            typer.secho(f"Target iOS: {ios_version}  ->  {selected_ipsw}", fg=typer.colors.GREEN)
-        elif yes:
-            if device.device_type in ("", "Unknown"):
-                typer.secho(
-                    "Cannot auto-select firmware without device type. Provide --ipsw URL/path or --version.",
-                    fg=typer.colors.RED,
-                )
-                raise typer.Exit(1)
-            firmwares = get_signed_firmwares(device.device_type)
-            latest = firmwares[0]
-            selected_ipsw = latest["url"]
-            typer.secho(
-                f"Auto-selected latest signed build: {latest['version']} ({latest['buildid']})",
-                fg=typer.colors.GREEN,
-            )
-        else:
-            selected_ipsw = _prompt_for_signed_firmware(device)
-
-        # --- Preflight info ---
-        typer.echo()
-        typer.secho("=" * 52, fg=typer.colors.RED, bold=True)
-        typer.secho("  WARNING: This will ERASE ALL DATA on the device", fg=typer.colors.RED, bold=True)
-        typer.secho("=" * 52, fg=typer.colors.RED, bold=True)
-        typer.echo()
-        typer.echo(f"  Device:  {device.device_name}")
-        typer.echo(f"  UDID:    {_display_udid(device.udid)}")
-        if device.firmware_version:
-            typer.echo(f"  iOS:     {device.firmware_version} ({device.build_version})")
-        if device.ecid:
-            typer.echo(f"  ECID:    {_display_udid(device.ecid)}")
-        typer.echo()
-        typer.secho("  This operation cannot be undone.", fg=typer.colors.YELLOW)
-        typer.secho("  Ensure the device is charged and connected before proceeding.", fg=typer.colors.YELLOW)
-        typer.echo()
-
-        if not yes:
-            if not typer.confirm("Proceed with erase?", default=True):
-                typer.secho("Erase cancelled.", fg=typer.colors.YELLOW)
-                raise typer.Exit(1)
-            confirm_name = typer.prompt(
-                f'  Type the device name "{device.device_name}" to confirm erase'
-            )
-            if confirm_name.strip() != device.device_name:
-                typer.secho("Confirmation did not match. Erase cancelled.", fg=typer.colors.RED)
-                raise typer.Exit(1)
-
-        if dry_run:
-            typer.secho("[DRY RUN] Would perform erase operation:", fg=typer.colors.CYAN)
-            typer.echo(f"  Device: {device.device_name} ({_display_udid(device.udid)})")
-            typer.echo(f"  Firmware: {selected_ipsw}")
-            typer.echo(f"  Enter Recovery: {enter_recovery}")
-            return
-
-        if enter_recovery:
-            # Check if device is already in Recovery mode
-            if _device_is_in_recovery_mode(device.ecid):
-                typer.secho("Device is already in Recovery mode.", fg=typer.colors.GREEN)
-            else:
-                typer.secho(
-                    "Placing device into Recovery mode (waiting up to 3 min)...",
-                    fg=typer.colors.YELLOW,
-                )
-                if not wait_for_udid_in_usbmux(device.udid, timeout=60):
-                    raise AppleDeviceError(
-                        "Device is not visible in normal mode via usbmux. Unlock the iPad, accept Trust, and reconnect USB."
-                    )
-                typer.secho("Verifying trust/pairing with device...", fg=typer.colors.YELLOW)
-                ensure_device_pairing(device.udid)
-                enter_recovery_mode(device.udid, device.ecid or None)
-                typer.secho("Device is in Recovery mode.", fg=typer.colors.GREEN)
-        elif not _device_is_in_recovery_mode(device.ecid):
-            # User said don't enter recovery, but device is in normal mode
-            # and we're doing an erase which requires Recovery mode
-            raise AppleDeviceError(
-                "Cannot erase: device is in normal mode but --no-enter-recovery was set. "
-                "Erase requires the device to be in Recovery mode. Omit --no-enter-recovery."
-            )
-
-        typer.secho(
-            "Starting erase. Restore output will stream live below.",
-            fg=typer.colors.YELLOW,
-        )
-
-        current_work_dir = work_dir
-
-        rich_progress, erase_callback = _make_rich_progress_callback("Erasing device")
-        if rich_progress:
-            with rich_progress:
-                while True:
-                    try:
-                        erase_device(device.udid, device.ecid or None, ipsw=selected_ipsw, work_dir=current_work_dir, progress_callback=erase_callback)
-                        break
-                    except InsufficientSpaceError as e:
-                        if current_work_dir:
-                            typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
-                        new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
-                        if new_dir is None:
-                            current_work_dir = None
-                        else:
-                            current_work_dir = str(new_dir)
-                    except RestoreError as e:
-                        typer.secho(f"Erase failed: {e}", fg=typer.colors.RED)
-                        return
-        else:
-            def erase_progress(msg: str) -> None:
-                typer.echo(f"  {msg}")
-            while True:
-                try:
-                    erase_device(device.udid, device.ecid or None, ipsw=selected_ipsw, work_dir=current_work_dir, progress_callback=erase_progress)
-                    break
-                except InsufficientSpaceError as e:
-                    if current_work_dir:
-                        typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
-                    new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
-                    if new_dir is None:
-                        current_work_dir = None
-                    else:
-                        current_work_dir = str(new_dir)
-                except RestoreError as e:
-                    typer.secho(f"Erase failed: {e}", fg=typer.colors.RED)
-                    return
-
-        typer.secho("Erase completed", fg=typer.colors.GREEN)
-    except typer.Abort:
-        typer.secho("Erase cancelled.", fg=typer.colors.YELLOW)
-    except RestoreError as e:
-        typer.secho(f"Erase failed: {e}", fg=typer.colors.RED)
-    except AppleDeviceError as e:
-        typer.secho(f"Error: {e}", fg=typer.colors.RED)
-    except Exception as e:
-        typer.secho(f"Unexpected error: {e}", fg=typer.colors.RED)
-
-
-@device_app.command("update")
-def device_update(
-    udid: str = typer.Option(None, "--udid"),
-    ipsw: str = typer.Option(None, "--ipsw"),
-    ios_version: str = typer.Option(None, "--version"),
-    enter_recovery: bool = typer.Option(True, "--enter-recovery/--no-enter-recovery"),
-    yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation prompt"),
-    work_dir: str = typer.Option(None, "--work-dir", help="Directory to store IPSW file (default: current directory)"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would happen without making changes"),
-):
-    """Update device to a signed iOS version (preserves user data)."""
-    device = _prompt_for_udid(udid)
-    if device is None:
-        typer.secho("No device selected", fg=typer.colors.RED)
-        raise typer.Exit(1)
-    if ipsw and ios_version:
-        typer.secho("Use either --ipsw or --version, not both.", fg=typer.colors.RED)
-        raise typer.Exit(1)
-
-    try:
-        # --- Preflight info ---
-        typer.echo()
-        typer.secho("iOS Update / Upgrade", fg=typer.colors.BLUE, bold=True)
-        typer.secho("-" * 40)
-        typer.echo(f"  Device:  {device.device_name}")
-        typer.echo(f"  UDID:    {_display_udid(device.udid)}")
-        if device.firmware_version:
-            typer.echo(f"  Current iOS:  {device.firmware_version} ({device.build_version})")
-        if device.ecid:
-            typer.echo(f"  ECID:    {_display_udid(device.ecid)}")
-        typer.echo()
-
-        # --- Choose firmware ---
-        if ipsw:
-            selected_ipsw = ipsw
-            typer.secho(f"Target IPSW: {selected_ipsw}", fg=typer.colors.GREEN)
-        elif ios_version:
-            if device.device_type in ("", "Unknown"):
-                typer.secho(
-                    "Cannot resolve --version without device type. Provide --ipsw URL/path.",
-                    fg=typer.colors.RED,
-                )
-                raise typer.Exit(1)
-            typer.secho(f"Resolving signed build for iOS {ios_version}...", fg=typer.colors.YELLOW)
-            selected_ipsw = resolve_firmware_url(device.device_type, ios_version)
-            typer.secho(f"Target iOS: {ios_version}  →  {selected_ipsw}", fg=typer.colors.GREEN)
-        elif yes:
-            if device.device_type in ("", "Unknown"):
-                typer.secho(
-                    "Cannot auto-select firmware without device type. Provide --ipsw URL/path or --version.",
-                    fg=typer.colors.RED,
-                )
-                raise typer.Exit(1)
-            # Non-interactive mode: auto-select the latest signed build.
-            firmwares = get_signed_firmwares(device.device_type)
-            latest = firmwares[0]
-            selected_ipsw = latest["url"]
-            typer.secho(
-                f"Auto-selected latest signed build: {latest['version']} ({latest['buildid']})",
-                fg=typer.colors.GREEN,
-            )
-        else:
-            selected_ipsw = _prompt_for_signed_firmware(device)
-
-        typer.echo()
-        typer.secho("Pre-update checklist:", fg=typer.colors.YELLOW)
-        typer.echo("  • Keep the device plugged in throughout the update")
-        typer.echo("  • The device will reboot one or more times")
-        typer.echo("  • User data is preserved (this is NOT a factory reset)")
-        typer.echo()
-
-        if not yes:
-            typer.confirm("Proceed with update?", default=True, abort=True)
-
-        if dry_run:
-            typer.secho("[DRY RUN] Would perform update operation:", fg=typer.colors.CYAN)
-            typer.echo(f"  Device: {device.device_name} ({_display_udid(device.udid)})")
-            typer.echo(f"  Firmware: {selected_ipsw}")
-            typer.echo(f"  Enter Recovery: {enter_recovery}")
-            return
-
-        if enter_recovery:
-            typer.secho(
-                "\nStep 1/3  Placing device into Recovery mode (waiting up to 3 min)...",
-                fg=typer.colors.YELLOW,
-            )
-            if not wait_for_udid_in_usbmux(device.udid, timeout=60):
-                raise AppleDeviceError(
-                    "Device is not visible in normal mode via usbmux. Unlock the iPad, accept Trust, and reconnect USB."
-                )
-            typer.secho("          Verifying trust/pairing with device...", fg=typer.colors.YELLOW)
-            ensure_device_pairing(device.udid)
-            enter_recovery_mode(device.udid, device.ecid or None)
-            typer.secho("          Device is in Recovery mode.", fg=typer.colors.GREEN)
-        typer.secho(
-            "\nStep 2/3  Starting update — output streams live below.",
-            fg=typer.colors.YELLOW,
-        )
-
-        current_work_dir = work_dir
-
-        rich_progress, update_callback = _make_rich_progress_callback("Updating device")
-        if rich_progress:
-            with rich_progress:
-                while True:
-                    try:
-                        update_device(device.udid, device.ecid or None, ipsw=selected_ipsw, work_dir=current_work_dir, progress_callback=update_callback)
-                        break
-                    except InsufficientSpaceError as e:
-                        if current_work_dir:
-                            typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
-                        new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
-                        if new_dir is None:
-                            current_work_dir = None
-                        else:
-                            current_work_dir = str(new_dir)
-                    except RestoreError as e:
-                        typer.secho(f"Update failed: {e}", fg=typer.colors.RED)
-                        return
-        else:
-            def update_progress(msg: str) -> None:
-                typer.echo(f"  {msg}")
-            while True:
-                try:
-                    update_device(device.udid, device.ecid or None, ipsw=selected_ipsw, work_dir=current_work_dir, progress_callback=update_progress)
-                    break
-                except InsufficientSpaceError as e:
-                    if current_work_dir:
-                        typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
-                    new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
-                    if new_dir is None:
-                        current_work_dir = None
-                    else:
-                        current_work_dir = str(new_dir)
-                except RestoreError as e:
-                    typer.secho(f"Update failed: {e}", fg=typer.colors.RED)
-                    return
-
-        typer.echo()
-        typer.secho("Step 3/3  Update complete.", fg=typer.colors.GREEN, bold=True)
-        typer.echo("          The device will reboot into the updated iOS version.")
-    except typer.Abort:
-        typer.secho("Update cancelled.", fg=typer.colors.YELLOW)
-    except AppleDeviceError as e:
-        typer.secho(f"Error: {e}", fg=typer.colors.RED)
-    except Exception as e:
-        typer.secho(f"Unexpected error: {e}", fg=typer.colors.RED)
-
-
-@device_app.command("restore")
-def device_restore(
-    udid: str = typer.Option(None, "--udid"),
-    ipsw: str = typer.Option(None, "--ipsw"),
-    enter_recovery: bool = typer.Option(True, "--enter-recovery/--no-enter-recovery"),
-    work_dir: str = typer.Option(None, "--work-dir", help="Directory to store IPSW file (default: current directory)"),
-):
-    """Restore device with IPSW."""
-    device = _prompt_for_udid(udid)
-    if device is None:
-        typer.secho("No device selected", fg=typer.colors.RED)
-        raise typer.Exit(1)
-
-    if not ipsw:
-        ipsw = typer.prompt("IPSW path or URL (required)")
-        if not ipsw:
-            typer.secho("Restore cancelled: IPSW path required", fg=typer.colors.YELLOW)
-            return
-
-    typer.echo(f"Selected device: {device.device_name} ({_display_udid(device.udid)})")
-    if enter_recovery:
-        typer.secho(
-            "Placing device into Recovery mode before restore...",
-            fg=typer.colors.YELLOW,
-        )
-        if not wait_for_udid_in_usbmux(device.udid, timeout=60):
-            raise AppleDeviceError(
-                "Device is not visible in normal mode via usbmux. Unlock the iPad, accept Trust, and reconnect USB."
-            )
-        typer.secho("Verifying trust/pairing with device...", fg=typer.colors.YELLOW)
-        ensure_device_pairing(device.udid)
-        enter_recovery_mode(device.udid, device.ecid or None)
-    typer.secho(
-        "Starting restore. pymobiledevice3 output will stream live; the device may reboot or enter Recovery mode.",
-        fg=typer.colors.YELLOW,
-    )
-
-    current_work_dir = work_dir
-
-    rich_progress, restore_callback = _make_rich_progress_callback("Restoring device")
-    if rich_progress:
-        with rich_progress:
-            while True:
-                try:
-                    restore_device(device.udid, ecid=device.ecid or None, ipsw=ipsw, work_dir=current_work_dir, progress_callback=restore_callback)
-                    break
-                except InsufficientSpaceError as e:
-                    if current_work_dir:
-                        typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
-                    new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
-                    if new_dir is None:
-                        current_work_dir = None
-                    else:
-                        current_work_dir = str(new_dir)
-                except RestoreError as e:
-                    typer.secho(f"Restore failed: {e}", fg=typer.colors.RED)
-                    return
-    else:
-        while True:
-            try:
-                restore_device(device.udid, ecid=device.ecid or None, ipsw=ipsw, work_dir=current_work_dir, progress_callback=lambda msg: typer.echo(f"  {msg}"))
-                break
-            except InsufficientSpaceError as e:
-                if current_work_dir:
-                    typer.secho(f"Not enough space at specified directory: {current_work_dir}", fg=typer.colors.RED)
-                new_dir = _prompt_for_work_dir(e.needed_mb, e.available_mb, str(e))
-                if new_dir is None:
-                    current_work_dir = None
-                else:
-                    current_work_dir = str(new_dir)
-            except RestoreError as e:
-                typer.secho(f"Restore failed: {e}", fg=typer.colors.RED)
-                return
-
-    typer.secho("Restore completed", fg=typer.colors.GREEN)
-
-
-@device_app.command("enter-recovery")
-def device_enter_recovery(
-    udid: str = typer.Option(None, "--udid"),
-):
-    """Place a device into Recovery mode.
-
-    Use this when the device is in Normal mode and you need to perform
-    a restore, erase, or update operation.
-    """
-    device = _prompt_for_udid(udid)
-    if device is None:
-        typer.secho("No device selected", fg=typer.colors.RED)
-        raise typer.Exit(1)
-
-    typer.echo(f"Device: {device.device_name} ({_display_udid(device.udid)})")
-    if device.ecid:
-        typer.echo(f"ECID: {_display_udid(device.ecid)}")
-    typer.echo()
-
-    try:
-        # Ensure device is in normal mode and paired
-        if not wait_for_udid_in_usbmux(device.udid, timeout=60):
-            raise AppleDeviceError(
-                "Device is not visible in normal mode via usbmux. "
-                "Unlock the device, accept Trust, and reconnect USB."
-            )
-        typer.secho("Verifying trust/pairing with device...", fg=typer.colors.YELLOW)
-        ensure_device_pairing(device.udid)
-
-        typer.secho(
-            "Placing device into Recovery mode (waiting up to 3 min)...",
-            fg=typer.colors.YELLOW,
-        )
-        enter_recovery_mode(device.udid, device.ecid or None)
-        typer.secho("Device is in Recovery mode.", fg=typer.colors.GREEN)
-    except AppleDeviceError as e:
-        typer.secho(f"Error: {e}", fg=typer.colors.RED)
 
 
 @org_app.command("list")

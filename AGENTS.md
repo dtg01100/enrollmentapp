@@ -40,10 +40,9 @@ User Input (CLI)
     v
 Typer App (cli.py)
     |
-    +-- device/      # Device enumeration, info, state
+    +-- device/      # Device enumeration, info
     +-- enrollment/  # Supervised pairing, activation, skip panes
     +-- orgs/        # Organization management, identity
-    +-- restore/     # Erase, update, restore operations
     +-- core/        # Exceptions, redaction utilities
 ```
 
@@ -56,10 +55,9 @@ Typer App (cli.py)
 | `src/apple_device_cli/` | Main package |
 | `src/apple_device_cli/cli.py` | Typer app entry point |
 | `src/apple_device_cli/core/` | Exceptions, redaction |
-| `src/apple_device_cli/device/` | Device connection, info, state |
+| `src/apple_device_cli/device/` | Device connection, info |
 | `src/apple_device_cli/enrollment/` | Supervised, activation, skip panes |
 | `src/apple_device_cli/orgs/` | Organization manager, identity |
-| `src/apple_device_cli/restore/` | Erase, update, restore |
 | `tests/` | pytest test suite |
 | `~/.config/apple_device_cli/orgs/` | Default org storage |
 
@@ -110,7 +108,6 @@ class MyClass:
 | `enrollment/flows.py` | Enrollment flow utilities |
 | `orgs/manager.py` | OrganizationManager, Organization |
 | `orgs/identity.py` | generate_org_identity(), load_cert_info() |
-| `restore/erase.py` | Erase/update/restore operations |
 | `core/exceptions.py` | AppleDeviceError, EnrollmentError |
 | `core/redaction.py` | Address, email, identifier redaction |
 
@@ -235,29 +232,14 @@ resolve_skip_panes(preset: str | None, extra_panes: list[str] | None) -> list[st
 - **Retry logic**: `_maybe_await(svc.store_profile())` with transient network error detection and 3 retries with 5s backoff
 - **Critical ordering**: Cloud config → WiFi → MDM profile (Step 4 → 5 in enrollment flow)
 
-### Restore (restore/erase.py)
-- Uses **Python API** (`Restore(...).update()`) not the broken CLI subprocess
-- `_restore_with_api(ecid_int, ipsw_path, Behavior.Update/Erase)` handles all restore operations
-- All three functions (`erase_device`, `update_device`, `restore_device`) require `ecid` and `ipsw` parameters
-- `IRecv(ecid=int, timeout=5, is_recovery=True)` connects to Recovery/DFU devices via libusb
-- `asyncio.run()` wraps the async `Restore.update()` call
-
-### ipsw_parser Path Bug (regression risk)
-- **Bug**: `ipsw_parser.ipsw.IPSW.create_from_path()` crashes with `AttributeError: 'PosixPath' object has no attribute 'startswith'`
-- **Cause**: The method expects `str` but receives `Path` objects. `Path.startswith()` doesn't exist.
-- **Affected**: `pymobiledevice3 restore update` CLI when downloading IPSW files
-- **Safe**: Our code converts to `str(local_ipsw)` before calling `IPSW.create_from_path()` — always do this, never pass `Path` objects directly
-- **Version**: Affects ipsw_parser >= 1.6.0. Monitor for upstream fix.
-
 ---
 
 ## External Dependencies
 
 | Binary | Used For |
 |--------|----------|
-| `pymobiledevice3` | Device enumeration, lockdown, restore, supervision |
+| `pymobiledevice3` | Device enumeration, lockdown, supervision |
 | `openssl` | Mobileconfig parsing (`smime -verify`) |
-| `idevicerestore` | Erase/restore flows (via `brew --prefix`) |
 
 ---
 
@@ -272,16 +254,6 @@ resolve_skip_panes(preset: str | None, extra_panes: list[str] | None) -> list[st
 
 **Device transport modes:**
 - Normal iOS mode -> usbmuxd (AF_UNIX socket at `/run/usbmuxd`)
-- Recovery / DFU mode -> libusb directly (IRecv / `pymobiledevice3 restore`), usbmuxd not involved at all
-
----
-
-## [WARN] Never Pass `--ecid` to `pymobiledevice3 restore update`
-
-The `restore update` CLI accepts `--ecid` but it is **broken for Recovery mode**: the CLI passes the ecid as a raw string to `IRecv(ecid=...)`, which internally compares it against an `int`. The comparison `int != str` is always `True`, so the device is never found.
-
-- **Do NOT** add `--ecid` to `restore update`, `restore update --erase`, etc.
-- Auto-detection (no `--ecid`) finds the first Recovery-mode device via libusb
 
 ---
 
@@ -316,7 +288,6 @@ grep -r "already exists" src/
 | Change error messages without updating tests | Tests assert exact strings | Update tests first |
 | Assume pymobiledevice3 behavior | Library may not be installed | Read source or mock in tests |
 | Check if usbmuxd is "running" | usbmuxd is on-demand, not a daemon | Let it auto-start when device plugged in |
-| Pass `--ecid` to restore CLI | Broken for Recovery mode | Use Python API or auto-detect |
 
 ### CLI Help Messages
 

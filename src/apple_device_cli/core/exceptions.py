@@ -26,11 +26,6 @@ class ActivationError(AppleDeviceError):
     pass
 
 
-class RestoreError(AppleDeviceError):
-    """Raised when device restore or erase operations fail."""
-    pass
-
-
 class OrganizationError(AppleDeviceError):
     """Raised when organization operations fail."""
     pass

@@ -52,14 +52,20 @@ def get_device_info(udid: str) -> DeviceInfo | None:
 async def _get_device_info_async(udid: str) -> DeviceInfo | None:
     """Get device info using lockdown service."""
     try:
-        # Try without serial first (works when only one device connected)
-        try:
+        # Prioritize specified serial
+        if udid:
+            try:
+                lockdown = await create_using_usbmux(serial=udid)
+                actual_udid = udid
+            except Exception:
+                # Fall back to any device if serial-specific fails (e.g. older usbmuxd)
+                lockdown = await create_using_usbmux()
+                actual_udid = getattr(lockdown, "udid", udid) or udid
+                if udid and actual_udid != udid:
+                    return None
+        else:
             lockdown = await create_using_usbmux()
-            actual_udid = getattr(lockdown, 'udid', None) or udid
-        except Exception:
-            # Fall back to serial when multiple devices might be connected
-            lockdown = await create_using_usbmux(serial=udid)
-            actual_udid = udid
+            actual_udid = getattr(lockdown, "udid", None)
         vals = lockdown.all_values
         # UniqueChipID is the ECID (hex string needed by pymobiledevice3 restore)
         unique_chip_id = vals.get("UniqueChipID", "")
@@ -73,42 +79,6 @@ async def _get_device_info_async(udid: str) -> DeviceInfo | None:
             model=vals.get("ModelNumber", ""),
             serial_number=vals.get("SerialNumber", ""),
             ecid=ecid,
-        )
-    except Exception:
-        return None
-
-
-def get_device_info_for_recovery(udid: str, ecid: str | int | None = None) -> DeviceInfo | None:
-    """Get device info from a Recovery/DFU mode device via IRecv.
-
-    Used when the device is in Recovery mode and usbmux doesn't serve it.
-    """
-    from apple_device_cli.restore.erase import get_irecv
-
-    try:
-        irecv = get_irecv()
-        # If ECID is provided (as hex string or int), use it to select the device
-        if ecid:
-            ecid_int: int
-            if isinstance(ecid, str):
-                ecid_int = int(ecid, 16)
-            else:
-                ecid_int = ecid
-            dev = irecv.lookup(ecid_int)
-        else:
-            # Otherwise create IRecv and let it connect to whatever is in recovery
-            dev = irecv
-        if not dev:
-            return None
-        return DeviceInfo(
-            udid=udid,
-            device_name=getattr(dev, 'display_name', None) or "Recovery Mode Device",
-            device_type=getattr(dev, 'product_type', None) or "Unknown",
-            build_version=getattr(dev, 'build_version', None) or "Unknown",
-            firmware_version=getattr(dev, 'product_version', None) or "Unknown",
-            model=getattr(dev, 'hardware_model', None) or "",
-            serial_number=getattr(dev, 'serial_number', None) or "",
-            ecid=hex(getattr(dev, 'ecid', None)) if getattr(dev, 'ecid', None) else None,
         )
     except Exception:
         return None

@@ -2,6 +2,15 @@
 
 iOS device supervised enrollment CLI for Linux — an Apple Configurator alternative.
 
+## Why
+
+Apple Configurator requires macOS to supervise and enroll iOS devices. This project provides the same functionality on Linux, enabling:
+
+- Supervised device enrollment via command line
+- MDM profile installation without macOS
+- Automated enrollment workflows
+- Organization-based certificate management
+
 ## Installation
 
 ### System Dependencies

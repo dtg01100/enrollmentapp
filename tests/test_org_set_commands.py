@@ -175,10 +175,102 @@ class TestOrganizationJsonRoundtrip:
             "created_at": "2024-01-01T00:00:00",
         }
         org = Organization.from_dict(data)
-        
+
         assert org.name == "Test"
         assert org.mdm_url is None
         assert org.checkin_url is None
         assert org.mdm_topic is None
         assert org.identity_ref is None
         assert org.mdm_description is None
+
+
+class TestWifiConfigInOrganization:
+    """Tests for WiFi configuration in organizations."""
+
+    def test_organization_with_wifi_config_path(self):
+        """Test that Organization accepts wifi_config_path field."""
+        org = Organization(
+            name="Test Org",
+            wifi_config_path="/path/to/wifi.mobileconfig"
+        )
+        assert org.wifi_config_path == "/path/to/wifi.mobileconfig"
+
+    def test_to_dict_includes_wifi_config_path(self):
+        """Test that to_dict includes wifi_config_path."""
+        org = Organization(
+            name="Test",
+            wifi_config_path="/path/to/wifi.mobileconfig"
+        )
+        data = org.to_dict()
+        assert data["wifi_config_path"] == "/path/to/wifi.mobileconfig"
+
+    def test_to_dict_wifi_config_path_is_none_when_not_set(self):
+        """Test that wifi_config_path is None in to_dict when not set."""
+        org = Organization(name="Test")
+        data = org.to_dict()
+        assert data["wifi_config_path"] is None
+
+    def test_from_dict_loads_wifi_config_path(self):
+        """Test that from_dict correctly loads wifi_config_path."""
+        data = {
+            "name": "Test",
+            "wifi_config_path": "/path/to/wifi.mobileconfig",
+            "created_at": "2024-01-01T00:00:00",
+        }
+        org = Organization.from_dict(data)
+        assert org.wifi_config_path == "/path/to/wifi.mobileconfig"
+
+    def test_from_dict_wifi_config_path_defaults_to_none(self):
+        """Test that wifi_config_path defaults to None when missing."""
+        data = {
+            "name": "Test",
+            "created_at": "2024-01-01T00:00:00",
+        }
+        org = Organization.from_dict(data)
+        assert org.wifi_config_path is None
+
+    def test_wifi_config_path_preserved_through_save_load(self):
+        """Test that wifi_config_path survives a save/load cycle."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            org = Organization(
+                name="Test Org",
+                wifi_config_path="/path/to/wifi.mobileconfig"
+            )
+
+            save_dir = Path(tmpdir) / "test_org"
+            save_dir.mkdir()
+            org.save(save_dir)
+
+            loaded = Organization.load(save_dir)
+            assert loaded.wifi_config_path == "/path/to/wifi.mobileconfig"
+
+    def test_set_wifi_updates_org(self):
+        """Test that setting WiFi config updates org via save with overwrite."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = OrganizationManager(Path(tmpdir))
+
+            org = Organization(name="Test Org")
+            manager.save_org(org)
+
+            org.wifi_config_path = "/path/to/wifi.mobileconfig"
+            manager.save_org(org, overwrite=True)
+
+            updated = manager.get_org("Test Org")
+            assert updated.wifi_config_path == "/path/to/wifi.mobileconfig"
+
+    def test_wifi_config_path_saved_in_org_json(self):
+        """Test that wifi_config_path is saved in org.json file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            org = Organization(
+                name="Test Org",
+                wifi_config_path="/path/to/wifi.mobileconfig"
+            )
+
+            save_dir = Path(tmpdir) / "test_org"
+            save_dir.mkdir()
+            org.save(save_dir)
+
+            import json
+            with open(save_dir / "org.json") as f:
+                data = json.load(f)
+            assert data["wifi_config_path"] == "/path/to/wifi.mobileconfig"

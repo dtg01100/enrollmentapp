@@ -704,6 +704,7 @@ def org_create(
     mdm_description: str = typer.Option(None, "--mdm-description"),
     cert: str = typer.Option(None, "-C", "--cert"),
     key: str = typer.Option(None, "-K", "--key"),
+    wifi_config: str = typer.Option(None, "--wifi-config", help="Path to WiFi mobileconfig file"),
 ):
     """Create organization with MDM server configuration.
 
@@ -726,6 +727,8 @@ def org_create(
         org.cert_path = str(Path(cert).resolve()) if cert else None
     if key:
         org.key_path = str(Path(key).resolve()) if key else None
+    if wifi_config:
+        org.wifi_config_path = str(Path(wifi_config).resolve())
     manager = OrganizationManager()
     manager.save_org(org)
     typer.secho(f"Created organization: {_display_name(org.name)}", fg=typer.colors.GREEN)
@@ -735,6 +738,8 @@ def org_create(
         typer.echo(f"  Check-in URL: {redact_url(checkin_url)}")
     if mdm_topic:
         typer.echo(f"  MDM Topic: {_display_org_id(mdm_topic)}")
+    if org.wifi_config_path:
+        typer.echo(f"  WiFi Config: {redact_path(org.wifi_config_path)}")
 
 
 @org_app.command("delete")

@@ -4,6 +4,41 @@ iOS device supervised enrollment CLI for Linux — an Apple Configurator alterna
 
 ## Installation
 
+### System Dependencies
+
+**libimobiledevice** and **usbmuxd** are required for device communication:
+
+```bash
+# Debian/Ubuntu
+sudo apt install libimobiledevice6 usbmuxd
+
+# Fedora
+sudo dnf install libimobiledevice usbmuxd
+
+# Arch
+sudo pacman -S libimobiledevice usbmuxd
+```
+
+**Apple Device USB Rules** (for non-root device access):
+
+```bash
+# Debian/Ubuntu (comes with libimobiledevice)
+sudo cp /usr/share/doc/libimobiledevice/usbmuxd.conf /etc/usbmuxd.conf
+sudo systemctl restart usbmuxd
+
+# Or manually set up udev rules for Apple devices
+sudo tee /etc/udev/rules.d/99-apple-device.rules << 'EOF'
+# Apple iPhone, iPad, iPod
+SUBSYSTEM=="usb", ATTR{idVendor}=="05ac", MODE="0666"
+# Apple iPhone (CDC Ethernet)
+SUBSYSTEM=="usb", ATTR{idVendor}=="05ac", ATTR{idProduct}=="12*", MODE="0666"
+EOF
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+### Install ios-enroll
+
 ```bash
 uv tool install .
 ```

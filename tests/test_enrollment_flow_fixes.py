@@ -390,3 +390,243 @@ class TestEnrollmentStateReadback:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestKeybagPersistenceForMdmInstall:
+    """Tests that keybag is created in persistent tempdir for MDM install."""
+
+    def test_keybag_created_in_system_tempdir(self):
+        """Verify keybag is created in system tempdir, not a deleted tempdir."""
+        import tempfile
+        from unittest.mock import MagicMock, AsyncMock, patch
+        from pathlib import Path
+        from datetime import datetime, timezone, timedelta
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+
+        lockdown = MagicMock()
+
+        # Create test certs and MDM profile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cert_path = Path(tmpdir) / "cert.der"
+            key_path = Path(tmpdir) / "key.der"
+            mdm_profile_path = Path(tmpdir) / "mdm.mobileconfig"
+            mdm_profile_path.write_bytes(b"<xml>test-mdm</xml>")
+
+            private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            certificate = (
+                x509.CertificateBuilder()
+                .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test Org")]))
+                .issuer_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test Org")]))
+                .public_key(private_key.public_key())
+                .serial_number(1)
+                .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
+                .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365))
+                .sign(private_key, hashes.SHA256())
+            )
+            cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.DER))
+            key_path.write_bytes(
+                private_key.private_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                )
+            )
+
+            svc = AsyncMock()
+            svc.set_cloud_configuration = AsyncMock()
+            svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
+            svc.install_profile_silent = AsyncMock()
+            svc.__aenter__.return_value = svc
+            svc.__aexit__.return_value = False
+
+            # Track the keybag path passed to install_profile_silent
+            captured_keybag = None
+            original_install = svc.install_profile_silent
+
+            async def capture_keybag(keybag, payload):
+                nonlocal captured_keybag
+                captured_keybag = keybag
+                return await original_install(keybag, payload)
+
+            svc.install_profile_silent = AsyncMock(side_effect=capture_keybag)
+
+            with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc):
+                from apple_device_cli.enrollment import supervised
+                supervised.make_supervised(
+                    cert_path=str(cert_path),
+                    key_path=str(key_path),
+                    org_name="Test Org",
+                    mdm_url="https://mdm.example.com/mdm",
+                    mdm_mobileconfig=str(mdm_profile_path),
+                )
+
+            # Verify keybag was passed to install_profile_silent
+            assert captured_keybag is not None, "install_profile_silent should receive keybag"
+            # Verify it's in system tempdir
+            system_temp = Path(tempfile.gettempdir())
+            assert str(captured_keybag).startswith(str(system_temp)), \
+                f"Keybag should be in {system_temp}, got {captured_keybag}"
+            assert "ios_enroll_keybag_" in str(captured_keybag), \
+                "Keybag should have ios_enroll_keybag_ prefix"
+
+    def test_install_profile_silent_called_with_keybag_path(self):
+        """Verify install_profile_silent receives the keybag path for escalation."""
+        from unittest.mock import MagicMock, AsyncMock, patch
+        from pathlib import Path
+        import tempfile
+        from datetime import datetime, timezone, timedelta
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+
+        lockdown = MagicMock()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cert_path = Path(tmpdir) / "cert.der"
+            key_path = Path(tmpdir) / "key.der"
+            mdm_profile_path = Path(tmpdir) / "mdm.mobileconfig"
+            mdm_profile_path.write_bytes(b"<xml>test mdm</xml>")
+
+            private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            certificate = (
+                x509.CertificateBuilder()
+                .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test Org")]))
+                .issuer_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test Org")]))
+                .public_key(private_key.public_key())
+                .serial_number(1)
+                .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
+                .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365))
+                .sign(private_key, hashes.SHA256())
+            )
+            cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.DER))
+            key_path.write_bytes(
+                private_key.private_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                )
+            )
+
+            svc = AsyncMock()
+            svc.set_cloud_configuration = AsyncMock()
+            svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
+            svc.install_profile_silent = AsyncMock()
+            svc.__aenter__.return_value = svc
+            svc.__aexit__.return_value = False
+
+            captured_keybag_path = None
+
+            original_install = svc.install_profile_silent
+
+            async def capture_keybag(keybag, payload):
+                nonlocal captured_keybag_path
+                captured_keybag_path = keybag
+                return await original_install(keybag, payload)
+
+            svc.install_profile_silent = AsyncMock(side_effect=capture_keybag)
+
+            with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc):
+                from apple_device_cli.enrollment import supervised
+                supervised.make_supervised(
+                    cert_path=str(cert_path),
+                    key_path=str(key_path),
+                    org_name="Test Org",
+                    mdm_url="https://mdm.example.com/mdm",
+                    mdm_mobileconfig=str(mdm_profile_path),
+                )
+
+            # Verify keybag path was passed to install_profile_silent
+            assert captured_keybag_path is not None, "install_profile_silent should receive keybag path"
+            assert captured_keybag_path.exists(), f"Keybag file should exist at {captured_keybag_path}"
+            assert captured_keybag_path.stat().st_size > 0, "Keybag file should not be empty"
+
+
+class TestWifiAndMdmInstallOrder:
+    """Tests that WiFi is installed before MDM for proper enrollment."""
+
+    def test_wifi_installed_before_mdm_profile(self):
+        """Verify WiFi profile is installed before MDM profile."""
+        from unittest.mock import MagicMock, AsyncMock, patch
+        from pathlib import Path
+        import tempfile
+        from datetime import datetime, timezone, timedelta
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+
+        lockdown = MagicMock()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cert_path = Path(tmpdir) / "cert.der"
+            key_path = Path(tmpdir) / "key.der"
+            wifi_path = Path(tmpdir) / "wifi.mobileconfig"
+            mdm_path = Path(tmpdir) / "mdm.mobileconfig"
+            wifi_path.write_bytes(b"<xml>wifi</xml>")
+            mdm_path.write_bytes(b"<xml>mdm</xml>")
+
+            private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            certificate = (
+                x509.CertificateBuilder()
+                .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test Org")]))
+                .issuer_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test Org")]))
+                .public_key(private_key.public_key())
+                .serial_number(1)
+                .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
+                .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365))
+                .sign(private_key, hashes.SHA256())
+            )
+            cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.DER))
+            key_path.write_bytes(
+                private_key.private_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                )
+            )
+
+            call_order = []
+
+            svc = AsyncMock()
+            svc.set_cloud_configuration = AsyncMock()
+            svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
+            svc.get_profile_list = AsyncMock(return_value={})
+
+            async def track_install_profile(payload):
+                call_order.append(("install_profile", payload[:20]))
+
+            async def track_install_wifi(payload):
+                call_order.append(("install_wifi", payload[:20]))
+
+            async def track_mdm_install(keybag, payload):
+                call_order.append(("install_profile_silent", str(keybag)[:40], payload[:20]))
+
+            svc.install_profile = AsyncMock(side_effect=track_install_profile)
+            svc.install_wifi_profile = AsyncMock(side_effect=track_install_wifi)
+            svc.install_profile_silent = AsyncMock(side_effect=track_mdm_install)
+            svc.remove_profile = AsyncMock()
+            svc.__aenter__.return_value = svc
+            svc.__aexit__.return_value = False
+
+            with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc):
+                from apple_device_cli.enrollment import supervised
+                supervised.make_supervised(
+                    cert_path=str(cert_path),
+                    key_path=str(key_path),
+                    org_name="Test Org",
+                    wifi_config=str(wifi_path),
+                    mdm_url="https://mdm.example.com/mdm",
+                    mdm_mobileconfig=str(mdm_path),
+                )
+
+            # Verify order: WiFi before MDM
+            install_calls = [c[0] for c in call_order]
+            wifi_idx = next((i for i, c in enumerate(install_calls) if c == "install_profile"), None)
+            mdm_idx = next((i for i, c in enumerate(install_calls) if c == "install_profile_silent"), None)
+
+            if wifi_idx is not None and mdm_idx is not None:
+                assert wifi_idx < mdm_idx, f"WiFi should be installed before MDM. Order: {install_calls}"

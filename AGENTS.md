@@ -224,6 +224,12 @@ resolve_skip_panes(preset: str | None, extra_panes: list[str] | None) -> list[st
 - `supervised.py` uses `MobileConfigService` and `MobileActivationService`
 - Type checkers may report missing imports — expected without the package
 
+### WiFi Configuration
+- CLI auto-detects org's `wifi_config_path` and offers to include it during enrollment
+- User is prompted with default Yes if org has known WiFi config
+- CLI options (`--wifi-config`, `--wifi-ssid`) take priority over org's config
+- WiFi is installed **before** MDM profile (Step 5 in enrollment flow)
+
 ### MDM Profile Installation (regression risk)
 - **Use `store_profile(payload_bytes, Purpose.PostSetupInstallation)`** — stores profile for Setup Assistant enrollment
 - **NEVER use `install_profile_silent(keybag_path, payload_bytes)`** — triggers immediate MDM enrollment which fails if device can't reach server during enrollment flow

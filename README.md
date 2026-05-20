@@ -19,7 +19,7 @@ Apple Configurator requires macOS to supervise and enroll iOS devices. This proj
 
 ```bash
 # Debian/Ubuntu
-sudo apt install libimobiledevice6 usbmuxd
+sudo apt install libimobiledevice-1.0-6 usbmuxd
 
 # Fedora
 sudo dnf install libimobiledevice usbmuxd

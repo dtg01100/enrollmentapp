@@ -653,6 +653,15 @@ async def do_supervised_pairing(
                 try:
                     payload_bytes = wifi_config_path.read_bytes()
                     async with MobileConfigService(lockdown) as svc:
+                        # Remove any existing WiFi profile first to avoid duplicates
+                        existing = await _maybe_await(svc.get_profile_list())
+                        if existing.get("ProfileMetadata"):
+                            for ident in existing["ProfileMetadata"]:
+                                # Check if it's a WiFi profile
+                                meta = existing["ProfileMetadata"][ident]
+                                if meta.get("PayloadType") == "com.apple.wifi.managed":
+                                    _progress(f"Removing existing WiFi profile: {meta.get('PayloadDisplayName', ident)}...")
+                                    await _maybe_await(svc.remove_profile(ident))
                         await _maybe_await(svc.install_profile(payload_bytes))
                     wifi_installed = True
                     _progress(f"WiFi mobileconfig installed: {wifi_config_path.name}")
@@ -669,21 +678,25 @@ async def do_supervised_pairing(
         if mdm_mobileconfig:
             mdm_mobileconfig_path = _normalize_optional_path(mdm_mobileconfig)
             if mdm_mobileconfig_path is not None and mdm_mobileconfig_path.exists():
-                _progress("Storing MDM enrollment profile for Setup Assistant...")
                 payload_bytes = mdm_mobileconfig_path.read_bytes()
                 max_attempts = 3
                 for attempt in range(1, max_attempts + 1):
                     try:
                         async with MobileConfigService(lockdown) as svc:
-                            # IMPORTANT: Use store_profile with PostSetupInstallation — NOT install_profile_silent.
-                            # install_profile_silent triggers immediate MDM enrollment which fails if device can't reach server.
-                            # store_profile stores the profile for Setup Assistant enrollment later.
-                            await _maybe_await(svc.store_profile(payload_bytes, Purpose.PostSetupInstallation))
+                            # Use install_profile_silent with escalation for immediate enrollment.
+                            # This works AFTER WiFi is installed so device can reach MDM server.
+                            # Fall back to store_profile if escalation fails.
+                            if keybag_path and keybag_path.exists():
+                                _progress("Installing MDM profile with escalation (privileged mode)...")
+                                await _maybe_await(svc.install_profile_silent(keybag_path, payload_bytes))
+                            else:
+                                _progress("Storing MDM enrollment profile for Setup Assistant...")
+                                await _maybe_await(svc.store_profile(payload_bytes, Purpose.PostSetupInstallation))
                         mdm_enrolled = True
-                        _progress("MDM enrollment profile stored for post-setup installation")
+                        _progress("MDM enrollment profile installed")
                         break
                     except Exception as e:
-                        error_msg = _format_mobileconfig_error("MDM profile store failed", e)
+                        error_msg = _format_mobileconfig_error("MDM profile install failed", e)
                         if attempt < max_attempts and _is_transient_mobileconfig_network_error(e):
                             _progress(f"{error_msg} Retrying shortly ({attempt}/{max_attempts})...")
                             await asyncio.sleep(5)

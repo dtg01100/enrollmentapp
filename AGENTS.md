@@ -231,12 +231,12 @@ resolve_skip_panes(preset: str | None, extra_panes: list[str] | None) -> list[st
 - WiFi is installed **before** MDM profile (Step 5 in enrollment flow)
 
 ### MDM Profile Installation (regression risk)
-- **Use `store_profile(payload_bytes, Purpose.PostSetupInstallation)`** — stores profile for Setup Assistant enrollment
-- **NEVER use `install_profile_silent(keybag_path, payload_bytes)`** — triggers immediate MDM enrollment which fails if device can't reach server during enrollment flow
-- **Failure mode**: `install_profile_silent` attempts immediate enrollment → device can't reach SimpleMDM → "A network error has occurred" → MDM profile never stored
-- **Device must complete**: WiFi connection + MDM enrollment via Setup Assistant. Profile stored now, enrollment happens later.
-- **Retry logic**: `_maybe_await(svc.store_profile())` with transient network error detection and 3 retries with 5s backoff
-- **Critical ordering**: Cloud config → WiFi → MDM profile (Step 4 → 5 in enrollment flow)
+- **Use `install_profile_silent(keybag_path, payload_bytes)`** after WiFi is installed — device can reach MDM server
+- Requires escalation via the org's keybag file (created from cert/key in Step 3)
+- **Fallback**: Use `store_profile(payload_bytes, Purpose.PostSetupInstallation)` if no keybag available
+- **Critical ordering**: Cloud config → WiFi → MDM profile with escalation (Steps 3 → 5 → 6)
+- **Warning**: `store_profile` alone only works if device goes through Setup Assistant after enrollment
+- Retry logic: 3 attempts with 5s backoff for transient network errors
 
 ---
 

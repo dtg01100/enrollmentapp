@@ -1037,6 +1037,22 @@ def enroll_make_supervised(
         typer.secho(f"Error: {e}", fg=typer.colors.RED)
         return
 
+    # Determine WiFi config: CLI options take priority, fall back to org's wifi_config_path
+    effective_wifi_config = wifi_config
+    effective_wifi_ssid = wifi_ssid
+    effective_wifi_password = wifi_password
+
+    if not effective_wifi_config and not effective_wifi_ssid and org.wifi_config_path:
+        # No CLI wifi options provided, offer org's known wifi config
+        wifi_path = Path(org.wifi_config_path)
+        if wifi_path.exists():
+            typer.echo()
+            typer.echo(f"Organization has known WiFi config: {wifi_path.name}")
+            include_wifi = typer.confirm("Include WiFi profile in enrollment?", default=True)
+            if include_wifi:
+                effective_wifi_config = str(wifi_path)
+                typer.echo(f"  Will install WiFi profile: {wifi_path.name}")
+
     # Set up progress callback if verbose mode
     progress_callback: Callable[[str], None] | None = None
     if verbose:
@@ -1056,13 +1072,13 @@ def enroll_make_supervised(
             org_uuid=org.org_id,
             skip_list=skip_list,
             mdm_url=org.mdm_url,
-            wifi_ssid=wifi_ssid,
-            wifi_password=wifi_password,
+            wifi_ssid=effective_wifi_ssid,
+            wifi_password=effective_wifi_password,
             wifi_encryption=wifi_encryption,
             mdm_checkin_url=org.checkin_url,
             mdm_topic=org.mdm_topic,
             mdm_unremovable=mdm_unremovable,
-            wifi_config=wifi_config,
+            wifi_config=effective_wifi_config,
             mdm_mobileconfig=effective_mdm_mobileconfig,
             udid=device.udid,
             fail_on_mdm_error=fail_on_mdm_error,

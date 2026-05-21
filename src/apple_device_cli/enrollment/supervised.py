@@ -747,6 +747,13 @@ async def do_supervised_pairing(
         except Exception as e:
             _progress(f"Verification error (non-fatal): {e}")
 
+    # Clean up keybag file - contains sensitive certificate material
+    if keybag_path and keybag_path.exists():
+        try:
+            keybag_path.unlink()
+        except OSError as cleanup_err:
+            _progress(f"Warning: could not clean up keybag file: {cleanup_err}")
+
     return EnrollmentResult(
         success=len(errors) == 0,
         device_udid=device_udid,

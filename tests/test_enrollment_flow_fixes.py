@@ -540,9 +540,11 @@ class TestKeybagPersistenceForMdmInstall:
                 )
 
             # Verify keybag path was passed to install_profile_silent
+            # Note: keybag file is cleaned up after enrollment completes
             assert captured_keybag_path is not None, "install_profile_silent should receive keybag path"
-            assert captured_keybag_path.exists(), f"Keybag file should exist at {captured_keybag_path}"
-            assert captured_keybag_path.stat().st_size > 0, "Keybag file should not be empty"
+            # Check that the path looks correct (is in temp dir with correct prefix)
+            assert "ios_enroll_keybag_" in str(captured_keybag_path), f"Keybag path should have prefix: {captured_keybag_path}"
+            # File size check removed - file is cleaned up after enrollment
 
 
 class TestWifiAndMdmInstallOrder:
@@ -630,3 +632,87 @@ class TestWifiAndMdmInstallOrder:
 
             if wifi_idx is not None and mdm_idx is not None:
                 assert wifi_idx < mdm_idx, f"WiFi should be installed before MDM. Order: {install_calls}"
+
+
+
+
+class TestKeybagCleanup:
+    """Tests for keybag file cleanup after enrollment."""
+
+    def test_keybag_cleaned_up_after_successful_enrollment(self, mock_pymobiledevice3):
+        """Verify keybag file is deleted after successful enrollment."""
+        import os
+
+        lockdown = MagicMock()
+        mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
+
+        activation_svc = MagicMock()
+        activation_svc.state = AsyncMock(return_value="Activated")
+        activation_svc.activate = AsyncMock()
+        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = activation_svc
+
+        svc = AsyncMock()
+        svc.set_cloud_configuration = AsyncMock()
+        svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
+        svc.__aenter__.return_value = svc
+        svc.__aexit__.return_value = False
+
+        captured_keybag_path = None
+
+        async def capture_keybag(keybag, payload):
+            nonlocal captured_keybag_path
+            captured_keybag_path = keybag
+
+        svc.install_profile_silent = AsyncMock(side_effect=capture_keybag)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cert_path = Path(tmpdir) / "cert.der"
+            key_path = Path(tmpdir) / "key.der"
+
+            private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            certificate = (
+                x509.CertificateBuilder()
+                .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test Org")]))
+                .issuer_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test Org")]))
+                .public_key(private_key.public_key())
+                .serial_number(1)
+                .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
+                .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365))
+                .sign(private_key, hashes.SHA256())
+            )
+            cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.DER))
+            key_path.write_bytes(
+                private_key.private_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                )
+            )
+
+            # Track keybag files before
+            temp_dir = tempfile.gettempdir()
+            before_files = set(f for f in os.listdir(temp_dir) if f.startswith("ios_enroll_keybag_"))
+
+            # Create a minimal MDM mobileconfig to trigger install_profile_silent
+            mdm_mobileconfig_path = Path(tmpdir) / "mdm.mobileconfig"
+            mdm_mobileconfig_path.write_bytes(b"<xml>test mdm</xml>")
+
+            with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc):
+                from apple_device_cli.enrollment import supervised
+                supervised.make_supervised(
+                    cert_path=str(cert_path),
+                    key_path=str(key_path),
+                    org_name="Test Org",
+                    mdm_url="https://mdm.example.com/mdm",
+                    mdm_mobileconfig=str(mdm_mobileconfig_path),
+                )
+
+            after_files = set(f for f in os.listdir(temp_dir) if f.startswith("ios_enroll_keybag_"))
+
+            # Verify keybag was captured and cleaned up
+            assert captured_keybag_path is not None, "keybag should be created and used"
+            assert captured_keybag_path.exists() is False, "keybag should be cleaned up after enrollment"
+
+            # Verify no new keybag files remain
+            new_files = after_files - before_files
+            assert len(new_files) == 0, f"Keybag files leaked: {new_files}"

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Bug Fixes
+- **Keybag cleanup**: Sensitive keybag files are now deleted after enrollment completes
+- **Profile list iteration**: Robust handling of both dict and list formats from pymobiledevice3
+- **Re-enrollment polling**: Device reconnection now polled instead of fixed 30-second sleep
+
+## v1.0.0 (2026-05-21)
+
+### Bug Fixes
+- **Cloud config reuse**: Devices with existing matching cloud config are now treated as success rather than failure
+- **MDM install retry**: Silent MDM profile install now retries up to 3 times on transient network errors
+- **Error message formatting**: Simplified, human-readable error messages for mobileconfig failures
+- **Quoted path handling**: WiFi mobileconfig paths entered with quotes are now normalized before use
+- **Status readback**: Device enrollment state now correctly reads lockdown keys and cloud configuration
+
+### Privacy
+- **Output redaction**: All user-facing CLI output is sanitized to prevent accidental exposure of PII/secrets
+
+### Technical
+- Built on `pymobiledevice3` and `libimobiledevice`
+- Organization storage in `~/.config/apple_device_cli/orgs/`
+- Comprehensive test suite with unit, integration, and redaction coverage
+
 ## v1.0.0b (2026-05-20) - Beta release
 
 ### Features

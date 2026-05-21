@@ -118,8 +118,23 @@ class ReenrollmentFlow(EnrollmentFlow):
             ))
         
         if progress_callback:
-            progress_callback("Waiting 30s for device reset...")
-        time.sleep(30)
+            progress_callback("Waiting for device to reconnect...")
+        # Poll for device reconnection instead of fixed sleep - handles fast/slow devices
+        device_reconnected = False
+        for attempt in range(30):  # 30 seconds max
+            try:
+                from pymobiledevice3.lockdown import create_using_usbmux
+                create_using_usbmux(serial=udid)
+                device_reconnected = True
+                if progress_callback:
+                    progress_callback(f"Device reconnected after {attempt}s")
+                break
+            except Exception:
+                import time as time_module
+                time_module.sleep(1)
+
+        if not device_reconnected and progress_callback:
+            progress_callback("Device not yet reconnected, proceeding anyway...")
         
         # Step 2: Re-enroll with new org
         if progress_callback:

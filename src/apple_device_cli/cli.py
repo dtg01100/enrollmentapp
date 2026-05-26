@@ -9,7 +9,6 @@ import json
 
 import asyncio
 import typer
-from rich.console import Console
 
 
 from apple_device_cli import __version__
@@ -25,6 +24,7 @@ from apple_device_cli.core.redaction import (
     sanitize_text,
 )
 from apple_device_cli.device.connection import (
+    ensure_device_pairing,
     get_device_info,
     list_devices,
 )
@@ -133,8 +133,6 @@ def enroll_group(ctx: typer.Context):
     if ctx.invoked_subcommand is None:
         _enroll_help()
 
-console = Console()
-
 
 
 @app.callback(invoke_without_command=True)
@@ -202,6 +200,9 @@ def interactive_enroll():
         raise typer.Exit(1) from exc
 
     typer.echo(f"\nSelected: {selected.device_name} ({_display_udid(selected.udid)})")
+
+    # Ensure device is paired/trusted before checking state or enrolling
+    ensure_device_pairing(selected.udid)
 
     # Get device state
     try:
@@ -627,6 +628,7 @@ def device_info(
         except (ValueError, IndexError) as exc:
             typer.secho("Invalid selection", fg=typer.colors.RED)
             raise typer.Exit(1) from exc
+    ensure_device_pairing(udid)
     info = get_device_info(udid)
     if info:
         if json_output:

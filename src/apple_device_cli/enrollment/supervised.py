@@ -876,12 +876,12 @@ async def _erase_device_for_reenrollment_async(udid: str | None = None):
 
     for attempt in range(20):
         try:
-            await asyncio.sleep(3)
             lockdown = await create_using_usbmux(serial=udid)
             break
         except ConnectionError:
             if attempt >= 19:
                 raise EnrollmentError("Device did not reconnect after erase")
+        await asyncio.sleep(3)
 
 
 def erase_device_for_reenrollment(udid: str | None = None) -> bool:
@@ -1020,8 +1020,9 @@ def get_device_enrollment_state(udid: str) -> dict[str, Any]:
     try:
         return asyncio.run(_get())
     except DeviceNotFoundError:
+        # Device not found via usbmux — likely a pairing/trust issue or device disconnected
         return {
-            "error": "Device not found or disconnected",
+            "error": "Device not found (is the device connected and trusted?)",
             "activation_state": "Unknown",
             "is_supervised": False,
             "cloud_config_applied": False,
@@ -1029,6 +1030,7 @@ def get_device_enrollment_state(udid: str) -> dict[str, Any]:
     except MissingValueError:
         # Device connected but some lockdown keys are missing - return partial state
         return {
+            "error": "Some device information unavailable (missing lockdown values)",
             "activation_state": "Unknown",
             "is_supervised": False,
             "cloud_config_applied": False,
@@ -1038,7 +1040,7 @@ def get_device_enrollment_state(udid: str) -> dict[str, Any]:
         }
     except Exception as e:
         return {
-            "error": str(e),
+            "error": sanitize_text(str(e)),
             "activation_state": "Unknown",
             "is_supervised": False,
             "cloud_config_applied": False,

@@ -87,7 +87,7 @@ class ReenrollmentFlow(EnrollmentFlow):
         udid: str,
         skip_list: list[str] | None = None,
         progress_callback: Callable[[str], None] | None = None,
-    ) -> tuple[bool, EnrollmentResult]:
+    ) -> EnrollmentResult:
         """Clear cloud config and re-enroll device.
         
         Args:
@@ -97,7 +97,7 @@ class ReenrollmentFlow(EnrollmentFlow):
             progress_callback: Progress reporting callback
             
         Returns:
-            Tuple of (erase_succeeded, enrollment_result)
+            EnrollmentResult with operation details (success=False if erase failed)
         """
         # Step 1: Erase cloud config
         if progress_callback:
@@ -111,11 +111,11 @@ class ReenrollmentFlow(EnrollmentFlow):
                 progress_callback(f"Cloud config erase failed: {e}")
         
         if not erase_ok:
-            return (False, EnrollmentResult(
+            return EnrollmentResult(
                 success=False,
                 device_udid=udid,
                 errors=["Failed to erase cloud config"],
-            ))
+            )
         
         if progress_callback:
             progress_callback("Waiting for device to reconnect...")
@@ -152,28 +152,32 @@ class ReenrollmentFlow(EnrollmentFlow):
             progress_callback=progress_callback,
         )
         
-        return (True, result)
+        return result
+
+
+# Module-level flows dict, initialized lazily to avoid class-level mutable default.
+# See flows.py bug: _flows = {} at class level means all subclasses share the same dict
+# unless overridden. Use a function-level default instead.
+_FLOWS: dict[str, EnrollmentFlow] = {
+    "simple-supervised": SimpleSupervisedEnrollment(),
+    "reenrollment": ReenrollmentFlow(),
+}
 
 
 class FlowRegistry:
     """Registry of available enrollment flows."""
     
-    _flows = {
-        "simple-supervised": SimpleSupervisedEnrollment(),
-        "reenrollment": ReenrollmentFlow(),
-    }
-    
     @classmethod
     def get(cls, name: str) -> Optional[EnrollmentFlow]:
         """Get flow by name."""
-        return cls._flows.get(name)
+        return _FLOWS.get(name)
     
     @classmethod
     def list(cls) -> list[EnrollmentFlow]:
         """List all available flows."""
-        return list(cls._flows.values())
+        return list(_FLOWS.values())
     
     @classmethod
     def register(cls, flow: EnrollmentFlow) -> None:
         """Register a custom flow."""
-        cls._flows[flow.name] = flow
+        _FLOWS[flow.name] = flow

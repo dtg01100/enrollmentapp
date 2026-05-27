@@ -26,6 +26,7 @@ VALID_PANES = {
 
 PRESETS = {
     "minimal": [
+        "appleid",
         "language", "region", "appearance",
         "language-and-locale", "express-language",
         "restore-completed", "update-completed",

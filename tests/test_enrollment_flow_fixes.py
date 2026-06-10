@@ -778,6 +778,34 @@ class TestKeybagCleanupOnException:
         assert mock_unlink.called, "keybag should be unlinked even when enrollment raises"
 
 
+class TestCleanupKeybag:
+    """Direct unit tests for _cleanup_keybag helper."""
+
+    def test_cleanup_keybag_removes_existing_file(self, tmp_path):
+        from apple_device_cli.enrollment.supervised import _cleanup_keybag
+        keybag = tmp_path / "test.keybag"
+        keybag.write_text("sensitive material")
+        assert keybag.exists()
+        _cleanup_keybag(keybag)
+        assert not keybag.exists()
+
+    def test_cleanup_keybag_swallows_oserror(self, tmp_path):
+        from apple_device_cli.enrollment.supervised import _cleanup_keybag
+        keybag = tmp_path / "test.keybag"
+        keybag.write_text("sensitive")
+        with patch("pathlib.Path.unlink", side_effect=OSError("permission denied")):
+            _cleanup_keybag(keybag)
+
+    def test_cleanup_keybag_nonexistent_is_noop(self):
+        from apple_device_cli.enrollment.supervised import _cleanup_keybag
+        _cleanup_keybag(None)
+
+    def test_cleanup_keybag_missing_path_is_noop(self, tmp_path):
+        from apple_device_cli.enrollment.supervised import _cleanup_keybag
+        keybag = tmp_path / "nonexistent.keybag"
+        _cleanup_keybag(keybag)
+
+
 class TestReenrollExitCode:
     """Verify ios-enroll enroll re-enroll exits non-zero on failure."""
 

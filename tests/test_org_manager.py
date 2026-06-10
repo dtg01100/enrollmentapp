@@ -444,6 +444,7 @@ def test_save_org_acquires_fcntl_lock():
 def test_concurrent_save_org_serialized_by_lock():
     """Two threads calling save_org for the same org must serialize — no corruption."""
     import threading
+    import time
 
     with tempfile.TemporaryDirectory() as tmpdir:
         manager = OrganizationManager(Path(tmpdir))
@@ -455,8 +456,10 @@ def test_concurrent_save_org_serialized_by_lock():
         fcntl.flock(fd, fcntl.LOCK_EX)
 
         results = {}
+        started = threading.Event()
 
         def attempt_save():
+            started.set()
             try:
                 org = Organization(name="Test Org", org_id="com.test")
                 manager.save_org(org)
@@ -466,8 +469,8 @@ def test_concurrent_save_org_serialized_by_lock():
 
         t = threading.Thread(target=attempt_save)
         t.start()
-        # Give the thread time to enter flock and block
-        t.join(timeout=0.5)
+        assert started.wait(timeout=5), "thread did not start within 5s"
+        time.sleep(0.1)  # Give thread time to enter flock inside save_org
         assert not results, "second save_org should block while first holds the lock"
 
         # Release the lock; second save should now complete

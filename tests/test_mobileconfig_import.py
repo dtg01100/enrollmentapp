@@ -123,6 +123,37 @@ def test_import_mobileconfig_raises_on_missing_payload_organization(mock_mobilec
             mgr.import_mobileconfig(mobileconfig_path)
 
 
+def test_import_mobileconfig_acquires_lock(mock_mobileconfig):
+    """import_mobileconfig must hold fcntl.flock during filesystem operations."""
+    import fcntl
+    import os
+
+    mobileconfig_path, tmp = mock_mobileconfig
+    mgr = OrganizationManager(tmp)
+
+    with patch('subprocess.run', side_effect=make_mock_subprocess(SAMPLE_MDM_PAYLOAD)), \
+         patch('apple_device_cli.orgs.manager.pkcs7.load_der_pkcs7_certificates', return_value=[]), \
+         patch('apple_device_cli.orgs.manager.fcntl.flock') as mock_flock, \
+         patch('apple_device_cli.orgs.manager.os.open', return_value=42) as mock_open, \
+         patch('apple_device_cli.orgs.manager.os.close') as mock_close:
+        mgr.import_mobileconfig(mobileconfig_path)
+
+    # os.open must be called with O_CREAT on a per-org lock path
+    assert mock_open.called
+    lock_path_arg = mock_open.call_args[0][0]
+    assert str(lock_path_arg).endswith(".Test_Org.lock")
+    assert lock_path_arg.name.startswith(".")
+
+    # flock must be called with LOCK_EX first (acquire) and LOCK_UN last (release)
+    flock_calls = mock_flock.call_args_list
+    assert len(flock_calls) >= 2
+    assert flock_calls[0].args[1] == fcntl.LOCK_EX
+    assert any(c.args[1] == fcntl.LOCK_UN for c in flock_calls)
+
+    # fd must be closed
+    mock_close.assert_called_once_with(42)
+
+
 def test_import_mobileconfig_raises_on_openssl_failure(mock_mobileconfig):
     """Test that failed openssl verification raises ValueError."""
     mobileconfig_path, _ = mock_mobileconfig

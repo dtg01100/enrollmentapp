@@ -383,7 +383,7 @@ class TestEnrollmentStateReadback:
             "cloud_config_applied": True,
             "org_name": "Test Org",
             "org_magic": "org-123",
-            "is_mdm_managed": False,
+            "was_mandatorily_unpaired": False,
         }
         assert lockdown.get_value.await_count == 6
 

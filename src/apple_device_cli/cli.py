@@ -1177,7 +1177,7 @@ def enroll_status(
             typer.echo(f"  Organization: {_display_name(state['org_name'])}")
         if state.get('org_magic'):
             typer.echo(f"  Organization ID: {_display_org_id(state['org_magic'])}")
-        typer.echo(f"  MDM Managed: {state.get('is_mdm_managed', False)}")
+        typer.echo(f"  Was Mandatorily Unpaired: {state.get('was_mandatorily_unpaired', False)}")
     except (KeyboardInterrupt, typer.Abort):
         raise
     except Exception as e:

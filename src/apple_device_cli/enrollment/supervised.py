@@ -998,7 +998,7 @@ def get_device_enrollment_state(udid: str) -> dict[str, Any]:
         cloud_config_applied = await _get_lockdown_value(lockdown, "CloudConfigurationWasApplied")
         org_name = await _get_lockdown_value(lockdown, "OrganizationName")
         org_magic = await _get_lockdown_value(lockdown, "OrganizationMagic")
-        is_mdm_managed = await _get_lockdown_value(lockdown, "WasMandatorilyUnpaired")
+        was_mandatorily_unpaired = await _get_lockdown_value(lockdown, "WasMandatorilyUnpaired")
 
         if isinstance(cloud_config, dict):
             is_supervised = cloud_config.get("IsSupervised", is_supervised)
@@ -1012,7 +1012,7 @@ def get_device_enrollment_state(udid: str) -> dict[str, Any]:
             "cloud_config_applied": bool(cloud_config_applied),
             "org_name": org_name,
             "org_magic": org_magic,
-            "is_mdm_managed": bool(is_mdm_managed),
+            "was_mandatorily_unpaired": bool(was_mandatorily_unpaired),
         }
 
     from pymobiledevice3.exceptions import MissingValueError, DeviceNotFoundError
@@ -1036,7 +1036,7 @@ def get_device_enrollment_state(udid: str) -> dict[str, Any]:
             "cloud_config_applied": False,
             "org_name": None,
             "org_magic": None,
-            "is_mdm_managed": False,
+            "was_mandatorily_unpaired": False,
         }
     except Exception as e:
         return {

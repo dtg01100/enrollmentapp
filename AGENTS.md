@@ -46,6 +46,8 @@ Typer App (cli.py)
     +-- core/        # Exceptions, redaction utilities
 ```
 
+Note: `enrollment/flows.py` was removed in 1.0.0b-post as dead code (not imported by cli.py or any other production module).
+
 ---
 
 ## Directory Structure

@@ -531,83 +531,81 @@ async def do_supervised_pairing(
     config_set = False
     device_disconnected = False
 
-    # Create keybag BEFORE tempdir block - needed for MDM install after tempdir closes
     keybag_path = Path(tempfile.gettempdir()) / f"ios_enroll_keybag_{uuid4().hex[:8]}"
     if Path(cert_path).exists() and Path(key_path).exists():
         _create_keybag_file_from_identity(keybag_path, cert_path, key_path)
     else:
         create_keybag_file(keybag_path, org_name)
 
-    with tempfile.TemporaryDirectory():
-        # Build cloud configuration payload
-        cloud_config_payload = {
-            "AllowPairing": True,
-            "CloudConfigurationUIComplete": True,
-            "ConfigurationSource": 2,
-            "ConfigurationWasApplied": True,
-            "IsMandatory": True,
-            "IsMultiUser": False,
-            "IsSupervised": True,
-            "OrganizationMagic": org_uuid or str(uuid4()),
-            "OrganizationName": org_name,
-            "PostSetupProfileWasInstalled": True,
-            "SupervisorHostCertificates": [
-                _load_cert_public_bytes_from_keybag(keybag_path),
-            ],
-        }
-        if mdm_url:
-            cloud_config_payload["MDMServerURL"] = mdm_url
-        if skip_list:
-            cloud_config_payload["SkipSetup"] = _map_skip_setup(skip_list)
-        if mdm_unremovable:
-            cloud_config_payload["IsMDMUnremovable"] = True
+    # Build cloud configuration payload
+    cloud_config_payload = {
+        "AllowPairing": True,
+        "CloudConfigurationUIComplete": True,
+        "ConfigurationSource": 2,
+        "ConfigurationWasApplied": True,
+        "IsMandatory": True,
+        "IsMultiUser": False,
+        "IsSupervised": True,
+        "OrganizationMagic": org_uuid or str(uuid4()),
+        "OrganizationName": org_name,
+        "PostSetupProfileWasInstalled": True,
+        "SupervisorHostCertificates": [
+            _load_cert_public_bytes_from_keybag(keybag_path),
+        ],
+    }
+    if mdm_url:
+        cloud_config_payload["MDMServerURL"] = mdm_url
+    if skip_list:
+        cloud_config_payload["SkipSetup"] = _map_skip_setup(skip_list)
+    if mdm_unremovable:
+        cloud_config_payload["IsMDMUnremovable"] = True
 
-        # Apply cloud configuration
-        try:
-            async with MobileConfigService(lockdown) as svc:
-                await _maybe_await(svc.set_cloud_configuration(cloud_config_payload))
-                config_set = True
-                _progress("Cloud configuration applied")
-                try:
-                    cloud_config = await _wait_for_cloud_config(lockdown, timeout_ms=20000)
-                    if cloud_config:
-                        _progress(f"Device confirmed supervised: {redact_name(cloud_config.get('OrganizationName'))}")
-                    else:
-                        _progress("Device processing - continuing anyway")
-                except (BrokenPipeError, ConnectionResetError, OSError):
-                    _progress("Device disconnected after config apply, will reconnect...")
-                    device_disconnected = True
-        except Exception as e:
-            if isinstance(e, CloudConfigurationAlreadyPresentError):
-                # Verify that the existing config matches what we want
-                try:
-                    async with MobileConfigService(lockdown) as svc:
-                        existing_config = await _maybe_await(svc.get_cloud_configuration())
-                        if existing_config and _cloud_config_matches(existing_config, cloud_config_payload):
-                            _progress("Matching cloud config already present - enrollment will proceed via Setup Assistant")
-                            config_set = True
-                        else:
-                            _progress("Cloud config already present but does NOT match desired configuration.")
-                            errors.append("Cloud configuration mismatch: device already has different supervision settings")
-                            config_set = False
-                except Exception as check_err:
-                    _progress(f"Could not verify existing cloud config: {check_err}")
-                    errors.append(f"Cloud configuration already present and could not be verified: {check_err}")
-                    config_set = False
-
-                if config_set and mdm_url:
-                    _progress(f"MDM enrollment URL in existing cloud config: {redact_url(mdm_url)}")
-                    if mdm_checkin_url:
-                        _progress(f"Check-in URL: {redact_url(mdm_checkin_url)}")
-                    if mdm_topic:
-                        _progress(f"MDM Topic: {redact_org_identifier(mdm_topic)}")
-                    mdm_enrolled = True
-            elif isinstance(e, (BrokenPipeError, ConnectionResetError, OSError)):
-                _progress("Broken pipe during config - device may be applying, will reconnect...")
-                config_set = True
+    # Apply cloud configuration
+    try:
+        async with MobileConfigService(lockdown) as svc:
+            await _maybe_await(svc.set_cloud_configuration(cloud_config_payload))
+            config_set = True
+            _progress("Cloud configuration applied")
+            try:
+                cloud_config = await _wait_for_cloud_config(lockdown, timeout_ms=20000)
+                if cloud_config:
+                    _progress(f"Device confirmed supervised: {redact_name(cloud_config.get('OrganizationName'))}")
+                else:
+                    _progress("Device processing - continuing anyway")
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                _progress("Device disconnected after config apply, will reconnect...")
                 device_disconnected = True
-            else:
-                errors.append(_format_exception_message("Failed to configure", e))
+    except Exception as e:
+        if isinstance(e, CloudConfigurationAlreadyPresentError):
+            # Verify that the existing config matches what we want
+            try:
+                async with MobileConfigService(lockdown) as svc:
+                    existing_config = await _maybe_await(svc.get_cloud_configuration())
+                    if existing_config and _cloud_config_matches(existing_config, cloud_config_payload):
+                        _progress("Matching cloud config already present - enrollment will proceed via Setup Assistant")
+                        config_set = True
+                    else:
+                        _progress("Cloud config already present but does NOT match desired configuration.")
+                        errors.append("Cloud configuration mismatch: device already has different supervision settings")
+                        config_set = False
+            except Exception as check_err:
+                _progress(f"Could not verify existing cloud config: {check_err}")
+                errors.append(f"Cloud configuration already present and could not be verified: {check_err}")
+                config_set = False
+
+            if config_set and mdm_url:
+                _progress(f"MDM enrollment URL in existing cloud config: {redact_url(mdm_url)}")
+                if mdm_checkin_url:
+                    _progress(f"Check-in URL: {redact_url(mdm_checkin_url)}")
+                if mdm_topic:
+                    _progress(f"MDM Topic: {redact_org_identifier(mdm_topic)}")
+                mdm_enrolled = True
+        elif isinstance(e, (BrokenPipeError, ConnectionResetError, OSError)):
+            _progress("Broken pipe during config - device may be applying, will reconnect...")
+            config_set = True
+            device_disconnected = True
+        else:
+            errors.append(_format_exception_message("Failed to configure", e))
 
     # Step 4: Reconnect if device disconnected during config
     if device_disconnected and config_set:

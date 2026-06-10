@@ -716,3 +716,59 @@ class TestKeybagCleanup:
             # Verify no new keybag files remain
             new_files = after_files - before_files
             assert len(new_files) == 0, f"Keybag files leaked: {new_files}"
+
+
+class TestKeybagCleanupOnException:
+    """Verify the keybag is cleaned up even when the enrollment flow raises."""
+
+    def test_keybag_unlinked_when_reconnect_fails_after_supervision(
+        self, mock_pymobiledevice3, tmp_path
+    ):
+        import asyncio
+        from apple_device_cli.enrollment import supervised
+
+        # Step 4 (reconnect) raises after the keybag is created — the
+        # exception must NOT prevent keybag cleanup via finally.
+        async def boom(*args, **kwargs):
+            raise BrokenPipeError("simulated disconnect")
+
+        svc = MagicMock()
+        svc.set_cloud_configuration = boom
+        svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
+        svc.__aenter__ = AsyncMock(return_value=svc)
+        svc.__aexit__ = AsyncMock(return_value=False)
+
+        lockdown = MagicMock()
+        lockdown.udid = "test-udid"
+        lockdown.get_value = AsyncMock(return_value="Activated")
+
+        cert_path = tmp_path / "cert.der"
+        key_path = tmp_path / "key.der"
+        cert_path.write_bytes(b"fake-cert")
+        key_path.write_bytes(b"fake-key")
+
+        with patch("pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc), \
+             patch.object(supervised, "create_keybag_file") as mock_keybag, \
+             patch.object(supervised, "_create_keybag_file_from_identity") as mock_id_keybag, \
+             patch.object(supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake-bytes"), \
+             patch.object(supervised, "_wait_for_device_reconnect",
+                          new=AsyncMock(side_effect=RuntimeError("reconnect failed"))), \
+             patch("pathlib.Path.unlink") as mock_unlink:
+            mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
+
+            def make_fake(path, *_args, **_kwargs):
+                Path(path).write_text("fake-cert-material")
+            mock_keybag.side_effect = make_fake
+            mock_id_keybag.side_effect = make_fake
+
+            with pytest.raises(RuntimeError, match="reconnect failed"):
+                asyncio.run(
+                    supervised.do_supervised_pairing(
+                        cert_path=str(cert_path),
+                        key_path=str(key_path),
+                        org_name="Test Org",
+                    )
+                )
+
+        # The finally block must have called unlink on the keybag path
+        assert mock_unlink.called, "keybag should be unlinked even when enrollment raises"

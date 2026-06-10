@@ -421,6 +421,15 @@ async def _get_lockdown_value(lockdown, key: str) -> Any:
     return value
 
 
+def _cleanup_keybag(keybag_path: Path | None) -> None:
+    """Remove a keybag file, swallowing OSError."""
+    if keybag_path and keybag_path.exists():
+        try:
+            keybag_path.unlink()
+        except OSError as cleanup_err:
+            _logger.warning("could not clean up keybag file %s: %s", keybag_path, cleanup_err)
+
+
 async def do_supervised_pairing(
     cert_path: str | Path,
     key_path: str | Path,
@@ -537,220 +546,217 @@ async def do_supervised_pairing(
     else:
         create_keybag_file(keybag_path, org_name)
 
-    # Build cloud configuration payload
-    cloud_config_payload = {
-        "AllowPairing": True,
-        "CloudConfigurationUIComplete": True,
-        "ConfigurationSource": 2,
-        "ConfigurationWasApplied": True,
-        "IsMandatory": True,
-        "IsMultiUser": False,
-        "IsSupervised": True,
-        "OrganizationMagic": org_uuid or str(uuid4()),
-        "OrganizationName": org_name,
-        "PostSetupProfileWasInstalled": True,
-        "SupervisorHostCertificates": [
-            _load_cert_public_bytes_from_keybag(keybag_path),
-        ],
-    }
-    if mdm_url:
-        cloud_config_payload["MDMServerURL"] = mdm_url
-    if skip_list:
-        cloud_config_payload["SkipSetup"] = _map_skip_setup(skip_list)
-    if mdm_unremovable:
-        cloud_config_payload["IsMDMUnremovable"] = True
-
-    # Apply cloud configuration
     try:
-        async with MobileConfigService(lockdown) as svc:
-            await _maybe_await(svc.set_cloud_configuration(cloud_config_payload))
-            config_set = True
-            _progress("Cloud configuration applied")
-            try:
-                cloud_config = await _wait_for_cloud_config(lockdown, timeout_ms=20000)
-                if cloud_config:
-                    _progress(f"Device confirmed supervised: {redact_name(cloud_config.get('OrganizationName'))}")
-                else:
-                    _progress("Device processing - continuing anyway")
-            except (BrokenPipeError, ConnectionResetError, OSError):
-                _progress("Device disconnected after config apply, will reconnect...")
-                device_disconnected = True
-    except Exception as e:
-        if isinstance(e, CloudConfigurationAlreadyPresentError):
-            # Verify that the existing config matches what we want
-            try:
-                async with MobileConfigService(lockdown) as svc:
-                    existing_config = await _maybe_await(svc.get_cloud_configuration())
-                    if existing_config and _cloud_config_matches(existing_config, cloud_config_payload):
-                        _progress("Matching cloud config already present - enrollment will proceed via Setup Assistant")
-                        config_set = True
-                    else:
-                        _progress("Cloud config already present but does NOT match desired configuration.")
-                        errors.append("Cloud configuration mismatch: device already has different supervision settings")
-                        config_set = False
-            except Exception as check_err:
-                _progress(f"Could not verify existing cloud config: {check_err}")
-                errors.append(f"Cloud configuration already present and could not be verified: {check_err}")
-                config_set = False
+        # Build cloud configuration payload
+        cloud_config_payload = {
+            "AllowPairing": True,
+            "CloudConfigurationUIComplete": True,
+            "ConfigurationSource": 2,
+            "ConfigurationWasApplied": True,
+            "IsMandatory": True,
+            "IsMultiUser": False,
+            "IsSupervised": True,
+            "OrganizationMagic": org_uuid or str(uuid4()),
+            "OrganizationName": org_name,
+            "PostSetupProfileWasInstalled": True,
+            "SupervisorHostCertificates": [
+                _load_cert_public_bytes_from_keybag(keybag_path),
+            ],
+        }
+        if mdm_url:
+            cloud_config_payload["MDMServerURL"] = mdm_url
+        if skip_list:
+            cloud_config_payload["SkipSetup"] = _map_skip_setup(skip_list)
+        if mdm_unremovable:
+            cloud_config_payload["IsMDMUnremovable"] = True
 
-            if config_set and mdm_url:
-                _progress(f"MDM enrollment URL in existing cloud config: {redact_url(mdm_url)}")
+        # Apply cloud configuration
+        try:
+            async with MobileConfigService(lockdown) as svc:
+                await _maybe_await(svc.set_cloud_configuration(cloud_config_payload))
+                config_set = True
+                _progress("Cloud configuration applied")
+                try:
+                    cloud_config = await _wait_for_cloud_config(lockdown, timeout_ms=20000)
+                    if cloud_config:
+                        _progress(f"Device confirmed supervised: {redact_name(cloud_config.get('OrganizationName'))}")
+                    else:
+                        _progress("Device processing - continuing anyway")
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    _progress("Device disconnected after config apply, will reconnect...")
+                    device_disconnected = True
+        except Exception as e:
+            if isinstance(e, CloudConfigurationAlreadyPresentError):
+                # Verify that the existing config matches what we want
+                try:
+                    async with MobileConfigService(lockdown) as svc:
+                        existing_config = await _maybe_await(svc.get_cloud_configuration())
+                        if existing_config and _cloud_config_matches(existing_config, cloud_config_payload):
+                            _progress("Matching cloud config already present - enrollment will proceed via Setup Assistant")
+                            config_set = True
+                        else:
+                            _progress("Cloud config already present but does NOT match desired configuration.")
+                            errors.append("Cloud configuration mismatch: device already has different supervision settings")
+                            config_set = False
+                except Exception as check_err:
+                    _progress(f"Could not verify existing cloud config: {check_err}")
+                    errors.append(f"Cloud configuration already present and could not be verified: {check_err}")
+                    config_set = False
+
+                if config_set and mdm_url:
+                    _progress(f"MDM enrollment URL in existing cloud config: {redact_url(mdm_url)}")
+                    if mdm_checkin_url:
+                        _progress(f"Check-in URL: {redact_url(mdm_checkin_url)}")
+                    if mdm_topic:
+                        _progress(f"MDM Topic: {redact_org_identifier(mdm_topic)}")
+                    mdm_enrolled = True
+            elif isinstance(e, (BrokenPipeError, ConnectionResetError, OSError)):
+                _progress("Broken pipe during config - device may be applying, will reconnect...")
+                config_set = True
+                device_disconnected = True
+            else:
+                errors.append(_format_exception_message("Failed to configure", e))
+
+        # Step 4: Reconnect if device disconnected during config
+        if device_disconnected and config_set:
+            _progress("Waiting for device to reconnect after supervision...")
+            fresh_lockdown = await _wait_for_device_reconnect(timeout_ms=30000, udid=device_udid)
+            if fresh_lockdown is not None:
+                lockdown = fresh_lockdown
+                _progress("Device reconnected successfully")
+                try:
+                    async with MobileConfigService(lockdown) as svc:
+                        cloud_config = await _maybe_await(svc.get_cloud_configuration())
+                        if isinstance(cloud_config, dict) and cloud_config.get("IsSupervised"):
+                            _progress(f"Supervision confirmed: {redact_name(cloud_config.get('OrganizationName'))}")
+                        else:
+                            _progress("Supervision not yet confirmed, continuing with WiFi and MDM install")
+                except Exception as e:
+                    _progress(f"Could not verify supervision after reconnect: {e}")
+                device_disconnected = False
+            else:
+                errors.append("Device did not reconnect within timeout after supervision")
+                _progress("Device did not reconnect within timeout")
+
+        # Step 5: Install WiFi configuration (if provided and device is connected)
+        wifi_installed = False
+        if not device_disconnected and config_set:
+            if wifi_ssid and wifi_password:
+                _progress(f"Installing WiFi profile: {redact_name(wifi_ssid)}...")
+                try:
+                    async with MobileConfigService(lockdown) as svc:
+                        await _maybe_await(svc.install_wifi_profile(
+                            encryption_type=wifi_encryption,
+                            ssid=wifi_ssid,
+                            password=wifi_password,
+                        ))
+                    wifi_installed = True
+                    _progress(f"WiFi profile installed: {redact_name(wifi_ssid)}")
+                except Exception as e:
+                    errors.append(f"WiFi profile install failed: {e}")
+                    _progress(f"WiFi profile install failed: {e}")
+            elif wifi_config:
+                wifi_config_path = _normalize_optional_path(wifi_config)
+                if wifi_config_path is None:
+                    errors.append("WiFi config file not found")
+                    _progress("WiFi config file not found")
+                elif wifi_config_path.exists():
+                    _progress(f"Installing WiFi mobileconfig: {wifi_config_path.name}...")
+                    try:
+                        payload_bytes = wifi_config_path.read_bytes()
+                        async with MobileConfigService(lockdown) as svc:
+                            # Remove any existing WiFi profile first to avoid duplicates
+                            existing = await _maybe_await(svc.get_profile_list())
+                            if existing.get("ProfileMetadata"):
+                                for ident in existing["ProfileMetadata"]:
+                                    # Check if it's a WiFi profile
+                                    meta = existing["ProfileMetadata"][ident]
+                                    if meta.get("PayloadType") == "com.apple.wifi.managed":
+                                        _progress(f"Removing existing WiFi profile: {meta.get('PayloadDisplayName', ident)}...")
+                                        await _maybe_await(svc.remove_profile(ident))
+                            await _maybe_await(svc.install_profile(payload_bytes))
+                        wifi_installed = True
+                        _progress(f"WiFi mobileconfig installed: {wifi_config_path.name}")
+                    except Exception as e:
+                        error_msg = _format_mobileconfig_error("WiFi mobileconfig install failed", e)
+                        errors.append(error_msg)
+                        _progress(error_msg)
+                else:
+                    errors.append(f"WiFi config file not found: {wifi_config_path}")
+                    _progress(f"WiFi config file not found: {redact_path(wifi_config_path)}")
+
+        # Step 6: Store MDM enrollment profile for post-setup installation
+        if not device_disconnected and mdm_url and config_set:
+            if mdm_mobileconfig:
+                mdm_mobileconfig_path = _normalize_optional_path(mdm_mobileconfig)
+                if mdm_mobileconfig_path is not None and mdm_mobileconfig_path.exists():
+                    payload_bytes = mdm_mobileconfig_path.read_bytes()
+                    max_attempts = 3
+                    for attempt in range(1, max_attempts + 1):
+                        try:
+                            async with MobileConfigService(lockdown) as svc:
+                                # Use install_profile_silent with escalation for immediate enrollment.
+                                # This works AFTER WiFi is installed so device can reach MDM server.
+                                # Fall back to store_profile if escalation fails.
+                                if keybag_path and keybag_path.exists():
+                                    _progress("Installing MDM profile with escalation (privileged mode)...")
+                                    await _maybe_await(svc.install_profile_silent(keybag_path, payload_bytes))
+                                else:
+                                    _progress("Storing MDM enrollment profile for Setup Assistant...")
+                                    await _maybe_await(svc.store_profile(payload_bytes, Purpose.PostSetupInstallation))
+                            mdm_enrolled = True
+                            _progress("MDM enrollment profile installed")
+                            break
+                        except Exception as e:
+                            error_msg = _format_mobileconfig_error("MDM profile install failed", e)
+                            if attempt < max_attempts and _is_transient_mobileconfig_network_error(e):
+                                _progress(f"{error_msg} Retrying shortly ({attempt}/{max_attempts})...")
+                                await asyncio.sleep(5)
+                                continue
+                            if fail_on_mdm_error:
+                                errors.append(error_msg)
+                            _progress(error_msg)
+                            break
+                else:
+                    errors.append(f"MDM mobileconfig not found: {mdm_mobileconfig_path or mdm_mobileconfig}")
+                    _progress(f"MDM mobileconfig not found: {redact_path(mdm_mobileconfig_path or mdm_mobileconfig)}")
+            else:
+                _progress(f"MDM enrollment URL set in cloud config: {redact_url(mdm_url)}")
+                _progress("Device will enroll via Setup Assistant after reboot")
                 if mdm_checkin_url:
                     _progress(f"Check-in URL: {redact_url(mdm_checkin_url)}")
                 if mdm_topic:
                     _progress(f"MDM Topic: {redact_org_identifier(mdm_topic)}")
                 mdm_enrolled = True
-        elif isinstance(e, (BrokenPipeError, ConnectionResetError, OSError)):
-            _progress("Broken pipe during config - device may be applying, will reconnect...")
-            config_set = True
-            device_disconnected = True
-        else:
-            errors.append(_format_exception_message("Failed to configure", e))
 
-    # Step 4: Reconnect if device disconnected during config
-    if device_disconnected and config_set:
-        _progress("Waiting for device to reconnect after supervision...")
-        fresh_lockdown = await _wait_for_device_reconnect(timeout_ms=30000, udid=device_udid)
-        if fresh_lockdown is not None:
-            lockdown = fresh_lockdown
-            _progress("Device reconnected successfully")
+        # Step 7: Verify final state
+        _progress("Verifying configuration...")
+        supervised = False
+        if not device_disconnected:
             try:
                 async with MobileConfigService(lockdown) as svc:
                     cloud_config = await _maybe_await(svc.get_cloud_configuration())
-                    if isinstance(cloud_config, dict) and cloud_config.get("IsSupervised"):
-                        _progress(f"Supervision confirmed: {redact_name(cloud_config.get('OrganizationName'))}")
-                    else:
-                        _progress("Supervision not yet confirmed, continuing with WiFi and MDM install")
-            except Exception as e:
-                _progress(f"Could not verify supervision after reconnect: {e}")
-            device_disconnected = False
-        else:
-            errors.append("Device did not reconnect within timeout after supervision")
-            _progress("Device did not reconnect within timeout")
-
-    # Step 5: Install WiFi configuration (if provided and device is connected)
-    wifi_installed = False
-    if not device_disconnected and config_set:
-        if wifi_ssid and wifi_password:
-            _progress(f"Installing WiFi profile: {redact_name(wifi_ssid)}...")
-            try:
-                async with MobileConfigService(lockdown) as svc:
-                    await _maybe_await(svc.install_wifi_profile(
-                        encryption_type=wifi_encryption,
-                        ssid=wifi_ssid,
-                        password=wifi_password,
-                    ))
-                wifi_installed = True
-                _progress(f"WiFi profile installed: {redact_name(wifi_ssid)}")
-            except Exception as e:
-                errors.append(f"WiFi profile install failed: {e}")
-                _progress(f"WiFi profile install failed: {e}")
-        elif wifi_config:
-            wifi_config_path = _normalize_optional_path(wifi_config)
-            if wifi_config_path is None:
-                errors.append("WiFi config file not found")
-                _progress("WiFi config file not found")
-            elif wifi_config_path.exists():
-                _progress(f"Installing WiFi mobileconfig: {wifi_config_path.name}...")
-                try:
-                    payload_bytes = wifi_config_path.read_bytes()
-                    async with MobileConfigService(lockdown) as svc:
-                        # Remove any existing WiFi profile first to avoid duplicates
-                        existing = await _maybe_await(svc.get_profile_list())
-                        if existing.get("ProfileMetadata"):
-                            for ident in existing["ProfileMetadata"]:
-                                # Check if it's a WiFi profile
-                                meta = existing["ProfileMetadata"][ident]
-                                if meta.get("PayloadType") == "com.apple.wifi.managed":
-                                    _progress(f"Removing existing WiFi profile: {meta.get('PayloadDisplayName', ident)}...")
-                                    await _maybe_await(svc.remove_profile(ident))
-                        await _maybe_await(svc.install_profile(payload_bytes))
-                    wifi_installed = True
-                    _progress(f"WiFi mobileconfig installed: {wifi_config_path.name}")
-                except Exception as e:
-                    error_msg = _format_mobileconfig_error("WiFi mobileconfig install failed", e)
-                    errors.append(error_msg)
-                    _progress(error_msg)
-            else:
-                errors.append(f"WiFi config file not found: {wifi_config_path}")
-                _progress(f"WiFi config file not found: {redact_path(wifi_config_path)}")
-
-    # Step 6: Store MDM enrollment profile for post-setup installation
-    if not device_disconnected and mdm_url and config_set:
-        if mdm_mobileconfig:
-            mdm_mobileconfig_path = _normalize_optional_path(mdm_mobileconfig)
-            if mdm_mobileconfig_path is not None and mdm_mobileconfig_path.exists():
-                payload_bytes = mdm_mobileconfig_path.read_bytes()
-                max_attempts = 3
-                for attempt in range(1, max_attempts + 1):
+                    supervised = cloud_config.get("IsSupervised", False) if isinstance(cloud_config, dict) else False
+            except (BrokenPipeError, ConnectionResetError, OSError) as e:
+                _progress(f"Device disconnected during verification: {e}")
+                _progress("Waiting for device to reconnect...")
+                fresh_lockdown = await _wait_for_device_reconnect(timeout_ms=30000, udid=device_udid)
+                if fresh_lockdown is not None:
+                    lockdown = fresh_lockdown
                     try:
                         async with MobileConfigService(lockdown) as svc:
-                            # Use install_profile_silent with escalation for immediate enrollment.
-                            # This works AFTER WiFi is installed so device can reach MDM server.
-                            # Fall back to store_profile if escalation fails.
-                            if keybag_path and keybag_path.exists():
-                                _progress("Installing MDM profile with escalation (privileged mode)...")
-                                await _maybe_await(svc.install_profile_silent(keybag_path, payload_bytes))
-                            else:
-                                _progress("Storing MDM enrollment profile for Setup Assistant...")
-                                await _maybe_await(svc.store_profile(payload_bytes, Purpose.PostSetupInstallation))
-                        mdm_enrolled = True
-                        _progress("MDM enrollment profile installed")
-                        break
-                    except Exception as e:
-                        error_msg = _format_mobileconfig_error("MDM profile install failed", e)
-                        if attempt < max_attempts and _is_transient_mobileconfig_network_error(e):
-                            _progress(f"{error_msg} Retrying shortly ({attempt}/{max_attempts})...")
-                            await asyncio.sleep(5)
-                            continue
-                        if fail_on_mdm_error:
-                            errors.append(error_msg)
-                        _progress(error_msg)
-                        break
-            else:
-                errors.append(f"MDM mobileconfig not found: {mdm_mobileconfig_path or mdm_mobileconfig}")
-                _progress(f"MDM mobileconfig not found: {redact_path(mdm_mobileconfig_path or mdm_mobileconfig)}")
-        else:
-            _progress(f"MDM enrollment URL set in cloud config: {redact_url(mdm_url)}")
-            _progress("Device will enroll via Setup Assistant after reboot")
-            if mdm_checkin_url:
-                _progress(f"Check-in URL: {redact_url(mdm_checkin_url)}")
-            if mdm_topic:
-                _progress(f"MDM Topic: {redact_org_identifier(mdm_topic)}")
-            mdm_enrolled = True
+                            cloud_config = await _maybe_await(svc.get_cloud_configuration())
+                            supervised = cloud_config.get("IsSupervised", False) if isinstance(cloud_config, dict) else False
+                        _progress("Device reconnected, configuration verified")
+                    except Exception as e2:
+                        _progress(f"Reconnection verification failed: {e2}")
+                else:
+                    _progress("Device did not reconnect within timeout")
+            except Exception as e:
+                _progress(f"Verification error (non-fatal): {e}")
 
-    # Step 7: Verify final state
-    _progress("Verifying configuration...")
-    supervised = False
-    if not device_disconnected:
-        try:
-            async with MobileConfigService(lockdown) as svc:
-                cloud_config = await _maybe_await(svc.get_cloud_configuration())
-                supervised = cloud_config.get("IsSupervised", False) if isinstance(cloud_config, dict) else False
-        except (BrokenPipeError, ConnectionResetError, OSError) as e:
-            _progress(f"Device disconnected during verification: {e}")
-            _progress("Waiting for device to reconnect...")
-            fresh_lockdown = await _wait_for_device_reconnect(timeout_ms=30000, udid=device_udid)
-            if fresh_lockdown is not None:
-                lockdown = fresh_lockdown
-                try:
-                    async with MobileConfigService(lockdown) as svc:
-                        cloud_config = await _maybe_await(svc.get_cloud_configuration())
-                        supervised = cloud_config.get("IsSupervised", False) if isinstance(cloud_config, dict) else False
-                    _progress("Device reconnected, configuration verified")
-                except Exception as e2:
-                    _progress(f"Reconnection verification failed: {e2}")
-            else:
-                _progress("Device did not reconnect within timeout")
-        except Exception as e:
-            _progress(f"Verification error (non-fatal): {e}")
-
-    # Clean up keybag file - contains sensitive certificate material
-    if keybag_path and keybag_path.exists():
-        try:
-            keybag_path.unlink()
-        except OSError as cleanup_err:
-            _progress(f"Warning: could not clean up keybag file: {cleanup_err}")
+    finally:
+        _cleanup_keybag(keybag_path)
 
     return EnrollmentResult(
         success=len(errors) == 0,

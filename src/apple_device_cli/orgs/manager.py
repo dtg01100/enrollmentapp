@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import base64
+import contextlib
+import fcntl
 import json
-import plistlib
 import logging
+import os
+import plistlib
 import shutil
 import subprocess
 import tempfile
@@ -136,10 +139,11 @@ class OrganizationManager:
         return Organization.load(org_dir)
 
     def save_org(self, org: Organization, overwrite: bool = False):
-        org_dir = self.orgs_dir / self._sanitize_name(org.name)
-        if not overwrite and org_dir.exists():
-            raise ValueError(f"Organization '{org.name}' already exists")
-        org.save(org_dir)
+        with self._acquire_org_lock(org.name):
+            org_dir = self.orgs_dir / self._sanitize_name(org.name)
+            if not overwrite and org_dir.exists():
+                raise ValueError(f"Organization '{org.name}' already exists")
+            org.save(org_dir)
 
     def delete_org(self, name: str) -> bool:
         org_dir = self.orgs_dir / self._sanitize_name(name)
@@ -150,6 +154,27 @@ class OrganizationManager:
 
     def _sanitize_name(self, name: str) -> str:
         return "".join(c if c.isalnum() or c in ".-_" else "_" for c in name)
+
+    @contextlib.contextmanager
+    def _acquire_org_lock(self, name: str):
+        """Acquire an exclusive cross-process lock on a per-org lock file.
+
+        Prevents races between concurrent save_org and import_mobileconfig
+        calls for the same org name. Auto-releases on context exit (even
+        on exception). Uses fcntl.flock so multiple processes coordinate
+        correctly, not just multiple threads.
+        """
+        lock_path = self.orgs_dir / f".{self._sanitize_name(name)}.lock"
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(fd)
 
     def import_org(self, path: str | Path, password: str = "password") -> Organization:
         """Import org from directory, .zip file, or Apple Configurator .organization file."""
@@ -311,49 +336,50 @@ class OrganizationManager:
         if existing_org:
             raise ValueError(f"Organization '{name}' already exists")
 
-        mdm_url = None
-        checkin_url = None
-        mdm_topic = None
-        identity_ref = None
-        for item in payload.get('PayloadContent', []):
-            if isinstance(item, dict) and item.get('PayloadType') == 'com.apple.mdm':
-                mdm_url = item.get('ServerURL')
-                checkin_url = item.get('CheckInURL')
-                mdm_topic = item.get('Topic')
-                identity_ref = item.get('IdentityCertificateUUID')
-                break
+        with self._acquire_org_lock(name):
+            mdm_url = None
+            checkin_url = None
+            mdm_topic = None
+            identity_ref = None
+            for item in payload.get('PayloadContent', []):
+                if isinstance(item, dict) and item.get('PayloadType') == 'com.apple.mdm':
+                    mdm_url = item.get('ServerURL')
+                    checkin_url = item.get('CheckInURL')
+                    mdm_topic = item.get('Topic')
+                    identity_ref = item.get('IdentityCertificateUUID')
+                    break
 
-        dest_dir = self.orgs_dir / self._sanitize_name(name)
-        dest_dir.mkdir(parents=True, exist_ok=True)
+            dest_dir = self.orgs_dir / self._sanitize_name(name)
+            dest_dir.mkdir(parents=True, exist_ok=True)
 
-        # Always generate supervision identity - PKCS7 certs are server/CA certs, not client identity
-        from apple_device_cli.orgs.identity import generate_org_identity
+            # Always generate supervision identity - PKCS7 certs are server/CA certs, not client identity
+            from apple_device_cli.orgs.identity import generate_org_identity
 
-        cert_der, key_der = generate_org_identity(name)
-        with open(dest_dir / "cert.der", "wb") as f:
-            f.write(cert_der)
-        with open(dest_dir / "key.der", "wb") as f:
-            f.write(key_der)
+            cert_der, key_der = generate_org_identity(name)
+            with open(dest_dir / "cert.der", "wb") as f:
+                f.write(cert_der)
+            with open(dest_dir / "key.der", "wb") as f:
+                f.write(key_der)
 
-        org = Organization(
-            name=name,
-            org_id=mdm_topic,
-            mdm_url=mdm_url,
-            checkin_url=checkin_url,
-            mdm_topic=mdm_topic,
-            identity_ref=identity_ref,
-            mdm_description=payload.get('PayloadDescription'),
-            cert_path=str(dest_dir / "cert.der"),
-            key_path=str(dest_dir / "key.der"),
-            wifi_config_path=str(dest_dir / "wifi.mobileconfig"),
-        )
+            org = Organization(
+                name=name,
+                org_id=mdm_topic,
+                mdm_url=mdm_url,
+                checkin_url=checkin_url,
+                mdm_topic=mdm_topic,
+                identity_ref=identity_ref,
+                mdm_description=payload.get('PayloadDescription'),
+                cert_path=str(dest_dir / "cert.der"),
+                key_path=str(dest_dir / "key.der"),
+                wifi_config_path=str(dest_dir / "wifi.mobileconfig"),
+            )
 
-        # Save mobileconfig file for MDM enrollment
-        with open(dest_dir / "mdm.mobileconfig", "wb") as f:
-            f.write(result.stdout)
+            # Save mobileconfig file for MDM enrollment
+            with open(dest_dir / "mdm.mobileconfig", "wb") as f:
+                f.write(result.stdout)
 
-        org.save(org_dir=dest_dir, skip_copy=True)
-        return org
+            org.save(org_dir=dest_dir, skip_copy=True)
+            return org
 
     def export_org(self, name: str, dest_path: str | Path) -> bool:
         """Export org to directory or .zip file."""

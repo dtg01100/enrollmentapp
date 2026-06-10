@@ -1,6 +1,9 @@
+import fcntl
+import os
 import pytest
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 from apple_device_cli.orgs.manager import Organization, OrganizationManager
 
 
@@ -380,29 +383,96 @@ def test_export_org_to_directory():
 def test_export_org_to_zip():
     """Test that export_org to zip preserves all MDM fields."""
     import zipfile
-    
+
     with tempfile.TemporaryDirectory() as tmpdir:
         manager = OrganizationManager(Path(tmpdir))
-        
+
         org = Organization(
             name="Test Org",
             org_id="com.test",
             mdm_url="https://mdm.example.com",
         )
         manager.save_org(org)
-        
+
         # Export to zip
         zip_path = Path(tmpdir) / "exported.zip"
         result = manager.export_org("Test Org", zip_path)
         assert result is True
         assert zip_path.exists()
-        
+
         # Verify zip contents
         with zipfile.ZipFile(zip_path, 'r') as zf:
             assert "org.json" in zf.namelist()
-            
+
             # Load and verify
             import json
             with zf.open("org.json") as f:
                 data = json.load(f)
             assert data["mdm_url"] == "https://mdm.example.com"
+
+
+def test_save_org_acquires_fcntl_lock():
+    """save_org must hold an fcntl.flock on a per-org lock file for the duration."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        manager = OrganizationManager(Path(tmpdir))
+        org = Organization(name="Test Org", org_id="com.test")
+
+        with patch("apple_device_cli.orgs.manager.fcntl.flock") as mock_flock, \
+             patch("apple_device_cli.orgs.manager.os.open", return_value=42) as mock_open, \
+             patch("apple_device_cli.orgs.manager.os.close") as mock_close:
+            manager.save_org(org)
+
+        # os.open must be called with O_CREAT on a per-org lock path
+        assert mock_open.called
+        lock_path_arg = mock_open.call_args[0][0]
+        assert str(lock_path_arg).endswith(".Test_Org.lock")
+        assert lock_path_arg.name.startswith(".")
+
+        # flock must be called with LOCK_EX first (acquire) and LOCK_UN last (release)
+        flock_calls = mock_flock.call_args_list
+        assert len(flock_calls) >= 2
+        assert flock_calls[0].args[1] == fcntl.LOCK_EX
+        assert any(c.args[1] == fcntl.LOCK_UN for c in flock_calls)
+
+        # fd must be closed
+        mock_close.assert_called_once_with(42)
+
+        # Org was actually saved
+        assert (manager.orgs_dir / "Test_Org" / "org.json").exists()
+
+
+def test_concurrent_save_org_serialized_by_lock():
+    """Two threads calling save_org for the same org must serialize — no corruption."""
+    import threading
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        manager = OrganizationManager(Path(tmpdir))
+
+        # Pre-acquire the lock file from the test thread so the second
+        # save_org call will block on fcntl.flock(LOCK_EX) until we release.
+        lock_path = manager.orgs_dir / ".Test_Org.lock"
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+        results = {}
+
+        def attempt_save():
+            try:
+                org = Organization(name="Test Org", org_id="com.test")
+                manager.save_org(org)
+                results["ok"] = True
+            except Exception as e:
+                results["err"] = e
+
+        t = threading.Thread(target=attempt_save)
+        t.start()
+        # Give the thread time to enter flock and block
+        t.join(timeout=0.5)
+        assert not results, "second save_org should block while first holds the lock"
+
+        # Release the lock; second save should now complete
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+        t.join(timeout=5)
+        assert results.get("ok") is True
+        assert (manager.orgs_dir / "Test_Org" / "org.json").exists()

@@ -58,9 +58,8 @@ Thumbs.db
 .env
 .env.*
 
-# Internal dev docs (not for release)
-docs/superpowers/
 
 # CLIO (managed automatically)
 .clio/*
 !.clio/instructions.md
+.clio/skills/

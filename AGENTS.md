@@ -13,7 +13,7 @@
 - **Language:** Python 3.10+
 - **Architecture:** Typer CLI application
 - **Package:** `src/apple_device_cli`
-- **Entry point:** `ios-enroll = "apple_device_cli.cli:main"`
+- **Entry point:** `ios-enroll = "apple_device_cli.cli:app"`
 
 ---
 
@@ -26,7 +26,7 @@ uv tool install .
 # Run (no install)
 python -m apple_device_cli.cli
 
-# Test (requires PYTHONPATH)
+# Test (PYTHONPATH optional — pyproject.toml sets pythonpath = ["src"])
 PYTHONPATH=src python -m pytest tests/ -v
 ```
 
@@ -107,7 +107,6 @@ class MyClass:
 | `enrollment/activation.py` | Device activation |
 | `enrollment/skip_panes.py` | VALID_PANES, PRESETS, resolve_skip_panes() |
 | `enrollment/supervised.py` | make_supervised() via pymobiledevice3 |
-| `enrollment/flows.py` | Enrollment flow utilities |
 | `orgs/manager.py` | OrganizationManager, Organization |
 | `orgs/identity.py` | generate_org_identity(), load_cert_info() |
 | `core/exceptions.py` | AppleDeviceError, EnrollmentError |
@@ -120,7 +119,7 @@ class MyClass:
 **Before Committing:**
 
 ```bash
-# Run all tests (PYTHONPATH required)
+# Run all tests
 PYTHONPATH=src python -m pytest tests/ -v
 
 # Run specific test file
@@ -172,6 +171,7 @@ class Organization:
     org_id, address, phone, email: str | None
     mdm_url, checkin_url, mdm_topic, identity_ref, mdm_description: str | None
     cert_path, key_path: str | None
+    wifi_config_path, mdm_mobileconfig_path: str | None
     created_at: str
 
     def to_dict(self) -> dict
@@ -189,6 +189,7 @@ class OrganizationManager:
     def save_org(org: Organization, overwrite: bool = False)
     def delete_org(name: str) -> bool
     def import_org(path, password="password") -> Organization
+    def import_mobileconfig(self, path: str | Path) -> Organization
     def export_org(name, dest_path) -> bool
 ```
 
@@ -269,10 +270,13 @@ resolve_skip_panes(preset: str | None, extra_panes: list[str] | None) -> list[st
 
 ## External Dependencies
 
-| Binary | Used For |
-|--------|----------|
+| Dependency | Used For |
+|------------|----------|
 | `pymobiledevice3` | Device enumeration, lockdown, supervision |
+| `cryptography` | Certificate/key generation, PKCS12 loading |
 | `openssl` | Mobileconfig parsing (`smime -verify`) |
+| `typer` | CLI framework |
+| `rich` | Terminal output formatting |
 
 ---
 

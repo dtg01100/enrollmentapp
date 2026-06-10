@@ -15,27 +15,23 @@ Apple Configurator requires macOS to supervise and enroll iOS devices. This proj
 
 ### System Dependencies
 
-**libimobiledevice** and **usbmuxd** are required for device communication:
+**usbmuxd** provides the device communication socket:
 
 ```bash
 # Debian/Ubuntu
-sudo apt install libimobiledevice-1.0-6 usbmuxd
+sudo apt install usbmuxd
 
 # Fedora
-sudo dnf install libimobiledevice usbmuxd
+sudo dnf install usbmuxd
 
 # Arch
-sudo pacman -S libimobiledevice usbmuxd
+sudo pacman -S usbmuxd
 ```
 
 **Apple Device USB Rules** (for non-root device access):
 
 ```bash
-# Debian/Ubuntu (comes with libimobiledevice)
-sudo cp /usr/share/doc/libimobiledevice/usbmuxd.conf /etc/usbmuxd.conf
-sudo systemctl restart usbmuxd
-
-# Or manually set up udev rules for Apple devices
+# Manually set up udev rules for Apple devices
 sudo tee /etc/udev/rules.d/99-apple-device.rules << 'EOF'
 # Apple iPhone, iPad, iPod
 SUBSYSTEM=="usb", ATTR{idVendor}=="05ac", MODE="0666"
@@ -64,8 +60,8 @@ pip install -e .
 ### Device Commands
 
 ```bash
-ios-enroll device list                                   # List connected devices
-ios-enroll device info [--udid <UDID>]                   # Get device info
+ios-enroll device list [--json] [--verbose]              # List connected devices
+ios-enroll device info [--udid <UDID>] [--json]          # Get device info
 ```
 
 ### Organization Commands
@@ -81,20 +77,27 @@ ios-enroll org generate --name "My Org"                  # Generate supervising 
 ios-enroll org set-cert --name "My Org" -C cert.der      # Set certificate
 ios-enroll org set-key --name "My Org" -K key.der        # Set private key
 ios-enroll org set-mdm-url --name "My Org" --mdm-url <URL>  # Set MDM URL
+ios-enroll org set-checkin-url --name "My Org" <URL>        # Set check-in URL
+ios-enroll org set-mdm-topic --name "My Org" <topic>        # Set MDM topic
+ios-enroll org import-mobileconfig --path <file>             # Import from MDM .mobileconfig
+ios-enroll org set-wifi --name "My Org" --wifi-config <file> # Attach WiFi config
 ```
 
 ### Enrollment Commands
 
 ```bash
-ios-enroll enroll guided-enroll                                        # Guided interactive enrollment
-ios-enroll enroll make-supervised --udid <UDID> --org-name "My Org"   # Make supervised
-ios-enroll enroll activate --udid <UDID>                               # Activate device
+ios-enroll enroll guided-enroll                                          # Guided interactive enrollment
+ios-enroll enroll make-supervised --udid <UDID> --org-name "My Org"     # Make supervised
+ios-enroll enroll activate --udid <UDID>                                 # Activate device
+ios-enroll enroll re-enroll --udid <UDID>                                # Clear config for re-enrollment
+ios-enroll enroll status --udid <UDID>                                   # Show enrollment status
+ios-enroll enroll validate                                               # Validate prerequisites
 ```
 
 ### Other
 
 ```bash
-ios-enroll version                                      # Show version
+ios-enroll --version                                     # Show version
 ```
 
 ## Organization Storage
@@ -105,7 +108,7 @@ Organizations are stored in `~/.config/apple_device_cli/orgs/` by default. Each 
 
 - Python 3.10+
 - pymobiledevice3 (primary device interaction library)
-- libimobiledevice (idevicepair, ideviceinfo — for basic device enumeration)
+- cryptography (certificate and key generation)
 
 ## License
 

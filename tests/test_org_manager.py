@@ -3,7 +3,7 @@ import os
 import pytest
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from apple_device_cli.orgs.manager import Organization, OrganizationManager
 
 
@@ -479,3 +479,70 @@ def test_concurrent_save_org_serialized_by_lock():
         t.join(timeout=5)
         assert results.get("ok") is True
         assert (manager.orgs_dir / "Test_Org" / "org.json").exists()
+
+
+def test_concurrent_save_and_import_serialized_by_lock():
+    """save_org and import_mobileconfig for same org must serialize via fcntl lock."""
+    import threading
+    import time
+    import plistlib
+
+    SAMPLE_PAYLOAD = {
+        'PayloadContent': [{
+            'PayloadType': 'com.apple.mdm',
+            'PayloadIdentifier': 'com.apple.mgmt.external.test',
+            'PayloadUUID': 'TEST-UUID',
+            'CheckInURL': 'https://test.example.com/checkin',
+            'ServerURL': 'https://test.example.com/mdm',
+            'Topic': 'com.apple.mgmt.TestTopic',
+            'IdentityCertificateUUID': 'test-cert-uuid',
+        }],
+        'PayloadDisplayName': 'Test MDM',
+        'PayloadIdentifier': 'com.test.mobileconfig',
+        'PayloadOrganization': 'Test Org',
+        'PayloadUUID': 'TEST-CONFIG-UUID',
+        'PayloadVersion': 1,
+    }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        manager = OrganizationManager(Path(tmpdir))
+
+        # Pre-acquire the lock so import_mobileconfig blocks
+        lock_path = manager.orgs_dir / ".Test_Org.lock"
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+        results = {}
+        started = threading.Event()
+
+        def attempt_import():
+            started.set()
+            try:
+                mobileconfig_path = Path(tmpdir) / "test.mobileconfig"
+                mobileconfig_path.write_bytes(b"fake signed data")
+                with patch('subprocess.run') as mock_run, \
+                     patch('apple_device_cli.orgs.manager.pkcs7.load_der_pkcs7_certificates', return_value=[]):
+                    mock_result = MagicMock()
+                    mock_result.returncode = 0
+                    mock_result.stdout = plistlib.dumps(SAMPLE_PAYLOAD)
+                    mock_result.stderr = b''
+                    mock_run.return_value = mock_result
+                    manager.import_mobileconfig(mobileconfig_path)
+                    results["ok"] = True
+            except Exception as e:
+                results["err"] = e
+
+        t = threading.Thread(target=attempt_import)
+        t.start()
+        assert started.wait(timeout=5), "thread did not start within 5s"
+        time.sleep(0.1)
+        assert not results, "import_mobileconfig should block while save_org holds the lock"
+
+        # Release the lock; import should now complete
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+        t.join(timeout=5)
+        assert results.get("ok") is True
+        org = manager.get_org("Test Org")
+        assert org is not None
+        assert org.mdm_url == "https://test.example.com/mdm"

@@ -778,6 +778,53 @@ class TestKeybagCleanupOnException:
         assert mock_unlink.called, "keybag should be unlinked even when enrollment raises"
 
 
+class TestKeybagCleanupOnCertLoadException:
+    """_load_cert_public_bytes_from_keybag can raise before the inner try/excepts."""
+
+    def test_keybag_cleaned_up_when_cert_load_raises(
+        self, mock_pymobiledevice3, tmp_path
+    ):
+        import asyncio
+        from apple_device_cli.enrollment import supervised
+
+        svc = MagicMock()
+        svc.__aenter__ = AsyncMock(return_value=svc)
+        svc.__aexit__ = AsyncMock(return_value=False)
+
+        lockdown = MagicMock()
+        lockdown.udid = "test-udid"
+        lockdown.get_value = AsyncMock(return_value="Activated")
+
+        cert_path = tmp_path / "cert.der"
+        key_path = tmp_path / "key.der"
+        cert_path.write_bytes(b"fake-cert")
+        key_path.write_bytes(b"fake-key")
+
+        with patch("pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc), \
+             patch.object(supervised, "create_keybag_file") as mock_keybag, \
+             patch.object(supervised, "_create_keybag_file_from_identity") as mock_id_keybag, \
+             patch.object(supervised, "_load_cert_public_bytes_from_keybag",
+                          side_effect=ValueError("boom")), \
+             patch("pathlib.Path.unlink") as mock_unlink:
+            mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
+
+            def make_fake(path, *_args, **_kwargs):
+                Path(path).write_text("fake-cert-material")
+            mock_keybag.side_effect = make_fake
+            mock_id_keybag.side_effect = make_fake
+
+            with pytest.raises(ValueError, match="boom"):
+                asyncio.run(
+                    supervised.do_supervised_pairing(
+                        cert_path=str(cert_path),
+                        key_path=str(key_path),
+                        org_name="Test Org",
+                    )
+                )
+
+        assert mock_unlink.called, "keybag should be unlinked even when cert load raises"
+
+
 class TestCleanupKeybag:
     """Direct unit tests for _cleanup_keybag helper."""
 
@@ -807,7 +854,7 @@ class TestCleanupKeybag:
 
 
 class TestReenrollExitCode:
-    """Verify ios-enroll enroll re-enroll exits non-zero on failure."""
+    """Verify ios-enroll enroll re-enroll exit codes."""
 
     def test_reenroll_exits_nonzero_on_apple_device_error(
         self, mock_pymobiledevice3, tmp_path
@@ -826,3 +873,21 @@ class TestReenrollExitCode:
 
         assert result.exit_code == 1
         assert "Error" in result.stdout or "erase failed" in result.stdout
+
+    def test_reenroll_exits_zero_on_success(
+        self, mock_pymobiledevice3, tmp_path
+    ):
+        fake_device = MagicMock()
+        fake_device.udid = "test-udid"
+        fake_device.device_name = "Test iPad"
+
+        runner = CliRunner()
+        with patch("apple_device_cli.cli._prompt_for_udid", return_value=fake_device), \
+             patch(
+                 "apple_device_cli.enrollment.supervised.erase_device_for_reenrollment",
+                 return_value=True,
+             ):
+            result = runner.invoke(enroll_app, ["re-enroll", "--udid", "test-udid", "--force"])
+
+        assert result.exit_code == 0
+        assert "cloud config erased" in result.stdout.lower()

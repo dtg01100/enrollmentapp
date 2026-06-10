@@ -119,7 +119,7 @@ def test_resolve_skip_panes_multiple_invalid():
 def test_presets_minimal_contains_only_expected():
     """minimal preset should skip the first panes and post-restore/update panes."""
     expected = {
-        "language", "region", "appearance", "language-and-locale", "express-language",
+        "appleid", "language", "region", "appearance", "language-and-locale", "express-language",
         "restore-completed", "update-completed",
     }
     assert set(PRESETS["minimal"]) == expected

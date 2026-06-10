@@ -3,12 +3,14 @@
 **Date:** 2026-06-10
 **Target:** ios-enroll post-1.0.0b
 **Scope:** 9 enrollment issues — 6 real fixes, 3 docs-only notes about false-alarm concerns
-**Deliverable:** 9 commits, 1 PR
+**Deliverable:** 10 commits, 1 PR (1 pre-work chore + 9 issue commits)
 
 ## Context
 
 A deep dive into `src/apple_device_cli/enrollment/` surfaced 9 candidate issues
-during a code review of the 1.0.0b release. After investigation:
+during a code review of the 1.0.0b release. One pre-work chore (tightening
+`.gitignore`, which previously excluded all of `docs/superpowers/` even though
+11 specs/plans are tracked there) ships as commit 0. After that, the 9 issues:
 
 - 6 are real bugs or dead code that need fixing
 - 3 are false alarms where the code is correct but *looks* wrong, and need
@@ -33,6 +35,18 @@ ground-truth the analysis before any code changes.
   surrounding code is already stable.
 
 ## Changes
+
+### Pre-work — `chore(gitignore): unignore docs/superpowers/specs and plans`
+
+`.gitignore` line 62 (`docs/superpowers/`) was added before specs and plans
+were committed; it required `git add -f` for this spec to be tracked. 11
+files in `docs/superpowers/specs/` and `docs/superpowers/plans/` are
+already tracked. No other content exists under `docs/superpowers/`.
+
+**Change:** Remove the `docs/superpowers/` line. The "Internal dev docs
+(not for release)" comment was misleading — specs and plans are clearly
+meant to be tracked. If a future subdir needs ignoring, add a more specific
+rule.
 
 ### Issue 1 — `docs(enrollment): document activation state check`
 
@@ -169,6 +183,7 @@ pattern used in `enroll_status` and other commands.
 
 | # | Test changes | Command |
 |---|--------------|---------|
+| pre | None (gitignore only) | `git status` clean, `git ls-files docs/superpowers/` shows the 11 expected paths |
 | 1, 2, 3 | None (docs only) | `git diff AGENTS.md` review |
 | 4 | Update 1 line: `test_enrollment_flow_fixes.py:386` key rename | `pytest tests/test_enrollment_flow_fixes.py -v` |
 | 5 | None (3 files deleted) | `pytest tests/ -v` — full suite still green |

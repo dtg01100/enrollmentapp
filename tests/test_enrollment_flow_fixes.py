@@ -8,7 +8,11 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
+from typer.testing import CliRunner
 from unittest.mock import MagicMock, patch, AsyncMock
+
+from apple_device_cli.cli import enroll_app
+from apple_device_cli.core.exceptions import AppleDeviceError
 
 
 class _NoDeviceConnectedError(Exception):
@@ -772,3 +776,25 @@ class TestKeybagCleanupOnException:
 
         # The finally block must have called unlink on the keybag path
         assert mock_unlink.called, "keybag should be unlinked even when enrollment raises"
+
+
+class TestReenrollExitCode:
+    """Verify ios-enroll enroll re-enroll exits non-zero on failure."""
+
+    def test_reenroll_exits_nonzero_on_apple_device_error(
+        self, mock_pymobiledevice3, tmp_path
+    ):
+        fake_device = MagicMock()
+        fake_device.udid = "test-udid"
+        fake_device.device_name = "Test iPad"
+
+        runner = CliRunner()
+        with patch("apple_device_cli.cli._prompt_for_udid", return_value=fake_device), \
+             patch(
+                 "apple_device_cli.enrollment.supervised.erase_device_for_reenrollment",
+                 side_effect=AppleDeviceError("erase failed"),
+             ):
+            result = runner.invoke(enroll_app, ["re-enroll", "--udid", "test-udid", "--force"])
+
+        assert result.exit_code == 1
+        assert "Error" in result.stdout or "erase failed" in result.stdout

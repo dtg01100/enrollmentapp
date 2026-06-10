@@ -1143,6 +1143,7 @@ def enroll_reenroll(
         typer.secho("Device cloud config erased. Ready for fresh enrollment.", fg=typer.colors.GREEN)
     except AppleDeviceError as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED)
+        raise typer.Exit(1)
 
 
 @enroll_app.command("status")

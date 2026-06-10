@@ -238,6 +238,17 @@ resolve_skip_panes(preset: str | None, extra_panes: list[str] | None) -> list[st
 - **Warning**: `store_profile` alone only works if device goes through Setup Assistant after enrollment
 - Retry logic: 3 attempts with 5s backoff for transient network errors
 
+### Activation State String Comparison
+
+- `if activation_state == "Unactivated":` at `enrollment/supervised.py:525`
+  looks like a magic string (no constant)
+- Matches pymobiledevice3's own idiom in
+  `MobileActivationService.activate()`
+  (`pymobiledevice3/services/mobile_activation.py:105`)
+- `"Unactivated"` is not in the library's public API — replacing it
+  locally would just create a redundant re-export
+- **Do not "fix"** — treat it as a stable shared convention
+
 ---
 
 ## External Dependencies

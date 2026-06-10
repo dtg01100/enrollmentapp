@@ -249,6 +249,20 @@ resolve_skip_panes(preset: str | None, extra_panes: list[str] | None) -> list[st
   locally would just create a redundant re-export
 - **Do not "fix"** — treat it as a stable shared convention
 
+### Skip Pane Mapping Exceptions
+
+- `SKIP_SETUP_MAPPING` in `enrollment/supervised.py:39` maps user-facing
+  pane names to lockdown key values
+- Most look obvious (`"location"` → `"Location"`), but a few are
+  intentionally non-obvious
+- `"apple-pay"` → `"Payment"` — the iOS 8.1+ lockdown key for "Skips
+  Apple Pay setup" is named `Payment`, not `ApplePay`. Source: Apple's
+  [`device-management/skipkeys.yaml`](https://github.com/apple/device-management/blob/main/skipkeys.yaml)
+- All 62 entries were cross-checked against pymobiledevice3's
+  `MobileConfigService.supervise()` default skip list
+  (`services/mobile_config.py:201-283`)
+- When adding new entries, consult that list as the source of truth
+
 ---
 
 ## External Dependencies

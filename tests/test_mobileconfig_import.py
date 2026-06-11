@@ -126,7 +126,6 @@ def test_import_mobileconfig_raises_on_missing_payload_organization(mock_mobilec
 def test_import_mobileconfig_acquires_lock(mock_mobileconfig):
     """import_mobileconfig must hold fcntl.flock during filesystem operations."""
     import fcntl
-    import os
 
     mobileconfig_path, tmp = mock_mobileconfig
     mgr = OrganizationManager(tmp)

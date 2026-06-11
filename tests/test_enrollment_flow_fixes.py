@@ -402,7 +402,7 @@ class TestKeybagPersistenceForMdmInstall:
     def test_keybag_created_in_system_tempdir(self):
         """Verify keybag is created in system tempdir, not a deleted tempdir."""
         import tempfile
-        from unittest.mock import MagicMock, AsyncMock, patch
+        from unittest.mock import AsyncMock, patch
         from pathlib import Path
         from datetime import datetime, timezone, timedelta
         from cryptography import x509
@@ -410,7 +410,6 @@ class TestKeybagPersistenceForMdmInstall:
         from cryptography.hazmat.primitives.asymmetric import rsa
         from cryptography.x509.oid import NameOID
 
-        lockdown = MagicMock()
 
         # Create test certs and MDM profile
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -478,7 +477,7 @@ class TestKeybagPersistenceForMdmInstall:
 
     def test_install_profile_silent_called_with_keybag_path(self):
         """Verify install_profile_silent receives the keybag path for escalation."""
-        from unittest.mock import MagicMock, AsyncMock, patch
+        from unittest.mock import AsyncMock, patch
         from pathlib import Path
         import tempfile
         from datetime import datetime, timezone, timedelta
@@ -487,7 +486,6 @@ class TestKeybagPersistenceForMdmInstall:
         from cryptography.hazmat.primitives.asymmetric import rsa
         from cryptography.x509.oid import NameOID
 
-        lockdown = MagicMock()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = Path(tmpdir) / "cert.der"
@@ -556,7 +554,7 @@ class TestWifiAndMdmInstallOrder:
 
     def test_wifi_installed_before_mdm_profile(self):
         """Verify WiFi profile is installed before MDM profile."""
-        from unittest.mock import MagicMock, AsyncMock, patch
+        from unittest.mock import AsyncMock, patch
         from pathlib import Path
         import tempfile
         from datetime import datetime, timezone, timedelta
@@ -565,7 +563,6 @@ class TestWifiAndMdmInstallOrder:
         from cryptography.hazmat.primitives.asymmetric import rsa
         from cryptography.x509.oid import NameOID
 
-        lockdown = MagicMock()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = Path(tmpdir) / "cert.der"

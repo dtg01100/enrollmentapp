@@ -7,6 +7,9 @@ import pytest
 import tempfile
 from pathlib import Path
 
+from typer.testing import CliRunner
+
+from apple_device_cli.cli import app
 from apple_device_cli.orgs.manager import Organization, OrganizationManager
 
 
@@ -274,3 +277,61 @@ class TestWifiConfigInOrganization:
             with open(save_dir / "org.json") as f:
                 data = json.load(f)
             assert data["wifi_config_path"] == "/path/to/wifi.mobileconfig"
+
+
+class TestSetCommandsCli:
+    """CLI-level tests for org set-* commands."""
+
+    @pytest.fixture
+    def isolated_orgs_dir(self, tmp_path, monkeypatch):
+        """Override OrganizationManager.DEFAULT_ORGS_DIR for the test duration."""
+        from apple_device_cli.orgs import manager as mgr_mod
+        orgs_dir = tmp_path / "orgs"
+        monkeypatch.setattr(mgr_mod, "DEFAULT_ORGS_DIR", orgs_dir)
+        # Also rebuild any cached class-level reference.
+        return orgs_dir
+
+    def test_set_cert_missing_org_exits_1(self, monkeypatch, tmp_path):
+        """Setting cert on a non-existent org should exit 1 with a red error."""
+        from apple_device_cli.orgs import manager as mgr_mod
+        monkeypatch.setattr(mgr_mod, "DEFAULT_ORGS_DIR", tmp_path / "orgs")
+        runner = CliRunner()
+        result = runner.invoke(
+            app,
+            ["org", "set-cert", "--name", "Nonexistent", "--cert", "/tmp/cert.der"],
+        )
+        assert result.exit_code == 1
+        assert "Organization not found" in result.output
+
+    def test_set_mdm_url_success(self, isolated_orgs_dir):
+        """Setting MDM URL on an existing org should persist the value."""
+        from apple_device_cli.orgs.manager import Organization, OrganizationManager
+        manager = OrganizationManager(isolated_orgs_dir)
+        manager.save_org(Organization(name="Acme"))
+
+        runner = CliRunner()
+        result = runner.invoke(
+            app,
+            ["org", "set-mdm-url", "--name", "Acme", "--mdm-url", "https://mdm.example.com/mdm"],
+        )
+        assert result.exit_code == 0
+        assert "Set MDM URL" in result.output
+        updated = manager.get_org("Acme")
+        assert updated is not None
+        assert updated.mdm_url == "https://mdm.example.com/mdm"
+
+    def test_set_mdm_topic_success(self, isolated_orgs_dir):
+        """Setting MDM topic on an existing org should persist the value."""
+        from apple_device_cli.orgs.manager import Organization, OrganizationManager
+        manager = OrganizationManager(isolated_orgs_dir)
+        manager.save_org(Organization(name="Beta"))
+
+        runner = CliRunner()
+        result = runner.invoke(
+            app,
+            ["org", "set-mdm-topic", "--name", "Beta", "--mdm-topic", "com.beta.topic"],
+        )
+        assert result.exit_code == 0
+        assert "Set MDM topic" in result.output
+        updated = manager.get_org("Beta")
+        assert updated.mdm_topic == "com.beta.topic"

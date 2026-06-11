@@ -58,6 +58,23 @@ def _display_name(value: str | None) -> str:
     return redact_name(value)
 
 
+def _set_org_field(
+    name: str,
+    field_name: str,
+    value: str,
+    label: str,
+) -> None:
+    """Common body for org set-{cert,key,mdm-url,checkin-url,mdm-topic} commands."""
+    manager = OrganizationManager()
+    org = manager.get_org(name)
+    if not org:
+        typer.secho(f"Organization not found: {_display_name(name)}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    setattr(org, field_name, value)
+    manager.save_org(org, overwrite=True)
+    typer.secho(f"Set {label} for '{_display_name(name)}'", fg=typer.colors.GREEN)
+
+
 def _display_udid(value: str | None) -> str:
     return redact_identifier(value, prefix=6, suffix=4)
 
@@ -755,68 +772,48 @@ def org_delete(name: str = typer.Option(..., "--name")):
 
 
 @org_app.command("set-cert")
-def org_set_cert(name: str = typer.Option(..., "--name"), cert: str = typer.Option(..., "-C", "--cert")):
+def org_set_cert(
+    name: str = typer.Option(..., "--name"),
+    cert: str = typer.Option(..., "-C", "--cert"),
+) -> None:
     """Set certificate for organization."""
-    manager = OrganizationManager()
-    org = manager.get_org(name)
-    if not org:
-        typer.secho(f"Organization not found: {_display_name(name)}", fg=typer.colors.RED)
-        raise typer.Exit(1)
-    org.cert_path = str(Path(cert).resolve())
-    manager.save_org(org, overwrite=True)
-    typer.secho(f"Set certificate for '{_display_name(name)}'", fg=typer.colors.GREEN)
+    _set_org_field(name, "cert_path", str(Path(cert).resolve()), "certificate")
 
 
 @org_app.command("set-key")
-def org_set_key(name: str = typer.Option(..., "--name"), key: str = typer.Option(..., "-K", "--key")):
+def org_set_key(
+    name: str = typer.Option(..., "--name"),
+    key: str = typer.Option(..., "-K", "--key"),
+) -> None:
     """Set private key for organization."""
-    manager = OrganizationManager()
-    org = manager.get_org(name)
-    if not org:
-        typer.secho(f"Organization not found: {_display_name(name)}", fg=typer.colors.RED)
-        raise typer.Exit(1)
-    org.key_path = str(Path(key).resolve())
-    manager.save_org(org, overwrite=True)
-    typer.secho(f"Set private key for '{_display_name(name)}'", fg=typer.colors.GREEN)
+    _set_org_field(name, "key_path", str(Path(key).resolve()), "private key")
 
 
 @org_app.command("set-mdm-url")
-def org_set_mdm_url(name: str = typer.Option(..., "--name"), mdm_url: str = typer.Option(..., "--mdm-url")):
+def org_set_mdm_url(
+    name: str = typer.Option(..., "--name"),
+    mdm_url: str = typer.Option(..., "--mdm-url"),
+) -> None:
     """Set MDM server URL for organization."""
-    manager = OrganizationManager()
-    org = manager.get_org(name)
-    if not org:
-        typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
-        raise typer.Exit(1)
-    org.mdm_url = mdm_url
-    manager.save_org(org, overwrite=True)
-    typer.secho(f"Set MDM URL for '{_display_name(name)}'", fg=typer.colors.GREEN)
+    _set_org_field(name, "mdm_url", mdm_url, "MDM URL")
 
 
 @org_app.command("set-checkin-url")
-def org_set_checkin_url(name: str = typer.Option(..., "--name"), checkin_url: str = typer.Option(..., "--checkin-url")):
+def org_set_checkin_url(
+    name: str = typer.Option(..., "--name"),
+    checkin_url: str = typer.Option(..., "--checkin-url"),
+) -> None:
     """Set SCEP check-in URL for organization."""
-    manager = OrganizationManager()
-    org = manager.get_org(name)
-    if not org:
-        typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
-        raise typer.Exit(1)
-    org.checkin_url = checkin_url
-    manager.save_org(org, overwrite=True)
-    typer.secho(f"Set check-in URL for '{_display_name(name)}'", fg=typer.colors.GREEN)
+    _set_org_field(name, "checkin_url", checkin_url, "check-in URL")
 
 
 @org_app.command("set-mdm-topic")
-def org_set_mdm_topic(name: str = typer.Option(..., "--name"), mdm_topic: str = typer.Option(..., "--mdm-topic")):
+def org_set_mdm_topic(
+    name: str = typer.Option(..., "--name"),
+    mdm_topic: str = typer.Option(..., "--mdm-topic"),
+) -> None:
     """Set MDM topic for organization."""
-    manager = OrganizationManager()
-    org = manager.get_org(name)
-    if not org:
-        typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
-        raise typer.Exit(1)
-    org.mdm_topic = mdm_topic
-    manager.save_org(org, overwrite=True)
-    typer.secho(f"Set MDM topic for '{_display_name(name)}'", fg=typer.colors.GREEN)
+    _set_org_field(name, "mdm_topic", mdm_topic, "MDM topic")
 
 
 @org_app.command("show")

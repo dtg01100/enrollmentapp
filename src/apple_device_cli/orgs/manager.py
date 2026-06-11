@@ -152,6 +152,19 @@ class OrganizationManager:
             return True
         return False
 
+    def _prepare_dest_dir(self, name: str) -> Path:
+        """Resolve and create the org's storage directory.
+
+        Returns the destination directory path. The caller is responsible
+        for writing files into it. If the directory already exists, it is
+        removed first (used by import paths that overwrite).
+        """
+        dest_dir = self.orgs_dir / self._sanitize_name(name)
+        if dest_dir.exists():
+            shutil.rmtree(dest_dir)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        return dest_dir
+
     def _sanitize_name(self, name: str) -> str:
         return "".join(c if c.isalnum() or c in ".-_" else "_" for c in name)
 
@@ -226,10 +239,7 @@ class OrganizationManager:
         if certificate is None or private_key is None:
             raise ValueError("PKCS12 blob missing certificate or private key")
 
-        dest_dir = self.orgs_dir / self._sanitize_name(name)
-        if dest_dir.exists():
-            shutil.rmtree(dest_dir)
-        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_dir = self._prepare_dest_dir(name)
 
         cert_der = certificate.public_bytes(serialization.Encoding.DER)
         key_der = private_key.private_bytes(

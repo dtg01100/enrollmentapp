@@ -1240,7 +1240,7 @@ def enroll_activate(udid: str = typer.Option(None, "--udid")):
         activate_device(udid)
         typer.secho("Device activated", fg=typer.colors.GREEN)
     except AppleDeviceError as e:
-        typer.secho(f"Error: {e}", fg=typer.colors.RED)
+        typer.secho(f"Error: {sanitize_text(str(e))}", fg=typer.colors.RED)
 
 
 def main():

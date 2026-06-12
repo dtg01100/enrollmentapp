@@ -1,4 +1,378 @@
-"""Tests for enrollment flow fixes: cloud config, state management, error handling."""
+"""Tests for enrollment CLI commands: make-supervised, status, validate, re-enroll, activate."""
+
+from __future__ import annotations
+
+from unittest.mock import patch
+
+import pytest
+from typer.testing import CliRunner
+
+from apple_device_cli.cli import enroll_app
+from apple_device_cli.core.exceptions import AppleDeviceError
+from apple_device_cli.device.info import DeviceInfo
+from apple_device_cli.orgs.manager import Organization, OrganizationManager
+
+runner = CliRunner()
+
+
+@pytest.fixture
+def isolated_orgs_dir(tmp_path, monkeypatch):
+    from apple_device_cli.orgs import manager as mgr_mod
+    monkeypatch.setattr(mgr_mod, "DEFAULT_ORGS_DIR", tmp_path / "orgs")
+    return tmp_path / "orgs"
+
+
+@pytest.fixture
+def sample_device():
+    return DeviceInfo(
+        udid="d8b97d90b881aba50bd[REDACTED]78d32fb8da3",
+        device_name="Test iPhone",
+        device_type="iPhone14,5",
+        firmware_version="17.0",
+        build_version="21A342",
+        ecid="0xe28e921780032",
+    )
+
+
+@pytest.fixture
+def org_with_keys(isolated_orgs_dir, tmp_path):
+    """Create an org with cert+key files on disk for supervised enrollment."""
+    manager = OrganizationManager(isolated_orgs_dir)
+    cert = tmp_path / "cert.der"
+    key = tmp_path / "key.der"
+    cert.write_bytes(b"fake-cert-bytes")
+    key.write_bytes(b"fake-key-bytes")
+    manager.save_org(
+        Organization(
+            name="Acme",
+            mdm_url="https://mdm.example.com/mdm",
+            checkin_url="https://mdm.example.com/checkin",
+            mdm_topic="com.acme.mdm",
+            cert_path=str(cert),
+            key_path=str(key),
+        )
+    )
+    return manager
+
+
+# --- make-supervised ---
+
+
+class TestEnrollMakeSupervised:
+    @patch("apple_device_cli.cli.list_devices")
+    def test_no_device_exits_1(self, mock_list):
+        mock_list.return_value = []
+        result = runner.invoke(enroll_app, ["make-supervised", "--org-name", "Acme"])
+        assert result.exit_code == 1
+        assert "no devices" in result.output.lower() or "no device selected" in result.output.lower()
+
+    @patch("apple_device_cli.cli.OrganizationManager")
+    @patch("apple_device_cli.cli.list_devices")
+    def test_org_not_found_exits_1(self, mock_list, mock_mgr_class, sample_device):
+        mock_list.return_value = [sample_device]
+        mgr = MagicMock(spec=OrganizationManager)
+        mgr.get_org.return_value = None
+        mock_mgr_class.return_value = mgr
+        result = runner.invoke(enroll_app, ["make-supervised", "--udid", sample_device.udid, "--org-name", "Missing"])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+    @patch("apple_device_cli.cli.OrganizationManager")
+    @patch("apple_device_cli.cli.get_device_info")
+    def test_org_missing_cert_exits_1(
+        self, mock_info, mock_mgr_class, sample_device, isolated_orgs_dir
+    ):
+        mock_info.return_value = sample_device
+        mgr = OrganizationManager(isolated_orgs_dir)
+        mgr.save_org(Organization(name="Acme", cert_path=None, key_path=None))
+        # The CLI uses OrganizationManager() (default), but our saved org
+        # is in the isolated dir. Patch DEFAULT_ORGS_DIR so the manager
+        # built inside the CLI finds our org.
+        import apple_device_cli.orgs.manager as mgr_mod
+        mgr_mod.DEFAULT_ORGS_DIR = isolated_orgs_dir
+        mock_mgr_class.return_value = mgr
+
+        result = runner.invoke(
+            enroll_app,
+            ["make-supervised", "--udid", sample_device.udid, "--org-name", "Acme"],
+        )
+        assert result.exit_code == 1
+        assert "missing cert or key" in result.output.lower()
+
+    def test_invalid_skip_preset_returns_error(self, org_with_keys, sample_device):
+        result = runner.invoke(
+            enroll_app,
+            [
+                "make-supervised",
+                "--udid", sample_device.udid,
+                "--org-name", "Acme",
+                "--skip-preset", "bogus",
+            ],
+        )
+        # Invalid preset prints but doesn't raise
+        assert result.exit_code == 0
+        assert "error" in result.output.lower() or "preset" in result.output.lower()
+
+    @patch("apple_device_cli.cli.make_supervised")
+    @patch("apple_device_cli.cli.OrganizationManager")
+    @patch("apple_device_cli.cli.list_devices")
+    def test_success(self, mock_list, mock_mgr_class, mock_make, org_with_keys, sample_device):
+        mock_list.return_value = [sample_device]
+        mgr = MagicMock(spec=OrganizationManager)
+        mgr.get_org.return_value = org_with_keys.get_org("Acme")
+        mock_mgr_class.return_value = mgr
+
+        from apple_device_cli.enrollment.supervised import EnrollmentResult
+        mock_make.return_value = EnrollmentResult(
+            success=True,
+            device_udid=sample_device.udid,
+            supervised=True,
+            mdm_enrolled=True,
+            wifi_installed=False,
+            cloud_config={"IsSupervised": True},
+        )
+
+        result = runner.invoke(
+            enroll_app,
+            ["make-supervised", "--udid", sample_device.udid, "--org-name", "Acme"],
+        )
+        assert result.exit_code == 0
+        assert "supervised" in result.output.lower()
+        mock_make.assert_called_once()
+
+    @patch("apple_device_cli.cli.make_supervised")
+    @patch("apple_device_cli.cli.OrganizationManager")
+    @patch("apple_device_cli.cli.list_devices")
+    def test_failure_lists_errors(self, mock_list, mock_mgr_class, mock_make, org_with_keys, sample_device):
+        mock_list.return_value = [sample_device]
+        mgr = MagicMock(spec=OrganizationManager)
+        mgr.get_org.return_value = org_with_keys.get_org("Acme")
+        mock_mgr_class.return_value = mgr
+
+        from apple_device_cli.enrollment.supervised import EnrollmentResult
+        mock_make.return_value = EnrollmentResult(
+            success=False,
+            device_udid=sample_device.udid,
+            supervised=False,
+            mdm_enrolled=False,
+            wifi_installed=False,
+            errors=["mdm unreachable", "https://mdm.example.com/verysecrettoken"],
+        )
+
+        result = runner.invoke(
+            enroll_app,
+            ["make-supervised", "--udid", sample_device.udid, "--org-name", "Acme"],
+        )
+        assert result.exit_code == 0
+        assert "errors" in result.output.lower()
+        # Error URL should be redacted (path > 12 chars -> ellipsis appended)
+        assert "mdm.example.com" in result.output
+        assert "/…" in result.output
+
+    @patch("apple_device_cli.cli.make_supervised")
+    @patch("apple_device_cli.cli.OrganizationManager")
+    @patch("apple_device_cli.cli.list_devices")
+    def test_apple_device_error_prints_message(self, mock_list, mock_mgr_class, mock_make, org_with_keys, sample_device):
+        mock_list.return_value = [sample_device]
+        mgr = MagicMock(spec=OrganizationManager)
+        mgr.get_org.return_value = org_with_keys.get_org("Acme")
+        mock_mgr_class.return_value = mgr
+        mock_make.side_effect = AppleDeviceError("https://mdm.example.com/checkin/verysecrettoken")
+
+        result = runner.invoke(
+            enroll_app,
+            ["make-supervised", "--udid", sample_device.udid, "--org-name", "Acme"],
+        )
+        assert result.exit_code == 0  # Apple's exception is printed, not raised to Typer
+        assert "Error" in result.output
+        # Token should be redacted
+        assert "verysecrettoken" not in result.output
+
+
+# --- re-enroll ---
+
+
+class TestEnrollReenroll:
+    @patch("apple_device_cli.cli.list_devices")
+    def test_no_device_exits_1(self, mock_list):
+        mock_list.return_value = []
+        result = runner.invoke(enroll_app, ["re-enroll", "--force"])
+        assert result.exit_code == 1
+        assert "no devices" in result.output.lower() or "no device selected" in result.output.lower()
+
+    @patch("apple_device_cli.enrollment.supervised.erase_device_for_reenrollment")
+    @patch("apple_device_cli.cli.list_devices")
+    def test_force_skips_confirmation(self, mock_list, mock_erase, sample_device):
+        mock_list.return_value = [sample_device]
+        mock_erase.return_value = None
+        result = runner.invoke(
+            enroll_app, ["re-enroll", "--udid", sample_device.udid, "--force"]
+        )
+        assert result.exit_code == 0
+        assert "erased" in result.output.lower() or "ready" in result.output.lower()
+        mock_erase.assert_called_once_with(sample_device.udid)
+
+    @patch("apple_device_cli.enrollment.supervised.erase_device_for_reenrollment")
+    @patch("apple_device_cli.cli.list_devices")
+    def test_error_exits_1(self, mock_list, mock_erase, sample_device):
+        mock_list.return_value = [sample_device]
+        mock_erase.side_effect = AppleDeviceError("cloud config erase failed")
+        result = runner.invoke(
+            enroll_app, ["re-enroll", "--udid", sample_device.udid, "--force"]
+        )
+        assert result.exit_code == 1
+        assert "Error" in result.output
+
+
+# --- status ---
+
+
+class TestEnrollStatus:
+    @patch("apple_device_cli.cli.list_devices")
+    def test_no_device_exits_1(self, mock_list):
+        mock_list.return_value = []
+        result = runner.invoke(enroll_app, ["status"])
+        assert result.exit_code == 1
+        assert "no devices" in result.output.lower() or "no device selected" in result.output.lower()
+
+    @patch("apple_device_cli.enrollment.supervised.get_device_enrollment_state")
+    @patch("apple_device_cli.cli.get_device_info")
+    def test_success_prints_state(self, mock_info, mock_state, sample_device):
+        mock_info.return_value = sample_device
+        mock_state.return_value = {
+            "activation_state": "Activated",
+            "is_supervised": True,
+            "cloud_config_applied": True,
+            "org_name": "Acme Corp",
+            "org_magic": "com.apple.mgmt.External.205e2f7b-f2e8-4a33-8f11-097496bec56f",
+            "was_mandatorily_unpaired": False,
+        }
+        result = runner.invoke(
+            enroll_app, ["status", "--udid", sample_device.udid]
+        )
+        assert result.exit_code == 0
+        assert "Activated" in result.output
+        assert "Supervised: True" in result.output
+        # Org name redaction (first+last char of each word)
+        assert "A••• C•••" in result.output
+        # Org magic redaction
+        assert "com.apple.…" in result.output
+
+    @patch("apple_device_cli.enrollment.supervised.get_device_enrollment_state")
+    @patch("apple_device_cli.cli.get_device_info")
+    def test_state_error_prints_error(self, mock_info, mock_state, sample_device):
+        mock_info.return_value = sample_device
+        mock_state.return_value = {"error": "device disconnected"}
+        result = runner.invoke(
+            enroll_app, ["status", "--udid", sample_device.udid]
+        )
+        assert result.exit_code == 0
+        assert "Could not get device state" in result.output
+
+    @patch("apple_device_cli.enrollment.supervised.get_device_enrollment_state")
+    @patch("apple_device_cli.cli.get_device_info")
+    def test_exception_prints_error(self, mock_info, mock_state, sample_device):
+        mock_info.return_value = sample_device
+        mock_state.side_effect = RuntimeError("https://mdm.example.com/verysecrettoken")
+        result = runner.invoke(
+            enroll_app, ["status", "--udid", sample_device.udid]
+        )
+        assert result.exit_code == 0
+        assert "Error getting device status" in result.output
+        # URL token redacted: long path segment gets ellipsis appended
+        assert "/…" in result.output
+
+
+# --- validate ---
+
+
+class TestEnrollValidate:
+    @patch("apple_device_cli.cli.OrganizationManager")
+    def test_prompted_empty_name_cancels(self, mock_mgr_class):
+        mgr = MagicMock(spec=OrganizationManager)
+        mgr.get_org.return_value = None
+        mock_mgr_class.return_value = mgr
+        # Pressing Enter on empty prompt -> typer aborts -> exit code 1
+        result = runner.invoke(enroll_app, ["validate"], input="\n")
+        # typer.Abort() exit code is 1; both code paths ("cancelled" or "abort")
+        # are acceptable user feedback for an empty name.
+        assert result.exit_code in (0, 1)
+        if result.exit_code == 0:
+            assert "cancelled" in result.output.lower() or "required" in result.output.lower()
+
+    @patch("apple_device_cli.cli.OrganizationManager")
+    def test_org_not_found(self, mock_mgr_class, isolated_orgs_dir):
+        mgr = MagicMock(spec=OrganizationManager)
+        mgr.get_org.return_value = None
+        mock_mgr_class.return_value = mgr
+        result = runner.invoke(enroll_app, ["validate", "--org-name", "Missing"])
+        assert result.exit_code == 0
+        assert "not found" in result.output.lower()
+
+    @patch("apple_device_cli.enrollment.supervised.validate_enrollment_prerequisites")
+    @patch("apple_device_cli.cli.OrganizationManager")
+    def test_success_no_errors(self, mock_mgr_class, mock_validate, isolated_orgs_dir, tmp_path):
+        cert = tmp_path / "cert.der"
+        key = tmp_path / "key.der"
+        cert.write_bytes(b"x")
+        key.write_bytes(b"x")
+        org = Organization(
+            name="Acme",
+            mdm_url="https://mdm.example.com/mdm",
+            cert_path=str(cert),
+            key_path=str(key),
+        )
+        mgr = MagicMock(spec=OrganizationManager)
+        mgr.get_org.return_value = org
+        mock_mgr_class.return_value = mgr
+        mock_validate.return_value = []
+
+        result = runner.invoke(enroll_app, ["validate", "--org-name", "Acme"])
+        assert result.exit_code == 0
+        assert "valid" in result.output.lower()
+
+    @patch("apple_device_cli.enrollment.supervised.validate_enrollment_prerequisites")
+    @patch("apple_device_cli.cli.OrganizationManager")
+    def test_failure_lists_errors(self, mock_mgr_class, mock_validate, isolated_orgs_dir, tmp_path):
+        cert = tmp_path / "cert.der"
+        key = tmp_path / "key.der"
+        cert.write_bytes(b"x")
+        key.write_bytes(b"x")
+        org = Organization(name="Acme", cert_path=str(cert), key_path=str(key))
+        mgr = MagicMock(spec=OrganizationManager)
+        mgr.get_org.return_value = org
+        mock_mgr_class.return_value = mgr
+        mock_validate.return_value = [
+            "cert invalid",
+            "https://mdm.example.com/checkin/verysecrettoken",
+        ]
+
+        result = runner.invoke(enroll_app, ["validate", "--org-name", "Acme"])
+        assert result.exit_code == 0
+        assert "validation failed" in result.output.lower()
+        # Secret URL redacted
+        assert "verysecrettoken" not in result.output
+
+
+# --- activate ---
+
+
+class TestEnrollActivate:
+    @patch("apple_device_cli.cli.activate_device")
+    def test_success(self, mock_activate):
+        mock_activate.return_value = None
+        result = runner.invoke(enroll_app, ["activate"])
+        assert result.exit_code == 0
+        assert "activated" in result.output.lower()
+
+    @patch("apple_device_cli.cli.activate_device")
+    def test_error_prints_message(self, mock_activate):
+        mock_activate.side_effect = AppleDeviceError("https://mdm.example.com/verysecrettoken")
+        result = runner.invoke(enroll_app, ["activate"])
+        assert result.exit_code == 0
+        assert "Error" in result.output
+        # URL token redacted (path > 12 chars -> ellipsis appended)
+        assert "/…" in result.output
 
 import tempfile
 from datetime import datetime, timedelta, timezone

@@ -3,6 +3,7 @@ import os
 import pytest
 import tempfile
 from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import patch, MagicMock
 from apple_device_cli.orgs.manager import Organization, OrganizationManager
 
@@ -522,7 +523,7 @@ def test_concurrent_save_and_import_serialized_by_lock():
                 mobileconfig_path.write_bytes(b"fake signed data")
                 with patch('subprocess.run') as mock_run, \
                      patch('apple_device_cli.orgs.manager.pkcs7.load_der_pkcs7_certificates', return_value=[]):
-                    mock_result = MagicMock()
+                    mock_result = MagicMock(spec=CompletedProcess)
                     mock_result.returncode = 0
                     mock_result.stdout = plistlib.dumps(SAMPLE_PAYLOAD)
                     mock_result.stderr = b''

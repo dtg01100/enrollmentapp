@@ -1,7 +1,7 @@
 # ios-enroll AGENTS.md
 
-**Version:** 1.0
-**Date:** 2026-05-04
+**Version:** 1.1
+**Date:** 2026-06-12
 **Purpose:** Technical reference for ios-enroll project development
 
 ---
@@ -325,6 +325,43 @@ grep -r "already exists" src/
 | Change error messages without updating tests | Tests assert exact strings | Update tests first |
 | Assume pymobiledevice3 behavior | Library may not be installed | Read source or mock in tests |
 | Check if usbmuxd is "running" | usbmuxd is on-demand, not a daemon | Let it auto-start when device plugged in |
+| `MagicMock()` (no `spec=`) for any class-shaped value | Typos and dead-code references silently return mocks; tests "pass" while production breaks | `MagicMock(spec=RealClass)`. See "Mock Spec'ing" below |
+
+### Mock Spec'ing (Required)
+
+Bare `MagicMock()` is forbidden in this project. Every class-shaped mock
+**must** be spec'd against the real class:
+
+```python
+# WRONG — typos and dead-code references return mocks silently
+lockdown = MagicMock()
+mock_manager = MagicMock()
+result = MagicMock()
+
+# RIGHT — attribute access and method signatures are type-checked
+lockdown = MagicMock(spec=LockdownClient)
+mock_manager = MagicMock(spec=OrganizationManager)
+result = MagicMock(spec=CompletedProcess)
+```
+
+**Why it matters:** A spec'd mock raises `AttributeError` on unknown
+attribute reads, and raises `TypeError` on method calls with wrong
+arguments. This is the *only* way the test can detect that production
+code has misspelled a name or removed a field. A bare mock returns
+a mock for *any* attribute, so the test "passes" while the production
+code is broken.
+
+**What about the spec class itself?** Spec classes (`LockdownClient`,
+`MobileActivationService`, `MobileConfigService`) come from
+`pymobiledevice3`, and the autouse `mock_pymobiledevice3` fixture in
+`tests/conftest.py` patches pymobiledevice3 in `sys.modules` with
+spec'd mocks at test runtime. So `from pymobiledevice3.lockdown
+import LockdownClient` inside a test would resolve to a Mock, and
+`MagicMock(spec=Mock)` raises `InvalidSpecError`. Test files must
+import the real classes from `tests.conftest` instead — see the
+`__all__` there.
+
+**Default test run:** `grep "MagicMock()" tests/ --include="*.py" \| grep -v "spec=" \| grep -v conftest.py` should return **zero** lines. If you add a mock, spec it.
 
 ### CLI Help Messages
 

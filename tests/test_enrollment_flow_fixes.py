@@ -1,4 +1,5 @@
 """Tests for enrollment flow fixes: cloud config, state management, error handling."""
+
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,42 +15,9 @@ from unittest.mock import MagicMock, patch, AsyncMock
 from apple_device_cli.cli import enroll_app
 from apple_device_cli.core.exceptions import AppleDeviceError
 
-
-class _NoDeviceConnectedError(Exception):
-    """Simulates pymobiledevice3.lockdown.NoDeviceConnectedError for testing."""
-
-
-class CloudConfigurationAlreadyPresentError(Exception):
-    """Mock exception for testing."""
-
-
-@pytest.fixture(autouse=True)
-def mock_pymobiledevice3():
-    mock_pm3 = MagicMock()
-    mock_pm3.lockdown.create_using_usbmux = AsyncMock()
-    mock_pm3.lockdown.LockdownClient = MagicMock()
-    mock_pm3.lockdown.NoDeviceConnectedError = _NoDeviceConnectedError
-
-    mock_mobile_config = MagicMock()
-    mock_mobile_config.MobileConfigService = MagicMock()
-    mock_mobile_config.CloudConfigurationAlreadyPresentError = CloudConfigurationAlreadyPresentError
-    mock_pm3.services.mobile_config = mock_mobile_config
-
-    mock_mobile_activation = MagicMock()
-    mock_mobile_activation.MobileActivationService = MagicMock()
-    mock_pm3.services.mobile_activation = mock_mobile_activation
-
-    mock_pm3.ca.create_keybag_file = MagicMock()
-
-    with patch.dict('sys.modules', {
-        'pymobiledevice3': mock_pm3,
-        'pymobiledevice3.lockdown': mock_pm3.lockdown,
-        'pymobiledevice3.services': MagicMock(),
-        'pymobiledevice3.services.mobile_config': mock_pm3.services.mobile_config,
-        'pymobiledevice3.services.mobile_activation': mock_pm3.services.mobile_activation,
-        'pymobiledevice3.ca': mock_pm3.ca,
-    }):
-        yield mock_pm3
+from tests.conftest import (
+    MockCloudConfigurationAlreadyPresentError as CloudConfigurationAlreadyPresentError,
+)
 
 
 class TestCloudConfigBugFix:
@@ -57,7 +25,7 @@ class TestCloudConfigBugFix:
 
     def test_make_supervised_sets_cloud_config_without_skip_list(self, mock_pymobiledevice3):
         """Test: Cloud config is set even when skip_list is None.
-        
+
         Note: When device is already supervised, we skip the cloud config update
         to avoid connection issues. The config was already set correctly when
         supervision was originally applied. This test verifies the behavior
@@ -71,7 +39,9 @@ class TestCloudConfigBugFix:
         activation_svc = MagicMock()
         activation_svc.state = AsyncMock(return_value="Activated")
         activation_svc.activate = AsyncMock()
-        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = activation_svc
+        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
+            activation_svc
+        )
 
         svc = AsyncMock()
         svc.supervise = AsyncMock()
@@ -85,9 +55,11 @@ class TestCloudConfigBugFix:
             key_path = Path(tmpdir) / "key.der"
 
             private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-            subject = issuer = x509.Name([
-                x509.NameAttribute(NameOID.COMMON_NAME, "Test Org"),
-            ])
+            subject = issuer = x509.Name(
+                [
+                    x509.NameAttribute(NameOID.COMMON_NAME, "Test Org"),
+                ]
+            )
             certificate = (
                 x509.CertificateBuilder()
                 .subject_name(subject)
@@ -108,7 +80,9 @@ class TestCloudConfigBugFix:
                 )
             )
 
-            with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc):
+            with patch(
+                "pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc
+            ):
                 supervised.make_supervised(
                     str(cert_path),
                     str(key_path),
@@ -141,7 +115,9 @@ class TestCloudConfigBugFix:
         activation_svc = MagicMock()
         activation_svc.state = AsyncMock(return_value="Activated")
         activation_svc.activate = AsyncMock()
-        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = activation_svc
+        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
+            activation_svc
+        )
 
         svc = AsyncMock()
         svc.set_cloud_configuration = AsyncMock(side_effect=CloudConfigurationAlreadyPresentError())
@@ -156,9 +132,11 @@ class TestCloudConfigBugFix:
             mdm_profile_path.write_bytes(b"fake-mdm-profile")
 
             private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-            subject = issuer = x509.Name([
-                x509.NameAttribute(NameOID.COMMON_NAME, "Test Org"),
-            ])
+            subject = issuer = x509.Name(
+                [
+                    x509.NameAttribute(NameOID.COMMON_NAME, "Test Org"),
+                ]
+            )
             certificate = (
                 x509.CertificateBuilder()
                 .subject_name(subject)
@@ -199,7 +177,9 @@ class TestCloudConfigBugFix:
             svc.__aenter__.return_value = svc
             svc.__aexit__.return_value = False
 
-            with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc):
+            with patch(
+                "pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc
+            ):
                 result = supervised.make_supervised(
                     cert_path=str(cert_path),
                     key_path=str(key_path),
@@ -227,7 +207,9 @@ class TestCloudConfigBugFix:
         activation_svc = MagicMock()
         activation_svc.state = AsyncMock(return_value="Activated")
         activation_svc.activate = AsyncMock()
-        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = activation_svc
+        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
+            activation_svc
+        )
 
         transient_error = Exception(
             "invalid response {'ErrorChain': [{'ErrorCode': -1009, 'LocalizedDescription': 'The Internet connection appears to be offline.'}], 'Status': 'Error'}"
@@ -247,9 +229,11 @@ class TestCloudConfigBugFix:
             mdm_profile_path.write_bytes(b"fake-mdm-profile")
 
             private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-            subject = issuer = x509.Name([
-                x509.NameAttribute(NameOID.COMMON_NAME, "Test Org"),
-            ])
+            subject = issuer = x509.Name(
+                [
+                    x509.NameAttribute(NameOID.COMMON_NAME, "Test Org"),
+                ]
+            )
             certificate = (
                 x509.CertificateBuilder()
                 .subject_name(subject)
@@ -270,8 +254,14 @@ class TestCloudConfigBugFix:
                 )
             )
 
-            with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc), \
-                 patch('apple_device_cli.enrollment.supervised.asyncio.sleep', new=AsyncMock()) as mock_sleep:
+            with (
+                patch(
+                    "pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc
+                ),
+                patch(
+                    "apple_device_cli.enrollment.supervised.asyncio.sleep", new=AsyncMock()
+                ) as mock_sleep,
+            ):
                 result = supervised.make_supervised(
                     cert_path=str(cert_path),
                     key_path=str(key_path),
@@ -369,16 +359,18 @@ class TestEnrollmentStateReadback:
         mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
 
         svc = AsyncMock()
-        svc.get_cloud_configuration = AsyncMock(return_value={
-            "IsSupervised": True,
-            "ConfigurationWasApplied": True,
-            "OrganizationName": "Test Org",
-            "OrganizationMagic": "org-123",
-        })
+        svc.get_cloud_configuration = AsyncMock(
+            return_value={
+                "IsSupervised": True,
+                "ConfigurationWasApplied": True,
+                "OrganizationName": "Test Org",
+                "OrganizationMagic": "org-123",
+            }
+        )
         svc.__aenter__.return_value = svc
         svc.__aexit__.return_value = False
 
-        with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc):
+        with patch("pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc):
             state = supervised.get_device_enrollment_state("test-udid")
 
         assert state == {
@@ -409,7 +401,6 @@ class TestKeybagPersistenceForMdmInstall:
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import rsa
         from cryptography.x509.oid import NameOID
-
 
         # Create test certs and MDM profile
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -456,8 +447,11 @@ class TestKeybagPersistenceForMdmInstall:
 
             svc.install_profile_silent = AsyncMock(side_effect=capture_keybag)
 
-            with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc):
+            with patch(
+                "pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc
+            ):
                 from apple_device_cli.enrollment import supervised
+
                 supervised.make_supervised(
                     cert_path=str(cert_path),
                     key_path=str(key_path),
@@ -470,10 +464,12 @@ class TestKeybagPersistenceForMdmInstall:
             assert captured_keybag is not None, "install_profile_silent should receive keybag"
             # Verify it's in system tempdir
             system_temp = Path(tempfile.gettempdir())
-            assert str(captured_keybag).startswith(str(system_temp)), \
+            assert str(captured_keybag).startswith(str(system_temp)), (
                 f"Keybag should be in {system_temp}, got {captured_keybag}"
-            assert "ios_enroll_keybag_" in str(captured_keybag), \
+            )
+            assert "ios_enroll_keybag_" in str(captured_keybag), (
                 "Keybag should have ios_enroll_keybag_ prefix"
+            )
 
     def test_install_profile_silent_called_with_keybag_path(self):
         """Verify install_profile_silent receives the keybag path for escalation."""
@@ -485,7 +481,6 @@ class TestKeybagPersistenceForMdmInstall:
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import rsa
         from cryptography.x509.oid import NameOID
-
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = Path(tmpdir) / "cert.der"
@@ -531,8 +526,11 @@ class TestKeybagPersistenceForMdmInstall:
 
             svc.install_profile_silent = AsyncMock(side_effect=capture_keybag)
 
-            with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc):
+            with patch(
+                "pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc
+            ):
                 from apple_device_cli.enrollment import supervised
+
                 supervised.make_supervised(
                     cert_path=str(cert_path),
                     key_path=str(key_path),
@@ -543,9 +541,13 @@ class TestKeybagPersistenceForMdmInstall:
 
             # Verify keybag path was passed to install_profile_silent
             # Note: keybag file is cleaned up after enrollment completes
-            assert captured_keybag_path is not None, "install_profile_silent should receive keybag path"
+            assert captured_keybag_path is not None, (
+                "install_profile_silent should receive keybag path"
+            )
             # Check that the path looks correct (is in temp dir with correct prefix)
-            assert "ios_enroll_keybag_" in str(captured_keybag_path), f"Keybag path should have prefix: {captured_keybag_path}"
+            assert "ios_enroll_keybag_" in str(captured_keybag_path), (
+                f"Keybag path should have prefix: {captured_keybag_path}"
+            )
             # File size check removed - file is cleaned up after enrollment
 
 
@@ -562,7 +564,6 @@ class TestWifiAndMdmInstallOrder:
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import rsa
         from cryptography.x509.oid import NameOID
-
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = Path(tmpdir) / "cert.der"
@@ -615,8 +616,11 @@ class TestWifiAndMdmInstallOrder:
             svc.__aenter__.return_value = svc
             svc.__aexit__.return_value = False
 
-            with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc):
+            with patch(
+                "pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc
+            ):
                 from apple_device_cli.enrollment import supervised
+
                 supervised.make_supervised(
                     cert_path=str(cert_path),
                     key_path=str(key_path),
@@ -628,13 +632,17 @@ class TestWifiAndMdmInstallOrder:
 
             # Verify order: WiFi before MDM
             install_calls = [c[0] for c in call_order]
-            wifi_idx = next((i for i, c in enumerate(install_calls) if c == "install_profile"), None)
-            mdm_idx = next((i for i, c in enumerate(install_calls) if c == "install_profile_silent"), None)
+            wifi_idx = next(
+                (i for i, c in enumerate(install_calls) if c == "install_profile"), None
+            )
+            mdm_idx = next(
+                (i for i, c in enumerate(install_calls) if c == "install_profile_silent"), None
+            )
 
             if wifi_idx is not None and mdm_idx is not None:
-                assert wifi_idx < mdm_idx, f"WiFi should be installed before MDM. Order: {install_calls}"
-
-
+                assert wifi_idx < mdm_idx, (
+                    f"WiFi should be installed before MDM. Order: {install_calls}"
+                )
 
 
 class TestKeybagCleanup:
@@ -650,7 +658,9 @@ class TestKeybagCleanup:
         activation_svc = MagicMock()
         activation_svc.state = AsyncMock(return_value="Activated")
         activation_svc.activate = AsyncMock()
-        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = activation_svc
+        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
+            activation_svc
+        )
 
         svc = AsyncMock()
         svc.set_cloud_configuration = AsyncMock()
@@ -692,14 +702,19 @@ class TestKeybagCleanup:
 
             # Track keybag files before
             temp_dir = tempfile.gettempdir()
-            before_files = set(f for f in os.listdir(temp_dir) if f.startswith("ios_enroll_keybag_"))
+            before_files = set(
+                f for f in os.listdir(temp_dir) if f.startswith("ios_enroll_keybag_")
+            )
 
             # Create a minimal MDM mobileconfig to trigger install_profile_silent
             mdm_mobileconfig_path = Path(tmpdir) / "mdm.mobileconfig"
             mdm_mobileconfig_path.write_bytes(b"<xml>test mdm</xml>")
 
-            with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc):
+            with patch(
+                "pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc
+            ):
                 from apple_device_cli.enrollment import supervised
+
                 supervised.make_supervised(
                     cert_path=str(cert_path),
                     key_path=str(key_path),
@@ -712,7 +727,9 @@ class TestKeybagCleanup:
 
             # Verify keybag was captured and cleaned up
             assert captured_keybag_path is not None, "keybag should be created and used"
-            assert captured_keybag_path.exists() is False, "keybag should be cleaned up after enrollment"
+            assert captured_keybag_path.exists() is False, (
+                "keybag should be cleaned up after enrollment"
+            )
 
             # Verify no new keybag files remain
             new_files = after_files - before_files
@@ -748,17 +765,25 @@ class TestKeybagCleanupOnException:
         cert_path.write_bytes(b"fake-cert")
         key_path.write_bytes(b"fake-key")
 
-        with patch("pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc), \
-             patch.object(supervised, "create_keybag_file") as mock_keybag, \
-             patch.object(supervised, "_create_keybag_file_from_identity") as mock_id_keybag, \
-             patch.object(supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake-bytes"), \
-             patch.object(supervised, "_wait_for_device_reconnect",
-                          new=AsyncMock(side_effect=RuntimeError("reconnect failed"))), \
-             patch("pathlib.Path.unlink") as mock_unlink:
+        with (
+            patch("pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc),
+            patch.object(supervised, "create_keybag_file") as mock_keybag,
+            patch.object(supervised, "_create_keybag_file_from_identity") as mock_id_keybag,
+            patch.object(
+                supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake-bytes"
+            ),
+            patch.object(
+                supervised,
+                "_wait_for_device_reconnect",
+                new=AsyncMock(side_effect=RuntimeError("reconnect failed")),
+            ),
+            patch("pathlib.Path.unlink") as mock_unlink,
+        ):
             mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
 
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("fake-cert-material")
+
             mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
@@ -778,9 +803,7 @@ class TestKeybagCleanupOnException:
 class TestKeybagCleanupOnCertLoadException:
     """_load_cert_public_bytes_from_keybag can raise before the inner try/excepts."""
 
-    def test_keybag_cleaned_up_when_cert_load_raises(
-        self, mock_pymobiledevice3, tmp_path
-    ):
+    def test_keybag_cleaned_up_when_cert_load_raises(self, mock_pymobiledevice3, tmp_path):
         import asyncio
         from apple_device_cli.enrollment import supervised
 
@@ -797,16 +820,20 @@ class TestKeybagCleanupOnCertLoadException:
         cert_path.write_bytes(b"fake-cert")
         key_path.write_bytes(b"fake-key")
 
-        with patch("pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc), \
-             patch.object(supervised, "create_keybag_file") as mock_keybag, \
-             patch.object(supervised, "_create_keybag_file_from_identity") as mock_id_keybag, \
-             patch.object(supervised, "_load_cert_public_bytes_from_keybag",
-                          side_effect=ValueError("boom")), \
-             patch("pathlib.Path.unlink") as mock_unlink:
+        with (
+            patch("pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc),
+            patch.object(supervised, "create_keybag_file") as mock_keybag,
+            patch.object(supervised, "_create_keybag_file_from_identity") as mock_id_keybag,
+            patch.object(
+                supervised, "_load_cert_public_bytes_from_keybag", side_effect=ValueError("boom")
+            ),
+            patch("pathlib.Path.unlink") as mock_unlink,
+        ):
             mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
 
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("fake-cert-material")
+
             mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
@@ -827,6 +854,7 @@ class TestCleanupKeybag:
 
     def test_cleanup_keybag_removes_existing_file(self, tmp_path):
         from apple_device_cli.enrollment.supervised import _cleanup_keybag
+
         keybag = tmp_path / "test.keybag"
         keybag.write_text("sensitive material")
         assert keybag.exists()
@@ -835,6 +863,7 @@ class TestCleanupKeybag:
 
     def test_cleanup_keybag_swallows_oserror(self, tmp_path):
         from apple_device_cli.enrollment.supervised import _cleanup_keybag
+
         keybag = tmp_path / "test.keybag"
         keybag.write_text("sensitive")
         with patch("pathlib.Path.unlink", side_effect=OSError("permission denied")):
@@ -842,10 +871,12 @@ class TestCleanupKeybag:
 
     def test_cleanup_keybag_nonexistent_is_noop(self):
         from apple_device_cli.enrollment.supervised import _cleanup_keybag
+
         _cleanup_keybag(None)
 
     def test_cleanup_keybag_missing_path_is_noop(self, tmp_path):
         from apple_device_cli.enrollment.supervised import _cleanup_keybag
+
         keybag = tmp_path / "nonexistent.keybag"
         _cleanup_keybag(keybag)
 
@@ -853,37 +884,37 @@ class TestCleanupKeybag:
 class TestReenrollExitCode:
     """Verify ios-enroll enroll re-enroll exit codes."""
 
-    def test_reenroll_exits_nonzero_on_apple_device_error(
-        self, mock_pymobiledevice3, tmp_path
-    ):
+    def test_reenroll_exits_nonzero_on_apple_device_error(self, mock_pymobiledevice3, tmp_path):
         fake_device = MagicMock()
         fake_device.udid = "test-udid"
         fake_device.device_name = "Test iPad"
 
         runner = CliRunner()
-        with patch("apple_device_cli.cli._prompt_for_udid", return_value=fake_device), \
-             patch(
-                 "apple_device_cli.enrollment.supervised.erase_device_for_reenrollment",
-                 side_effect=AppleDeviceError("erase failed"),
-             ):
+        with (
+            patch("apple_device_cli.cli._prompt_for_udid", return_value=fake_device),
+            patch(
+                "apple_device_cli.enrollment.supervised.erase_device_for_reenrollment",
+                side_effect=AppleDeviceError("erase failed"),
+            ),
+        ):
             result = runner.invoke(enroll_app, ["re-enroll", "--udid", "test-udid", "--force"])
 
         assert result.exit_code == 1
         assert "Error" in result.stdout or "erase failed" in result.stdout
 
-    def test_reenroll_exits_zero_on_success(
-        self, mock_pymobiledevice3, tmp_path
-    ):
+    def test_reenroll_exits_zero_on_success(self, mock_pymobiledevice3, tmp_path):
         fake_device = MagicMock()
         fake_device.udid = "test-udid"
         fake_device.device_name = "Test iPad"
 
         runner = CliRunner()
-        with patch("apple_device_cli.cli._prompt_for_udid", return_value=fake_device), \
-             patch(
-                 "apple_device_cli.enrollment.supervised.erase_device_for_reenrollment",
-                 return_value=True,
-             ):
+        with (
+            patch("apple_device_cli.cli._prompt_for_udid", return_value=fake_device),
+            patch(
+                "apple_device_cli.enrollment.supervised.erase_device_for_reenrollment",
+                return_value=True,
+            ),
+        ):
             result = runner.invoke(enroll_app, ["re-enroll", "--udid", "test-udid", "--force"])
 
         assert result.exit_code == 0

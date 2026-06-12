@@ -1,3 +1,10 @@
+"""Tests for apple_device_cli.enrollment.supervised make_supervised() flow.
+
+The shared pymobiledevice3 mock fixture lives in tests/conftest.py; this module
+imports the mock exception classes from there and re-exports them under the
+short names the test bodies use.
+"""
+
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -9,47 +16,15 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from unittest.mock import MagicMock, patch, AsyncMock
 
-
-class _NoDeviceConnectedError(Exception):
-    """Simulates pymobiledevice3.lockdown.NoDeviceConnectedError for testing."""
-
-
-@pytest.fixture(autouse=True)
-def mock_pymobiledevice3():
-    mock_pm3 = MagicMock()
-    mock_pm3.lockdown.create_using_usbmux = AsyncMock()
-    mock_pm3.lockdown.LockdownClient = MagicMock()
-    mock_pm3.lockdown.NoDeviceConnectedError = _NoDeviceConnectedError
-
-    mock_mobile_config = MagicMock()
-    mock_mobile_config.MobileConfigService = MagicMock()
-    mock_mobile_config.CloudConfigurationAlreadyPresentError = CloudConfigurationAlreadyPresentError
-    mock_pm3.services.mobile_config = mock_mobile_config
-
-    mock_mobile_activation = MagicMock()
-    mock_mobile_activation.MobileActivationService = MagicMock()
-    mock_pm3.services.mobile_activation = mock_mobile_activation
-
-    mock_pm3.ca.create_keybag_file = MagicMock()
-
-    with patch.dict('sys.modules', {
-        'pymobiledevice3': mock_pm3,
-        'pymobiledevice3.lockdown': mock_pm3.lockdown,
-        'pymobiledevice3.services': MagicMock(),
-        'pymobiledevice3.services.mobile_config': mock_pm3.services.mobile_config,
-        'pymobiledevice3.services.mobile_activation': mock_pm3.services.mobile_activation,
-        'pymobiledevice3.ca': mock_pm3.ca,
-    }):
-        yield mock_pm3
-
-
-class CloudConfigurationAlreadyPresentError(Exception):
-    """Mock exception for testing."""
+from tests.conftest import (
+    MockNoDeviceConnectedError as _NoDeviceConnectedError,
+)
 
 
 class TestSupervisedPairing:
     def test_module_imports(self, mock_pymobiledevice3):
         from apple_device_cli.enrollment import supervised
+
         assert hasattr(supervised, "do_supervised_pairing")
         assert hasattr(supervised, "make_supervised")
 
@@ -58,6 +33,7 @@ class TestSupervisedPairing:
             side_effect=_NoDeviceConnectedError("No device")
         )
         from apple_device_cli.enrollment import supervised
+
         # Invalid cert/key paths now return EnrollmentResult with success=False
         # instead of raising EnrollmentError
         result = supervised.make_supervised(
@@ -80,11 +56,15 @@ class TestSupervisedPairing:
         activation_svc = MagicMock()
         activation_svc.state = AsyncMock(return_value="Activated")
         activation_svc.activate = AsyncMock()
-        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = activation_svc
+        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
+            activation_svc
+        )
 
         svc = AsyncMock()
         svc.store_profile = AsyncMock()
-        svc.get_cloud_configuration = AsyncMock(return_value={"MDMServerURL": "https://mdm.example.com/mdm", "IsSupervised": True})
+        svc.get_cloud_configuration = AsyncMock(
+            return_value={"MDMServerURL": "https://mdm.example.com/mdm", "IsSupervised": True}
+        )
         svc.__aenter__.return_value = svc
         svc.__aexit__.return_value = False
 
@@ -93,9 +73,11 @@ class TestSupervisedPairing:
             key_path = Path(tmpdir) / "key.der"
 
             private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-            subject = issuer = x509.Name([
-                x509.NameAttribute(NameOID.COMMON_NAME, "Test Org"),
-            ])
+            subject = issuer = x509.Name(
+                [
+                    x509.NameAttribute(NameOID.COMMON_NAME, "Test Org"),
+                ]
+            )
             certificate = (
                 x509.CertificateBuilder()
                 .subject_name(subject)
@@ -116,7 +98,9 @@ class TestSupervisedPairing:
                 )
             )
 
-            with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc):
+            with patch(
+                "pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc
+            ):
                 result = supervised.make_supervised(
                     str(cert_path),
                     str(key_path),
@@ -152,7 +136,9 @@ class TestSupervisedPairing:
         activation_svc = MagicMock()
         activation_svc.state = AsyncMock(return_value="Activated")
         activation_svc.activate = AsyncMock()
-        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = activation_svc
+        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
+            activation_svc
+        )
 
         svc = AsyncMock()
         svc.install_wifi_profile = AsyncMock()
@@ -166,9 +152,11 @@ class TestSupervisedPairing:
             key_path = Path(tmpdir) / "key.der"
 
             private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-            subject = issuer = x509.Name([
-                x509.NameAttribute(NameOID.COMMON_NAME, "Test Org"),
-            ])
+            subject = issuer = x509.Name(
+                [
+                    x509.NameAttribute(NameOID.COMMON_NAME, "Test Org"),
+                ]
+            )
             certificate = (
                 x509.CertificateBuilder()
                 .subject_name(subject)
@@ -189,7 +177,9 @@ class TestSupervisedPairing:
                 )
             )
 
-            with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc):
+            with patch(
+                "pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc
+            ):
                 result = supervised.make_supervised(
                     str(cert_path),
                     str(key_path),
@@ -218,7 +208,9 @@ class TestSupervisedPairing:
         activation_svc = MagicMock()
         activation_svc.state = AsyncMock(return_value="Activated")
         activation_svc.activate = AsyncMock()
-        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = activation_svc
+        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
+            activation_svc
+        )
 
         svc = AsyncMock()
         svc.install_profile = AsyncMock()
@@ -234,9 +226,11 @@ class TestSupervisedPairing:
             wifi_config_path.write_bytes(b"fake-mobileconfig-content")
 
             private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-            subject = issuer = x509.Name([
-                x509.NameAttribute(NameOID.COMMON_NAME, "Test Org"),
-            ])
+            subject = issuer = x509.Name(
+                [
+                    x509.NameAttribute(NameOID.COMMON_NAME, "Test Org"),
+                ]
+            )
             certificate = (
                 x509.CertificateBuilder()
                 .subject_name(subject)
@@ -257,7 +251,9 @@ class TestSupervisedPairing:
                 )
             )
 
-            with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc):
+            with patch(
+                "pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc
+            ):
                 result = supervised.make_supervised(
                     str(cert_path),
                     str(key_path),
@@ -286,7 +282,9 @@ class TestSupervisedPairing:
         activation_svc = MagicMock()
         activation_svc.state = AsyncMock(return_value="Activated")
         activation_svc.activate = AsyncMock()
-        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = activation_svc
+        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
+            activation_svc
+        )
 
         svc = AsyncMock()
         svc.install_profile = AsyncMock()
@@ -302,9 +300,11 @@ class TestSupervisedPairing:
             wifi_config_path.write_bytes(b"fake-mobileconfig-content")
 
             private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-            subject = issuer = x509.Name([
-                x509.NameAttribute(NameOID.COMMON_NAME, "Test Org"),
-            ])
+            subject = issuer = x509.Name(
+                [
+                    x509.NameAttribute(NameOID.COMMON_NAME, "Test Org"),
+                ]
+            )
             certificate = (
                 x509.CertificateBuilder()
                 .subject_name(subject)
@@ -325,7 +325,9 @@ class TestSupervisedPairing:
                 )
             )
 
-            with patch('pymobiledevice3.services.mobile_config.MobileConfigService', return_value=svc):
+            with patch(
+                "pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc
+            ):
                 result = supervised.make_supervised(
                     str(cert_path),
                     str(key_path),
@@ -345,7 +347,9 @@ class TestSupervisedPairing:
         svc.install_profile.assert_awaited_once()
         assert result.wifi_installed is True
 
-    def test_mobileconfig_error_formatter_extracts_concise_network_error(self, mock_pymobiledevice3):
+    def test_mobileconfig_error_formatter_extracts_concise_network_error(
+        self, mock_pymobiledevice3
+    ):
         from apple_device_cli.enrollment import supervised
 
         error = Exception(
@@ -354,20 +358,27 @@ class TestSupervisedPairing:
 
         formatted = supervised._format_mobileconfig_error("MDM profile install failed", error)
 
-        assert formatted == "MDM profile install failed: The Internet connection appears to be offline."
+        assert (
+            formatted
+            == "MDM profile install failed: The Internet connection appears to be offline."
+        )
 
 
 class TestActivation:
     def test_module_imports(self, mock_pymobiledevice3):
         from apple_device_cli.enrollment import activation
+
         assert hasattr(activation, "do_activate")
         assert hasattr(activation, "activate_device")
 
     def test_activate_device_without_hardware(self, mock_pymobiledevice3):
         from apple_device_cli.enrollment import activation
         from apple_device_cli.core.exceptions import ActivationError
-        with patch.object(activation, 'create_using_usbmux', AsyncMock(
-                side_effect=_NoDeviceConnectedError("No device")
-            )):
+
+        with patch.object(
+            activation,
+            "create_using_usbmux",
+            AsyncMock(side_effect=_NoDeviceConnectedError("No device")),
+        ):
             with pytest.raises(ActivationError):
                 activation.activate_device()

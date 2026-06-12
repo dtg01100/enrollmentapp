@@ -17,6 +17,7 @@ try:
     from pymobiledevice3.services import mobile_activation, mobile_config
     from pymobiledevice3.lockdown import LockdownClient
     from pymobiledevice3.services.mobile_activation import MobileActivationService
+    from pymobiledevice3.services.mobile_config import MobileConfigService
 
     _REAL_PYMOBILEDEVICE3_MODULES = {
         "pymobiledevice3": pymobiledevice3,
@@ -41,6 +42,7 @@ except ImportError:  # pragma: no cover - exercised only on bare CI runners
 __all__ = [
     "LockdownClient",
     "MobileActivationService",
+    "MobileConfigService",
     "MockNoDeviceConnectedError",
     "MockCloudConfigurationAlreadyPresentError",
 ]

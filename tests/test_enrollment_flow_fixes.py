@@ -14,11 +14,13 @@ from unittest.mock import MagicMock, patch, AsyncMock
 
 from apple_device_cli.cli import enroll_app
 from apple_device_cli.core.exceptions import AppleDeviceError
+from apple_device_cli.device.info import DeviceInfo
 
 from tests.conftest import (
     MockCloudConfigurationAlreadyPresentError as CloudConfigurationAlreadyPresentError,
     LockdownClient,
     MobileActivationService,
+    MobileConfigService,
 )
 
 
@@ -752,7 +754,7 @@ class TestKeybagCleanupOnException:
         async def boom(*args, **kwargs):
             raise BrokenPipeError("simulated disconnect")
 
-        svc = MagicMock()
+        svc = MagicMock(spec=MobileConfigService)
         svc.set_cloud_configuration = boom
         svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
         svc.__aenter__ = AsyncMock(return_value=svc)
@@ -809,7 +811,7 @@ class TestKeybagCleanupOnCertLoadException:
         import asyncio
         from apple_device_cli.enrollment import supervised
 
-        svc = MagicMock()
+        svc = MagicMock(spec=MobileConfigService)
         svc.__aenter__ = AsyncMock(return_value=svc)
         svc.__aexit__ = AsyncMock(return_value=False)
 
@@ -887,7 +889,7 @@ class TestReenrollExitCode:
     """Verify ios-enroll enroll re-enroll exit codes."""
 
     def test_reenroll_exits_nonzero_on_apple_device_error(self, mock_pymobiledevice3, tmp_path):
-        fake_device = MagicMock()
+        fake_device = MagicMock(spec=DeviceInfo)
         fake_device.udid = "test-udid"
         fake_device.device_name = "Test iPad"
 
@@ -905,7 +907,7 @@ class TestReenrollExitCode:
         assert "Error" in result.stdout or "erase failed" in result.stdout
 
     def test_reenroll_exits_zero_on_success(self, mock_pymobiledevice3, tmp_path):
-        fake_device = MagicMock()
+        fake_device = MagicMock(spec=DeviceInfo)
         fake_device.udid = "test-udid"
         fake_device.device_name = "Test iPad"
 

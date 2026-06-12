@@ -5,6 +5,7 @@ from unittest.mock import patch, MagicMock
 from typer.testing import CliRunner
 
 from apple_device_cli.cli import device_app, org_app
+from apple_device_cli.device.info import DeviceInfo
 from apple_device_cli.orgs.manager import Organization, OrganizationManager
 
 
@@ -18,6 +19,7 @@ class TestDeviceListJsonOutput:
     def test_device_list_json_output(self, mock_list):
         mock_list.return_value = [
             MagicMock(
+                spec=DeviceInfo,
                 udid="1234567890ABCDEF",
                 device_name="iPhone",
                 device_type="iPhone14,5",
@@ -48,6 +50,7 @@ class TestDeviceListJsonOutput:
     def test_device_list_verbose_output(self, mock_list):
         mock_list.return_value = [
             MagicMock(
+                spec=DeviceInfo,
                 udid="1234567890ABCDEF",
                 device_name="iPhone",
                 device_type="iPhone14,5",
@@ -71,6 +74,7 @@ class TestDeviceInfoJsonOutput:
     @patch("apple_device_cli.cli.get_device_info")
     def test_device_info_json_output(self, mock_info):
         mock_info.return_value = MagicMock(
+            spec=DeviceInfo,
             udid="1234567890ABCDEF",
             device_name="iPhone",
             device_type="iPhone14,5",

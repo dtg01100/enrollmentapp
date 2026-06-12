@@ -18,6 +18,8 @@ from unittest.mock import MagicMock, patch, AsyncMock
 
 from tests.conftest import (
     MockNoDeviceConnectedError as _NoDeviceConnectedError,
+    LockdownClient,
+    MobileActivationService,
 )
 
 
@@ -50,10 +52,10 @@ class TestSupervisedPairing:
     def test_make_supervised_installs_mdm_profile(self, mock_pymobiledevice3):
         from apple_device_cli.enrollment import supervised
 
-        lockdown = MagicMock()
+        lockdown = MagicMock(spec=LockdownClient)
         mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
 
-        activation_svc = MagicMock()
+        activation_svc = MagicMock(spec=MobileActivationService)
         activation_svc.state = AsyncMock(return_value="Activated")
         activation_svc.activate = AsyncMock()
         mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
@@ -130,10 +132,10 @@ class TestSupervisedPairing:
     def test_make_supervised_installs_wifi_profile(self, mock_pymobiledevice3):
         from apple_device_cli.enrollment import supervised
 
-        lockdown = MagicMock()
+        lockdown = MagicMock(spec=LockdownClient)
         mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
 
-        activation_svc = MagicMock()
+        activation_svc = MagicMock(spec=MobileActivationService)
         activation_svc.state = AsyncMock(return_value="Activated")
         activation_svc.activate = AsyncMock()
         mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
@@ -202,10 +204,10 @@ class TestSupervisedPairing:
     def test_make_supervised_installs_wifi_mobileconfig(self, mock_pymobiledevice3):
         from apple_device_cli.enrollment import supervised
 
-        lockdown = MagicMock()
+        lockdown = MagicMock(spec=LockdownClient)
         mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
 
-        activation_svc = MagicMock()
+        activation_svc = MagicMock(spec=MobileActivationService)
         activation_svc.state = AsyncMock(return_value="Activated")
         activation_svc.activate = AsyncMock()
         mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
@@ -276,10 +278,10 @@ class TestSupervisedPairing:
     def test_make_supervised_normalizes_quoted_wifi_mobileconfig_path(self, mock_pymobiledevice3):
         from apple_device_cli.enrollment import supervised
 
-        lockdown = MagicMock()
+        lockdown = MagicMock(spec=LockdownClient)
         mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
 
-        activation_svc = MagicMock()
+        activation_svc = MagicMock(spec=MobileActivationService)
         activation_svc.state = AsyncMock(return_value="Activated")
         activation_svc.activate = AsyncMock()
         mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (

@@ -15,6 +15,8 @@ try:
     import pymobiledevice3
     from pymobiledevice3 import ca, lockdown, services
     from pymobiledevice3.services import mobile_activation, mobile_config
+    from pymobiledevice3.lockdown import LockdownClient
+    from pymobiledevice3.services.mobile_activation import MobileActivationService
 
     _REAL_PYMOBILEDEVICE3_MODULES = {
         "pymobiledevice3": pymobiledevice3,
@@ -28,6 +30,20 @@ try:
 except ImportError:  # pragma: no cover - exercised only on bare CI runners
     _REAL_PYMOBILEDEVICE3_MODULES = {}
     _PYMOBILEDEVICE3_AVAILABLE = False
+
+
+# Re-exported for test modules that need to spec their mocks against the real
+# pymobiledevice3 classes. The autouse ``mock_pymobiledevice3`` fixture patches
+# pymobiledevice3 in sys.modules with spec'd MagicMocks, so a test doing
+# ``from pymobiledevice3.lockdown import LockdownClient`` would resolve to a
+# Mock — which makes ``MagicMock(spec=LockdownClient)`` raise
+# ``InvalidSpecError``. Test files must import these from conftest instead.
+__all__ = [
+    "LockdownClient",
+    "MobileActivationService",
+    "MockNoDeviceConnectedError",
+    "MockCloudConfigurationAlreadyPresentError",
+]
 
 
 # --- Mock exception classes for tests that simulate pymobiledevice3 errors ---

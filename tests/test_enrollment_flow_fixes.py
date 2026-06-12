@@ -17,6 +17,8 @@ from apple_device_cli.core.exceptions import AppleDeviceError
 
 from tests.conftest import (
     MockCloudConfigurationAlreadyPresentError as CloudConfigurationAlreadyPresentError,
+    LockdownClient,
+    MobileActivationService,
 )
 
 
@@ -33,10 +35,10 @@ class TestCloudConfigBugFix:
         """
         from apple_device_cli.enrollment import supervised
 
-        lockdown = MagicMock()
+        lockdown = MagicMock(spec=LockdownClient)
         mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
 
-        activation_svc = MagicMock()
+        activation_svc = MagicMock(spec=MobileActivationService)
         activation_svc.state = AsyncMock(return_value="Activated")
         activation_svc.activate = AsyncMock()
         mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
@@ -109,10 +111,10 @@ class TestCloudConfigBugFix:
         """Test: existing matching cloud config is treated as success and MDM install continues."""
         from apple_device_cli.enrollment import supervised
 
-        lockdown = MagicMock()
+        lockdown = MagicMock(spec=LockdownClient)
         mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
 
-        activation_svc = MagicMock()
+        activation_svc = MagicMock(spec=MobileActivationService)
         activation_svc.state = AsyncMock(return_value="Activated")
         activation_svc.activate = AsyncMock()
         mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
@@ -201,10 +203,10 @@ class TestCloudConfigBugFix:
         """Test: transient MDM network errors are retried and can recover."""
         from apple_device_cli.enrollment import supervised
 
-        lockdown = MagicMock()
+        lockdown = MagicMock(spec=LockdownClient)
         mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
 
-        activation_svc = MagicMock()
+        activation_svc = MagicMock(spec=MobileActivationService)
         activation_svc.state = AsyncMock(return_value="Activated")
         activation_svc.activate = AsyncMock()
         mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
@@ -342,7 +344,7 @@ class TestEnrollmentStateReadback:
         """Test: status lookup queries lockdown with key parameter and augments from cloud config."""
         from apple_device_cli.enrollment import supervised
 
-        lockdown = MagicMock()
+        lockdown = MagicMock(spec=LockdownClient)
 
         async def get_value(domain=None, key=None):
             values = {
@@ -652,10 +654,10 @@ class TestKeybagCleanup:
         """Verify keybag file is deleted after successful enrollment."""
         import os
 
-        lockdown = MagicMock()
+        lockdown = MagicMock(spec=LockdownClient)
         mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
 
-        activation_svc = MagicMock()
+        activation_svc = MagicMock(spec=MobileActivationService)
         activation_svc.state = AsyncMock(return_value="Activated")
         activation_svc.activate = AsyncMock()
         mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
@@ -756,7 +758,7 @@ class TestKeybagCleanupOnException:
         svc.__aenter__ = AsyncMock(return_value=svc)
         svc.__aexit__ = AsyncMock(return_value=False)
 
-        lockdown = MagicMock()
+        lockdown = MagicMock(spec=LockdownClient)
         lockdown.udid = "test-udid"
         lockdown.get_value = AsyncMock(return_value="Activated")
 
@@ -811,7 +813,7 @@ class TestKeybagCleanupOnCertLoadException:
         svc.__aenter__ = AsyncMock(return_value=svc)
         svc.__aexit__ = AsyncMock(return_value=False)
 
-        lockdown = MagicMock()
+        lockdown = MagicMock(spec=LockdownClient)
         lockdown.udid = "test-udid"
         lockdown.get_value = AsyncMock(return_value="Activated")
 

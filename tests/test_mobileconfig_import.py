@@ -2,6 +2,7 @@ import pytest
 import tempfile
 import plistlib
 from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import patch, MagicMock
 from apple_device_cli.orgs.manager import OrganizationManager
 
@@ -40,7 +41,7 @@ def mock_mobileconfig():
 def make_mock_subprocess(plist_data):
     """Create a mock subprocess.run that returns the plist as stdout."""
     def mock_run(cmd, capture_output=False, **kwargs):
-        result = MagicMock()
+        result = MagicMock(spec=CompletedProcess)
         result.returncode = 0
         result.stdout = plistlib.dumps(plist_data)
         result.stderr = b''
@@ -159,7 +160,7 @@ def test_import_mobileconfig_raises_on_openssl_failure(mock_mobileconfig):
     mgr = OrganizationManager(Path(tempfile.mkdtemp()))
     
     def mock_run_fail(cmd, capture_output=False, **kwargs):
-        result = MagicMock()
+        result = MagicMock(spec=CompletedProcess)
         result.returncode = 1
         result.stdout = b''
         result.stderr = b'verification failed'

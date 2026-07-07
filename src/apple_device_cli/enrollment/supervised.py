@@ -139,13 +139,28 @@ async def _wait_for_device_reconnect(timeout_ms: int = 30000, udid: str | None =
             return None
         try:
             lockdown = await create_using_usbmux(serial=udid)
+            if udid is not None:
+                actual_udid = getattr(lockdown, "udid", None)
+                if actual_udid is not None and actual_udid != udid:
+                    _logger.debug(
+                        "Reconnect returned UDID %s but expected %s; retrying",
+                        actual_udid, udid,
+                    )
+                    raise ConnectionError("UDID mismatch after serial-specific connect")
             return lockdown
         except ConnectionError:
-            try:
-                lockdown = await create_using_usbmux()
-                return lockdown
-            except ConnectionError:
-                _logger.debug("Error waiting for device reconnect, will retry")
+            if udid is not None:
+                # Reconnect enumerates usbmux; if the target device reappeared
+                # we still want to match by UDID, not grab any device.
+                # Retry until the target UDID shows up, rather than silently
+                # operating on whichever device happens to be first.
+                _logger.debug("Target UDID %s not yet visible via usbmux; retrying", udid)
+            else:
+                # No target UDID: any device is acceptable.
+                try:
+                    return await create_using_usbmux()
+                except ConnectionError:
+                    _logger.debug("Error waiting for device reconnect, will retry")
         await asyncio.sleep(1)
 
 
@@ -704,6 +719,20 @@ async def do_supervised_pairing(
                                 else:
                                     _progress("Storing MDM enrollment profile for Setup Assistant...")
                                     await _maybe_await(svc.store_profile(payload_bytes, Purpose.PostSetupInstallation))
+                            # When escalating, the install call alone doesn't prove the
+                            # profile actually landed — verify it's visible to
+                            # get_profile_list before claiming success. store_profile
+                            # (post-setup path) is intentionally not verified.
+                            if keybag_path and keybag_path.exists():
+                                async with MobileConfigService(lockdown) as verify_svc:
+                                    profiles = await _maybe_await(verify_svc.get_profile_list())
+                                profile_meta = profiles.get("ProfileMetadata") or {} if isinstance(profiles, dict) else {}
+                                has_mdm = any(
+                                    isinstance(meta, dict) and meta.get("PayloadType") == "com.apple.mdm"
+                                    for meta in profile_meta.values()
+                                )
+                                if not has_mdm:
+                                    raise RuntimeError("MDM profile not found on device after install")
                             mdm_enrolled = True
                             _progress("MDM enrollment profile installed")
                             break

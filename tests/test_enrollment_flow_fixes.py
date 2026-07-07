@@ -2,15 +2,29 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import tempfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 from typer.testing import CliRunner
 
 from apple_device_cli.cli import enroll_app
 from apple_device_cli.core.exceptions import AppleDeviceError
 from apple_device_cli.device.info import DeviceInfo
 from apple_device_cli.orgs.manager import Organization, OrganizationManager
+
+from tests.conftest import (
+    MockCloudConfigurationAlreadyPresentError as CloudConfigurationAlreadyPresentError,
+    LockdownClient,
+    MobileActivationService,
+    MobileConfigService,
+)
 
 runner = CliRunner()
 
@@ -374,30 +388,6 @@ class TestEnrollActivate:
         # URL token redacted (path > 12 chars -> ellipsis appended)
         assert "/…" in result.output
 
-import tempfile
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-
-import pytest
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.x509.oid import NameOID
-from typer.testing import CliRunner
-from unittest.mock import MagicMock, patch, AsyncMock
-
-from apple_device_cli.cli import enroll_app
-from apple_device_cli.core.exceptions import AppleDeviceError
-from apple_device_cli.device.info import DeviceInfo
-
-from tests.conftest import (
-    MockCloudConfigurationAlreadyPresentError as CloudConfigurationAlreadyPresentError,
-    LockdownClient,
-    MobileActivationService,
-    MobileConfigService,
-)
-
-
 class TestCloudConfigBugFix:
     """Test that cloud config is always set, not just when skip_list provided."""
 
@@ -421,12 +411,12 @@ class TestCloudConfigBugFix:
             activation_svc
         )
 
-        svc = AsyncMock()
+        svc = MagicMock(spec=MobileConfigService)
         svc.supervise = AsyncMock()
         svc.set_cloud_configuration = AsyncMock()
         svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
-        svc.__aenter__.return_value = svc
-        svc.__aexit__.return_value = False
+        svc.__aenter__ = AsyncMock(return_value=svc)
+        svc.__aexit__ = AsyncMock(return_value=False)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = Path(tmpdir) / "cert.der"
@@ -497,11 +487,11 @@ class TestCloudConfigBugFix:
             activation_svc
         )
 
-        svc = AsyncMock()
+        svc = MagicMock(spec=MobileConfigService)
         svc.set_cloud_configuration = AsyncMock(side_effect=CloudConfigurationAlreadyPresentError())
         svc.install_profile_silent = AsyncMock()
-        svc.__aenter__.return_value = svc
-        svc.__aexit__.return_value = False
+        svc.__aenter__ = AsyncMock(return_value=svc)
+        svc.__aexit__ = AsyncMock(return_value=False)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = Path(tmpdir) / "cert.der"
@@ -551,9 +541,14 @@ class TestCloudConfigBugFix:
                 "SkipSetup": ["Passcode"],
             }
             svc.get_cloud_configuration = AsyncMock(return_value=existing_cloud_config)
+            svc.get_profile_list = AsyncMock(return_value={
+                "ProfileMetadata": {
+                    "mdm-profile": {"PayloadType": "com.apple.mdm", "PayloadDisplayName": "MDM"},
+                }
+            })
             svc.install_profile_silent = AsyncMock()
-            svc.__aenter__.return_value = svc
-            svc.__aexit__.return_value = False
+            svc.__aenter__ = AsyncMock(return_value=svc)
+            svc.__aexit__ = AsyncMock(return_value=False)
 
             with patch(
                 "pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc
@@ -593,12 +588,17 @@ class TestCloudConfigBugFix:
             "invalid response {'ErrorChain': [{'ErrorCode': -1009, 'LocalizedDescription': 'The Internet connection appears to be offline.'}], 'Status': 'Error'}"
         )
 
-        svc = AsyncMock()
+        svc = MagicMock(spec=MobileConfigService)
         svc.set_cloud_configuration = AsyncMock()
         svc.install_profile_silent = AsyncMock(side_effect=[transient_error, None])
+        svc.get_profile_list = AsyncMock(return_value={
+            "ProfileMetadata": {
+                "mdm-profile": {"PayloadType": "com.apple.mdm", "PayloadDisplayName": "MDM"},
+            }
+        })
         svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
-        svc.__aenter__.return_value = svc
-        svc.__aexit__.return_value = False
+        svc.__aenter__ = AsyncMock(return_value=svc)
+        svc.__aexit__ = AsyncMock(return_value=False)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = Path(tmpdir) / "cert.der"
@@ -654,6 +654,78 @@ class TestCloudConfigBugFix:
         assert result.errors == []
         assert svc.install_profile_silent.await_count == 2
         mock_sleep.assert_awaited_once()
+
+    def test_mdm_verification_fails_when_profile_not_on_device(
+        self, mock_pymobiledevice3
+    ):
+        """Test: post-install verification rejects install when MDM profile is missing.
+
+        install_profile_silent returns without raising, but get_profile_list
+        shows no MDM profile — this should fail, not silently mark mdm_enrolled=True.
+        """
+        from apple_device_cli.enrollment import supervised
+
+        lockdown = MagicMock(spec=LockdownClient)
+        mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
+
+        activation_svc = MagicMock(spec=MobileActivationService)
+        activation_svc.state = AsyncMock(return_value="Activated")
+        activation_svc.activate = AsyncMock()
+        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
+            activation_svc
+        )
+
+        svc = MagicMock(spec=MobileConfigService)
+        svc.set_cloud_configuration = AsyncMock()
+        svc.install_profile_silent = AsyncMock()  # succeeds without raising
+        svc.get_profile_list = AsyncMock(return_value={})  # but no MDM profile
+        svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
+        svc.__aenter__ = AsyncMock(return_value=svc)
+        svc.__aexit__ = AsyncMock(return_value=False)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cert_path = Path(tmpdir) / "cert.der"
+            key_path = Path(tmpdir) / "key.der"
+            mdm_profile_path = Path(tmpdir) / "mdm.mobileconfig"
+            mdm_profile_path.write_bytes(b"fake-mdm-profile")
+
+            private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            subject = issuer = x509.Name(
+                [x509.NameAttribute(NameOID.COMMON_NAME, "Test Org")]
+            )
+            certificate = (
+                x509.CertificateBuilder()
+                .subject_name(subject)
+                .issuer_name(issuer)
+                .public_key(private_key.public_key())
+                .serial_number(1)
+                .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
+                .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365))
+                .sign(private_key, hashes.SHA256())
+            )
+            cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.DER))
+            key_path.write_bytes(
+                private_key.private_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                )
+            )
+
+            with patch(
+                "pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc
+            ):
+                result = supervised.make_supervised(
+                    cert_path=str(cert_path),
+                    key_path=str(key_path),
+                    org_name="Test Org",
+                    skip_list=["passcode"],
+                    mdm_url="https://mdm.example.com/mdm",
+                    mdm_mobileconfig=str(mdm_profile_path),
+                )
+
+        assert result.mdm_enrolled is False
+        assert any("MDM profile not found on device" in e for e in result.errors)
 
 
 class TestEnrollmentStateValidation:
@@ -736,7 +808,7 @@ class TestEnrollmentStateReadback:
         lockdown.get_value = AsyncMock(side_effect=get_value)
         mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
 
-        svc = AsyncMock()
+        svc = MagicMock(spec=MobileConfigService)
         svc.get_cloud_configuration = AsyncMock(
             return_value={
                 "IsSupervised": True,
@@ -745,8 +817,8 @@ class TestEnrollmentStateReadback:
                 "OrganizationMagic": "org-123",
             }
         )
-        svc.__aenter__.return_value = svc
-        svc.__aexit__.return_value = False
+        svc.__aenter__ = AsyncMock(return_value=svc)
+        svc.__aexit__ = AsyncMock(return_value=False)
 
         with patch("pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc):
             state = supervised.get_device_enrollment_state("test-udid")
@@ -806,12 +878,17 @@ class TestKeybagPersistenceForMdmInstall:
                 )
             )
 
-            svc = AsyncMock()
+            svc = MagicMock(spec=MobileConfigService)
             svc.set_cloud_configuration = AsyncMock()
             svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
+            svc.get_profile_list = AsyncMock(return_value={
+                "ProfileMetadata": {
+                    "mdm-profile": {"PayloadType": "com.apple.mdm", "PayloadDisplayName": "MDM"},
+                }
+            })
             svc.install_profile_silent = AsyncMock()
-            svc.__aenter__.return_value = svc
-            svc.__aexit__.return_value = False
+            svc.__aenter__ = AsyncMock(return_value=svc)
+            svc.__aexit__ = AsyncMock(return_value=False)
 
             # Track the keybag path passed to install_profile_silent
             captured_keybag = None
@@ -884,12 +961,17 @@ class TestKeybagPersistenceForMdmInstall:
                 )
             )
 
-            svc = AsyncMock()
+            svc = MagicMock(spec=MobileConfigService)
             svc.set_cloud_configuration = AsyncMock()
             svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
+            svc.get_profile_list = AsyncMock(return_value={
+                "ProfileMetadata": {
+                    "mdm-profile": {"PayloadType": "com.apple.mdm", "PayloadDisplayName": "MDM"},
+                }
+            })
             svc.install_profile_silent = AsyncMock()
-            svc.__aenter__.return_value = svc
-            svc.__aexit__.return_value = False
+            svc.__aenter__ = AsyncMock(return_value=svc)
+            svc.__aexit__ = AsyncMock(return_value=False)
 
             captured_keybag_path = None
 
@@ -970,10 +1052,14 @@ class TestWifiAndMdmInstallOrder:
 
             call_order = []
 
-            svc = AsyncMock()
+            svc = MagicMock(spec=MobileConfigService)
             svc.set_cloud_configuration = AsyncMock()
             svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
-            svc.get_profile_list = AsyncMock(return_value={})
+            svc.get_profile_list = AsyncMock(return_value={
+                "ProfileMetadata": {
+                    "mdm-profile": {"PayloadType": "com.apple.mdm", "PayloadDisplayName": "MDM"},
+                }
+            })
 
             async def track_install_profile(payload):
                 call_order.append(("install_profile", payload[:20]))
@@ -988,8 +1074,8 @@ class TestWifiAndMdmInstallOrder:
             svc.install_wifi_profile = AsyncMock(side_effect=track_install_wifi)
             svc.install_profile_silent = AsyncMock(side_effect=track_mdm_install)
             svc.remove_profile = AsyncMock()
-            svc.__aenter__.return_value = svc
-            svc.__aexit__.return_value = False
+            svc.__aenter__ = AsyncMock(return_value=svc)
+            svc.__aexit__ = AsyncMock(return_value=False)
 
             with patch(
                 "pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc
@@ -1037,11 +1123,16 @@ class TestKeybagCleanup:
             activation_svc
         )
 
-        svc = AsyncMock()
+        svc = MagicMock(spec=MobileConfigService)
         svc.set_cloud_configuration = AsyncMock()
         svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
-        svc.__aenter__.return_value = svc
-        svc.__aexit__.return_value = False
+        svc.get_profile_list = AsyncMock(return_value={
+            "ProfileMetadata": {
+                "mdm-profile": {"PayloadType": "com.apple.mdm", "PayloadDisplayName": "MDM"},
+            }
+        })
+        svc.__aenter__ = AsyncMock(return_value=svc)
+        svc.__aexit__ = AsyncMock(return_value=False)
 
         captured_keybag_path = None
 

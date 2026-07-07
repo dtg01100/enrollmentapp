@@ -20,6 +20,7 @@ from tests.conftest import (
     MockNoDeviceConnectedError as _NoDeviceConnectedError,
     LockdownClient,
     MobileActivationService,
+    MobileConfigService,
 )
 
 
@@ -61,14 +62,13 @@ class TestSupervisedPairing:
         mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
             activation_svc
         )
-
-        svc = AsyncMock()
+        svc = MagicMock(spec=MobileConfigService)
         svc.store_profile = AsyncMock()
         svc.get_cloud_configuration = AsyncMock(
             return_value={"MDMServerURL": "https://mdm.example.com/mdm", "IsSupervised": True}
         )
-        svc.__aenter__.return_value = svc
-        svc.__aexit__.return_value = False
+        svc.__aenter__ = AsyncMock(return_value=svc)
+        svc.__aexit__ = AsyncMock(return_value=False)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = Path(tmpdir) / "cert.der"
@@ -141,13 +141,12 @@ class TestSupervisedPairing:
         mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
             activation_svc
         )
-
-        svc = AsyncMock()
+        svc = MagicMock(spec=MobileConfigService)
         svc.install_wifi_profile = AsyncMock()
         svc.store_profile = AsyncMock()
         svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
-        svc.__aenter__.return_value = svc
-        svc.__aexit__.return_value = False
+        svc.__aenter__ = AsyncMock(return_value=svc)
+        svc.__aexit__ = AsyncMock(return_value=False)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = Path(tmpdir) / "cert.der"
@@ -213,13 +212,12 @@ class TestSupervisedPairing:
         mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
             activation_svc
         )
-
-        svc = AsyncMock()
+        svc = MagicMock(spec=MobileConfigService)
         svc.install_profile = AsyncMock()
         svc.get_profile_list = AsyncMock(return_value={})
         svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
-        svc.__aenter__.return_value = svc
-        svc.__aexit__.return_value = False
+        svc.__aenter__ = AsyncMock(return_value=svc)
+        svc.__aexit__ = AsyncMock(return_value=False)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = Path(tmpdir) / "cert.der"
@@ -287,13 +285,12 @@ class TestSupervisedPairing:
         mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
             activation_svc
         )
-
-        svc = AsyncMock()
+        svc = MagicMock(spec=MobileConfigService)
         svc.install_profile = AsyncMock()
         svc.get_profile_list = AsyncMock(return_value={})
         svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
-        svc.__aenter__.return_value = svc
-        svc.__aexit__.return_value = False
+        svc.__aenter__ = AsyncMock(return_value=svc)
+        svc.__aexit__ = AsyncMock(return_value=False)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = Path(tmpdir) / "cert.der"

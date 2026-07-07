@@ -184,11 +184,12 @@ def interactive_enroll():
 
     Steps:
     1. Select device
-    2. Choose MDM server configuration
+    2. Configure MDM server
     3. Configure organization & supervision identity
-    4. Select Setup Assistant skip panes
-    5. Erase device if needed
-    6. Apply configuration
+    4. Configure WiFi (optional, headless-friendly)
+    5. Select Setup Assistant skip panes
+    6. Prepare device (decide whether erase is required)
+    7. Apply configuration
 
     This mimics Apple Configurator's Prepare Assistant workflow.
     """
@@ -437,6 +438,7 @@ def interactive_enroll():
     typer.echo(f"\nSkipping {len(skip_list)} panes: {', '.join(skip_list[:5])}{'...' if len(skip_list) > 5 else ''}")
 
     # Step 6: Device Preparation
+    typer.echo("\nStep 6: Device Preparation")
     typer.secho("-" * 40)
 
     # Get full device state for smart erase decision

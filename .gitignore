@@ -24,6 +24,7 @@ htmlcov/
 .clio/
 .agents/
 agents/
+.nanocoder/
 
 # Memory & state
 .memories/

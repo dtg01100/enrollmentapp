@@ -46,7 +46,7 @@ jobs:
           $env:PYTHONPATH = "$PWD/src;$env:PYTHONPATH"
           python -m nuitka `
             --onefile `
-            --msvc=2022 `
+            --msvc=latest `
             --enable-console `
             --output-filename=ios-enroll.exe `
             --output-dir=dist `

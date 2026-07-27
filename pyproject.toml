@@ -10,10 +10,13 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 keywords = ["ios", "apple", "supervision", "enrollment", "mdm", "mobile-device-management"]
+authors = [{ name = "ios-enroll maintainers" }]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: System Administrators",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -29,8 +32,17 @@ dependencies = [
     "rich>=13.0.0",
 ]
 
+[project.optional-dependencies]
+gui = ["PySide6>=6.5"]
+build = ["nuitka>=4.0", "ordered-set", "zstandard"]
+
+[project.urls]
+Homepage = "https://github.com/example/ios-enroll"
+Issues = "https://github.com/example/ios-enroll/issues"
+
 [project.scripts]
 ios-enroll = "apple_device_cli.cli:app"
+ios-enroll-gui = "apple_device_cli.gui_qt:run_gui"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/apple_device_cli"]
@@ -58,3 +70,23 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = "pymobiledevice3.*"
 ignore_missing_imports = true
+
+# ----- python-exe-build contract -----
+# This block tells `python-exe-build` how to compile this project into a
+# native Nuitka executable. Run from this directory:
+#   python-exe-build linux     # produces dist/ios-enroll
+#   python-exe-build windows   # produces dist/ios-enroll.exe (30-60 min first run)
+#   python-exe-build all       # both
+[tool.python-exe-build]
+entrypoint = "src/apple_device_cli/cli.py"
+name = "ios-enroll"
+python = "3.13.7"
+mode = "onefile"
+output-dir = "dist"
+
+[tool.python-exe-build.windows]
+console = true
+compiler = "msvc"
+
+[tool.python-exe-build.linux]
+console = true

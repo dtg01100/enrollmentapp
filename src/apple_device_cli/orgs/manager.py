@@ -9,6 +9,7 @@ import os
 import plistlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import warnings
 from dataclasses import dataclass, field
@@ -133,10 +134,61 @@ class OrganizationManager:
         return orgs
 
     def get_org(self, name: str) -> Organization | None:
-        org_dir = self.orgs_dir / self._sanitize_name(name)
+        org_dir = self.org_dir_for(name)
         if not org_dir.exists():
             return None
         return Organization.load(org_dir)
+
+    def read_wifi_profile(self, name: str) -> dict | None:
+        """Read and parse the org's wifi.mobileconfig, returning the SSID/Password/
+        Encryption/AutoJoin dict, or None.
+
+        Returns None if the org has no wifi_config_path, the file is missing,
+        or the file is unreadable / unparseable.
+
+        Tries plain plistlib first (the common case for Apple Configurator wifi
+        exports, which are unsigned XML plists). Falls back to DER/PKCS7 unwrap
+        via openssl for signed exports.
+        """
+        org = self.get_org(name)
+        if not org or not org.wifi_config_path:
+            return None
+        path = Path(org.wifi_config_path)
+        if not path.exists():
+            return None
+        try:
+            data = path.read_bytes()
+            try:
+                payload = plistlib.loads(data)
+            except Exception:  # noqa: BLE001
+                # Signed DER/PKCS7 fallback
+                result = subprocess.run(
+                    ["openssl", "smime", "-verify", "-inform", "DER", "-noverify", "-in", str(path)],
+                    capture_output=True,
+                )
+                if result.returncode != 0:
+                    return None
+                payload = plistlib.loads(result.stdout)
+        except OSError:
+            return None
+        for item in payload.get("PayloadContent", []):
+            if isinstance(item, dict) and item.get("PayloadType") == "com.apple.wifi.managed":
+                return {
+                    "ssid": item.get("SSID_STR"),
+                    "password": item.get("Password"),
+                    "encryption": item.get("EncryptionType", "WPA"),
+                    "auto_join": item.get("AutoJoin", True),
+                }
+        return None
+
+    def org_dir_for(self, name: str) -> Path:
+        """Return the on-disk directory used to store an org's artifacts.
+
+        Public counterpart to the internal ``_sanitize_name`` mapping so callers
+        outside this module can resolve the directory without poking at private
+        state. The directory may or may not exist.
+        """
+        return self.orgs_dir / self._sanitize_name(name)
 
     def save_org(self, org: Organization, overwrite: bool = False):
         with self._acquire_org_lock(org.name):
@@ -174,17 +226,28 @@ class OrganizationManager:
 
         Prevents races between concurrent save_org and import_mobileconfig
         calls for the same org name. Auto-releases on context exit (even
-        on exception). Uses fcntl.flock so multiple processes coordinate
-        correctly, not just multiple threads.
+        on exception). Uses POSIX fcntl.flock where available, with a
+        Windows msvcrt.locking fallback for cross-platform support.
         """
         lock_path = self.orgs_dir / f".{self._sanitize_name(name)}.lock"
         fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            if sys.platform == "win32":
+                import msvcrt
+
+                # Lock 1 byte at offset 0; cross-process via Windows lockfile semantics.
+                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            else:
+                fcntl.flock(fd, fcntl.LOCK_EX)
             yield
         finally:
             try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                if sys.platform == "win32":
+                    import msvcrt
+
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
             except OSError:
                 pass
             os.close(fd)

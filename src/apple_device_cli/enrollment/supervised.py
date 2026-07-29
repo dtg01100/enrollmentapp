@@ -5,6 +5,7 @@ import ast
 import asyncio
 import inspect
 import logging
+import plistlib
 import re
 import tempfile
 import urllib.error
@@ -659,12 +660,37 @@ async def do_supervised_pairing(
             if wifi_ssid and wifi_password:
                 _progress(f"Installing WiFi profile: {redact_name(wifi_ssid)}...")
                 try:
+                    wifi_uid = str(uuid4()).upper()
+                    inner_uid = str(uuid4()).upper()
+                    wifi_payload = plistlib.dumps({
+                        "PayloadType": "Configuration",
+                        "PayloadVersion": 1,
+                        "PayloadIdentifier": f"com.apple.wifi.managed.{wifi_uid}",
+                        "PayloadUUID": wifi_uid,
+                        "PayloadDisplayName": wifi_ssid,
+                        "PayloadOrganization": org_name,
+                        "PayloadDescription": f"Managed Wi-Fi for {org_name}",
+                        "PayloadContent": [{
+                            "PayloadType": "com.apple.wifi.managed",
+                            "PayloadVersion": 1,
+                            "PayloadIdentifier": f"com.apple.wifi.managed.{wifi_uid}",
+                            "PayloadUUID": inner_uid,
+                            "PayloadDisplayName": wifi_ssid,
+                            "AutoJoin": True,
+                            "EncryptionType": wifi_encryption,
+                            "SSID_STR": wifi_ssid,
+                            "Password": wifi_password,
+                        }],
+                    })
                     async with MobileConfigService(lockdown) as svc:
-                        await _maybe_await(svc.install_wifi_profile(
-                            encryption_type=wifi_encryption,
-                            ssid=wifi_ssid,
-                            password=wifi_password,
-                        ))
+                        if keybag_path and keybag_path.exists():
+                            await _maybe_await(svc.install_profile_silent(keybag_path, wifi_payload))
+                        else:
+                            await _maybe_await(svc.install_wifi_profile(
+                                encryption_type=wifi_encryption,
+                                ssid=wifi_ssid,
+                                password=wifi_password,
+                            ))
                     wifi_installed = True
                     _progress(f"WiFi profile installed: {redact_name(wifi_ssid)}")
                 except Exception as e:
@@ -689,7 +715,7 @@ async def do_supervised_pairing(
                                     if meta.get("PayloadType") == "com.apple.wifi.managed":
                                         _progress(f"Removing existing WiFi profile: {meta.get('PayloadDisplayName', ident)}...")
                                         await _maybe_await(svc.remove_profile(ident))
-                            await _maybe_await(svc.install_profile(payload_bytes))
+                            await _maybe_await(svc.install_profile_silent(keybag_path, payload_bytes))
                         wifi_installed = True
                         _progress(f"WiFi mobileconfig installed: {wifi_config_path.name}")
                     except Exception as e:

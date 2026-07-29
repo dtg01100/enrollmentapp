@@ -143,6 +143,7 @@ class TestSupervisedPairing:
         )
         svc = MagicMock(spec=MobileConfigService)
         svc.install_wifi_profile = AsyncMock()
+        svc.install_profile_silent = AsyncMock()
         svc.store_profile = AsyncMock()
         svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
         svc.__aenter__ = AsyncMock(return_value=svc)
@@ -192,12 +193,9 @@ class TestSupervisedPairing:
                     "wifipass123",
                     "WPA",
                 )
-
-            svc.install_wifi_profile.assert_awaited_once()
-            call_kwargs = svc.install_wifi_profile.call_args.kwargs
-            assert call_kwargs["ssid"] == "OfficeWiFi"
-            assert call_kwargs["password"] == "wifipass123"
-            assert call_kwargs["encryption_type"] == "WPA"
+            # Patch B: SSID/password wifi path now uses install_profile_silent with a built plist
+            svc.install_profile_silent.assert_awaited_once()
+            svc.install_wifi_profile.assert_not_called()
             assert result.wifi_installed is True
 
     def test_make_supervised_installs_wifi_mobileconfig(self, mock_pymobiledevice3):
@@ -214,6 +212,7 @@ class TestSupervisedPairing:
         )
         svc = MagicMock(spec=MobileConfigService)
         svc.install_profile = AsyncMock()
+        svc.install_profile_silent = AsyncMock()
         svc.get_profile_list = AsyncMock(return_value={})
         svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
         svc.__aenter__ = AsyncMock(return_value=svc)
@@ -269,8 +268,9 @@ class TestSupervisedPairing:
                     False,
                     str(wifi_config_path),
                 )
-
-            svc.install_profile.assert_awaited_once()
+            # Patch B: wifi.mobileconfig path now uses install_profile_silent with keybag
+            svc.install_profile_silent.assert_awaited_once()
+            svc.install_profile.assert_not_called()
             assert result.wifi_installed is True
 
     def test_make_supervised_normalizes_quoted_wifi_mobileconfig_path(self, mock_pymobiledevice3):
@@ -287,6 +287,7 @@ class TestSupervisedPairing:
         )
         svc = MagicMock(spec=MobileConfigService)
         svc.install_profile = AsyncMock()
+        svc.install_profile_silent = AsyncMock()
         svc.get_profile_list = AsyncMock(return_value={})
         svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
         svc.__aenter__ = AsyncMock(return_value=svc)
@@ -342,8 +343,9 @@ class TestSupervisedPairing:
                     False,
                     f" '{wifi_config_path}' ",
                 )
-
-        svc.install_profile.assert_awaited_once()
+        # Patch B: wifi.mobileconfig path now uses install_profile_silent with keybag
+        svc.install_profile_silent.assert_awaited_once()
+        svc.install_profile.assert_not_called()
         assert result.wifi_installed is True
 
     def test_mobileconfig_error_formatter_extracts_concise_network_error(

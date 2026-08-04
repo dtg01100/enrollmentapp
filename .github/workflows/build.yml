@@ -71,6 +71,11 @@ jobs:
     
     - name: Build Linux executables with Nuitka
       run: |
+        # ``build_nuitka.py all`` runs the Linux CLI + GUI builders only;
+        # it does NOT invoke the MinGW Windows cross-compile builders
+        # (those require an explicit ``windows*`` target and MinGW on the
+        # host). The Windows job in this same workflow handles the
+        # .exe builds separately.
         python build_nuitka.py all
     
     - name: Upload Linux executables

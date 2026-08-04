@@ -68,11 +68,11 @@ Download the latest `ios-enroll-dist.zip` from the project's release page, extra
 
 ```powershell
 # CLI
-dist\ios-enroll\ios-enroll.exe --help
-dist\ios-enroll\ios-enroll.exe --gui
+dist\ios-enroll.exe --help
+dist\ios-enroll.exe --gui
 
 # GUI (double-click works too)
-dist\ios-enroll\ios-enroll-gui.exe
+dist\ios-enroll-gui.exe
 ```
 
 The bundled executables include Python, all dependencies, and the GUI runtime. No Python install is required on the target machine.
@@ -129,7 +129,7 @@ pip install pywin32
 
 ### Antivirus false positives
 
-PyInstaller bundles are sometimes flagged by antivirus software because they embed a bootloader. This is a known false positive — submit the bundle to your AV vendor as a false positive, or distribute via internal signing.
+Nuitka-compiled onefile bundles are sometimes flagged by antivirus software because they embed a C-compiled Python runtime. This is a known false positive — submit the bundle to your AV vendor as a false positive, or distribute via internal signing.
 
 ### iOS 17+ tunnel errors
 
@@ -153,7 +153,7 @@ cd ios-enroll
 build_windows.bat
 ```
 
-Outputs go to `dist\ios-enroll\ios-enroll.exe` (CLI) and `dist\ios-enroll\ios-enroll-gui.exe` (GUI).
+Outputs go to `dist\ios-enroll.exe` (CLI) and `dist\ios-enroll-gui.exe` (GUI).
 
 For Linux/macOS development builds:
 

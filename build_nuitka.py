@@ -155,10 +155,16 @@ def main() -> int:
 
     status = 0
 
+    # ``all`` means "all builds for the current platform" — Linux CLI + GUI
+    # only. It deliberately does NOT include the MinGW Windows cross-compile
+    # builders (those need an explicit ``windows*`` target and a MinGW-capable
+    # host). This is what CI workflows and local dev use.
     if target in ("all", "cli"):
         status = build_cli() or status
     if target in ("all", "gui"):
         status = build_gui() or status
+    # ``windows*`` targets always invoke the MinGW Windows builders, even
+    # under ``all`` — explicit opt-in to cross-compile.
     if target in ("windows", "windows-cli"):
         status = build_windows_cli() or status
     if target in ("windows", "windows-gui"):

@@ -73,15 +73,15 @@ def org_with_keys(isolated_orgs_dir, tmp_path):
 
 
 class TestEnrollMakeSupervised:
-    @patch("apple_device_cli.cli.list_devices")
+    @patch("apple_device_cli.cli.list_devices", spec=True)
     def test_no_device_exits_1(self, mock_list):
         mock_list.return_value = []
         result = runner.invoke(enroll_app, ["make-supervised", "--org-name", "Acme"])
         assert result.exit_code == 1
         assert "no devices" in result.output.lower() or "no device selected" in result.output.lower()
 
-    @patch("apple_device_cli.cli.OrganizationManager")
-    @patch("apple_device_cli.cli.list_devices")
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
+    @patch("apple_device_cli.cli.list_devices", spec=True)
     def test_org_not_found_exits_1(self, mock_list, mock_mgr_class, sample_device):
         mock_list.return_value = [sample_device]
         mgr = MagicMock(spec=OrganizationManager)
@@ -91,8 +91,8 @@ class TestEnrollMakeSupervised:
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
 
-    @patch("apple_device_cli.cli.OrganizationManager")
-    @patch("apple_device_cli.cli.get_device_info")
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
+    @patch("apple_device_cli.cli.get_device_info", spec=True)
     def test_org_missing_cert_exits_1(
         self, mock_info, mock_mgr_class, sample_device, isolated_orgs_dir
     ):
@@ -127,9 +127,9 @@ class TestEnrollMakeSupervised:
         assert result.exit_code == 0
         assert "error" in result.output.lower() or "preset" in result.output.lower()
 
-    @patch("apple_device_cli.cli.make_supervised")
-    @patch("apple_device_cli.cli.OrganizationManager")
-    @patch("apple_device_cli.cli.list_devices")
+    @patch("apple_device_cli.cli.make_supervised", spec=True)
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
+    @patch("apple_device_cli.cli.list_devices", spec=True)
     def test_success(self, mock_list, mock_mgr_class, mock_make, org_with_keys, sample_device):
         mock_list.return_value = [sample_device]
         mgr = MagicMock(spec=OrganizationManager)
@@ -154,9 +154,9 @@ class TestEnrollMakeSupervised:
         assert "supervised" in result.output.lower()
         mock_make.assert_called_once()
 
-    @patch("apple_device_cli.cli.make_supervised")
-    @patch("apple_device_cli.cli.OrganizationManager")
-    @patch("apple_device_cli.cli.list_devices")
+    @patch("apple_device_cli.cli.make_supervised", spec=True)
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
+    @patch("apple_device_cli.cli.list_devices", spec=True)
     def test_failure_lists_errors(self, mock_list, mock_mgr_class, mock_make, org_with_keys, sample_device):
         mock_list.return_value = [sample_device]
         mgr = MagicMock(spec=OrganizationManager)
@@ -183,9 +183,9 @@ class TestEnrollMakeSupervised:
         assert "mdm.example.com" in result.output
         assert "/…" in result.output
 
-    @patch("apple_device_cli.cli.make_supervised")
-    @patch("apple_device_cli.cli.OrganizationManager")
-    @patch("apple_device_cli.cli.list_devices")
+    @patch("apple_device_cli.cli.make_supervised", spec=True)
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
+    @patch("apple_device_cli.cli.list_devices", spec=True)
     def test_apple_device_error_prints_message(self, mock_list, mock_mgr_class, mock_make, org_with_keys, sample_device):
         mock_list.return_value = [sample_device]
         mgr = MagicMock(spec=OrganizationManager)
@@ -207,15 +207,15 @@ class TestEnrollMakeSupervised:
 
 
 class TestEnrollReenroll:
-    @patch("apple_device_cli.cli.list_devices")
+    @patch("apple_device_cli.cli.list_devices", spec=True)
     def test_no_device_exits_1(self, mock_list):
         mock_list.return_value = []
         result = runner.invoke(enroll_app, ["re-enroll", "--force"])
         assert result.exit_code == 1
         assert "no devices" in result.output.lower() or "no device selected" in result.output.lower()
 
-    @patch("apple_device_cli.enrollment.supervised.erase_device_for_reenrollment")
-    @patch("apple_device_cli.cli.list_devices")
+    @patch("apple_device_cli.enrollment.supervised.erase_device_for_reenrollment", spec=True)
+    @patch("apple_device_cli.cli.list_devices", spec=True)
     def test_force_skips_confirmation(self, mock_list, mock_erase, sample_device):
         mock_list.return_value = [sample_device]
         mock_erase.return_value = None
@@ -226,8 +226,8 @@ class TestEnrollReenroll:
         assert "erased" in result.output.lower() or "ready" in result.output.lower()
         mock_erase.assert_called_once_with(sample_device.udid)
 
-    @patch("apple_device_cli.enrollment.supervised.erase_device_for_reenrollment")
-    @patch("apple_device_cli.cli.list_devices")
+    @patch("apple_device_cli.enrollment.supervised.erase_device_for_reenrollment", spec=True)
+    @patch("apple_device_cli.cli.list_devices", spec=True)
     def test_error_exits_1(self, mock_list, mock_erase, sample_device):
         mock_list.return_value = [sample_device]
         mock_erase.side_effect = AppleDeviceError("cloud config erase failed")
@@ -242,15 +242,15 @@ class TestEnrollReenroll:
 
 
 class TestEnrollStatus:
-    @patch("apple_device_cli.cli.list_devices")
+    @patch("apple_device_cli.cli.list_devices", spec=True)
     def test_no_device_exits_1(self, mock_list):
         mock_list.return_value = []
         result = runner.invoke(enroll_app, ["status"])
         assert result.exit_code == 1
         assert "no devices" in result.output.lower() or "no device selected" in result.output.lower()
 
-    @patch("apple_device_cli.enrollment.supervised.get_device_enrollment_state")
-    @patch("apple_device_cli.cli.get_device_info")
+    @patch("apple_device_cli.enrollment.supervised.get_device_enrollment_state", spec=True)
+    @patch("apple_device_cli.cli.get_device_info", spec=True)
     def test_success_prints_state(self, mock_info, mock_state, sample_device):
         mock_info.return_value = sample_device
         mock_state.return_value = {
@@ -272,8 +272,8 @@ class TestEnrollStatus:
         # Org magic redaction
         assert "com.apple.…" in result.output
 
-    @patch("apple_device_cli.enrollment.supervised.get_device_enrollment_state")
-    @patch("apple_device_cli.cli.get_device_info")
+    @patch("apple_device_cli.enrollment.supervised.get_device_enrollment_state", spec=True)
+    @patch("apple_device_cli.cli.get_device_info", spec=True)
     def test_state_error_prints_error(self, mock_info, mock_state, sample_device):
         mock_info.return_value = sample_device
         mock_state.return_value = {"error": "device disconnected"}
@@ -283,8 +283,8 @@ class TestEnrollStatus:
         assert result.exit_code == 0
         assert "Could not get device state" in result.output
 
-    @patch("apple_device_cli.enrollment.supervised.get_device_enrollment_state")
-    @patch("apple_device_cli.cli.get_device_info")
+    @patch("apple_device_cli.enrollment.supervised.get_device_enrollment_state", spec=True)
+    @patch("apple_device_cli.cli.get_device_info", spec=True)
     def test_exception_prints_error(self, mock_info, mock_state, sample_device):
         mock_info.return_value = sample_device
         mock_state.side_effect = RuntimeError("https://mdm.example.com/verysecrettoken")
@@ -301,7 +301,7 @@ class TestEnrollStatus:
 
 
 class TestEnrollValidate:
-    @patch("apple_device_cli.cli.OrganizationManager")
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
     def test_prompted_empty_name_cancels(self, mock_mgr_class):
         mgr = MagicMock(spec=OrganizationManager)
         mgr.get_org.return_value = None
@@ -314,7 +314,7 @@ class TestEnrollValidate:
         if result.exit_code == 0:
             assert "cancelled" in result.output.lower() or "required" in result.output.lower()
 
-    @patch("apple_device_cli.cli.OrganizationManager")
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
     def test_org_not_found(self, mock_mgr_class, isolated_orgs_dir):
         mgr = MagicMock(spec=OrganizationManager)
         mgr.get_org.return_value = None
@@ -323,8 +323,8 @@ class TestEnrollValidate:
         assert result.exit_code == 0
         assert "not found" in result.output.lower()
 
-    @patch("apple_device_cli.enrollment.supervised.validate_enrollment_prerequisites")
-    @patch("apple_device_cli.cli.OrganizationManager")
+    @patch("apple_device_cli.enrollment.supervised.validate_enrollment_prerequisites", spec=True)
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
     def test_success_no_errors(self, mock_mgr_class, mock_validate, isolated_orgs_dir, tmp_path):
         cert = tmp_path / "cert.der"
         key = tmp_path / "key.der"
@@ -345,8 +345,8 @@ class TestEnrollValidate:
         assert result.exit_code == 0
         assert "valid" in result.output.lower()
 
-    @patch("apple_device_cli.enrollment.supervised.validate_enrollment_prerequisites")
-    @patch("apple_device_cli.cli.OrganizationManager")
+    @patch("apple_device_cli.enrollment.supervised.validate_enrollment_prerequisites", spec=True)
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
     def test_failure_lists_errors(self, mock_mgr_class, mock_validate, isolated_orgs_dir, tmp_path):
         cert = tmp_path / "cert.der"
         key = tmp_path / "key.der"
@@ -372,14 +372,14 @@ class TestEnrollValidate:
 
 
 class TestEnrollActivate:
-    @patch("apple_device_cli.cli.activate_device")
+    @patch("apple_device_cli.cli.activate_device", spec=True)
     def test_success(self, mock_activate):
         mock_activate.return_value = None
         result = runner.invoke(enroll_app, ["activate"])
         assert result.exit_code == 0
         assert "activated" in result.output.lower()
 
-    @patch("apple_device_cli.cli.activate_device")
+    @patch("apple_device_cli.cli.activate_device", spec=True)
     def test_error_prints_message(self, mock_activate):
         mock_activate.side_effect = AppleDeviceError("https://mdm.example.com/verysecrettoken")
         result = runner.invoke(enroll_app, ["activate"])
@@ -1233,8 +1233,8 @@ class TestKeybagCleanupOnException:
 
         with (
             patch("pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc),
-            patch.object(supervised, "create_keybag_file") as mock_keybag,
-            patch.object(supervised, "_create_keybag_file_from_identity") as mock_id_keybag,
+            patch.object(supervised, "create_keybag_file", spec=True) as mock_keybag,
+            patch.object(supervised, "_create_keybag_file_from_identity", spec=True) as mock_id_keybag,
             patch.object(
                 supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake-bytes"
             ),
@@ -1243,7 +1243,7 @@ class TestKeybagCleanupOnException:
                 "_wait_for_device_reconnect",
                 new=AsyncMock(side_effect=RuntimeError("reconnect failed")),
             ),
-            patch("pathlib.Path.unlink") as mock_unlink,
+            patch("pathlib.Path.unlink", spec=True) as mock_unlink,
         ):
             mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
 
@@ -1288,12 +1288,12 @@ class TestKeybagCleanupOnCertLoadException:
 
         with (
             patch("pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc),
-            patch.object(supervised, "create_keybag_file") as mock_keybag,
-            patch.object(supervised, "_create_keybag_file_from_identity") as mock_id_keybag,
+            patch.object(supervised, "create_keybag_file", spec=True) as mock_keybag,
+            patch.object(supervised, "_create_keybag_file_from_identity", spec=True) as mock_id_keybag,
             patch.object(
                 supervised, "_load_cert_public_bytes_from_keybag", side_effect=ValueError("boom")
             ),
-            patch("pathlib.Path.unlink") as mock_unlink,
+            patch("pathlib.Path.unlink", spec=True) as mock_unlink,
         ):
             mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
 

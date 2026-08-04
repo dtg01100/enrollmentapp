@@ -15,7 +15,7 @@ runner = CliRunner()
 class TestDeviceListJsonOutput:
     """Tests for device list --json output."""
 
-    @patch("apple_device_cli.cli.list_devices")
+    @patch("apple_device_cli.cli.list_devices", spec=True)
     def test_device_list_json_output(self, mock_list):
         mock_list.return_value = [
             MagicMock(
@@ -39,14 +39,14 @@ class TestDeviceListJsonOutput:
         assert output[0]["build_version"] == "21A342"
         assert output[0]["ecid"] == "0xe28e921780032"
 
-    @patch("apple_device_cli.cli.list_devices")
+    @patch("apple_device_cli.cli.list_devices", spec=True)
     def test_device_list_json_no_devices(self, mock_list):
         mock_list.return_value = []
         result = runner.invoke(device_app, ["list", "--json"])
         assert result.exit_code == 0
         assert "No devices found" in result.stdout
 
-    @patch("apple_device_cli.cli.list_devices")
+    @patch("apple_device_cli.cli.list_devices", spec=True)
     def test_device_list_verbose_output(self, mock_list):
         mock_list.return_value = [
             MagicMock(
@@ -71,7 +71,7 @@ class TestDeviceListJsonOutput:
 class TestDeviceInfoJsonOutput:
     """Tests for device info --json output."""
 
-    @patch("apple_device_cli.cli.get_device_info")
+    @patch("apple_device_cli.cli.get_device_info", spec=True)
     def test_device_info_json_output(self, mock_info):
         mock_info.return_value = MagicMock(
             spec=DeviceInfo,
@@ -89,7 +89,7 @@ class TestDeviceInfoJsonOutput:
         assert output["name"] == "iPhone"
         assert output["ecid"] == "0xe28e921780032"
 
-    @patch("apple_device_cli.cli.get_device_info")
+    @patch("apple_device_cli.cli.get_device_info", spec=True)
     def test_device_info_not_found(self, mock_info):
         mock_info.return_value = None
         result = runner.invoke(device_app, ["info", "--udid", "1234567890ABCDEF"])
@@ -100,8 +100,8 @@ class TestDeviceInfoJsonOutput:
 class TestOrgListJsonOutput:
     """Tests for org list --json and --verbose output."""
 
-    @patch("apple_device_cli.cli.OrganizationManager")
-    @patch("apple_device_cli.cli.Path")
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
+    @patch("apple_device_cli.cli.Path", spec=True)
     def test_org_list_json_output(self, mock_path, mock_manager_class):
         mock_manager = MagicMock(spec=OrganizationManager)
         mock_org = MagicMock(spec=Organization)
@@ -126,8 +126,8 @@ class TestOrgListJsonOutput:
         assert output[0]["has_cert"] is True
         assert output[0]["has_key"] is True
 
-    @patch("apple_device_cli.cli.OrganizationManager")
-    @patch("apple_device_cli.cli.Path")
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
+    @patch("apple_device_cli.cli.Path", spec=True)
     def test_org_list_verbose_output(self, mock_path, mock_manager_class):
         mock_manager = MagicMock(spec=OrganizationManager)
         mock_org = MagicMock(spec=Organization)
@@ -154,7 +154,7 @@ class TestOrgListJsonOutput:
 class TestOrgSetCommandsExitCode:
     """Tests that org set-* commands return proper exit codes on error."""
 
-    @patch("apple_device_cli.cli.OrganizationManager")
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
     def test_org_set_cert_not_found_returns_error(self, mock_manager_class):
         mock_manager = MagicMock(spec=OrganizationManager)
         mock_manager.get_org.return_value = None
@@ -166,7 +166,7 @@ class TestOrgSetCommandsExitCode:
         assert result.exit_code == 1
         assert "not found" in result.stdout.lower()
 
-    @patch("apple_device_cli.cli.OrganizationManager")
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
     def test_org_set_key_not_found_returns_error(self, mock_manager_class):
         mock_manager = MagicMock(spec=OrganizationManager)
         mock_manager.get_org.return_value = None
@@ -178,7 +178,7 @@ class TestOrgSetCommandsExitCode:
         assert result.exit_code == 1
         assert "not found" in result.stdout.lower()
 
-    @patch("apple_device_cli.cli.OrganizationManager")
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
     def test_org_set_mdm_url_not_found_returns_error(self, mock_manager_class):
         mock_manager = MagicMock(spec=OrganizationManager)
         mock_manager.get_org.return_value = None
@@ -190,7 +190,7 @@ class TestOrgSetCommandsExitCode:
         assert result.exit_code == 1
         assert "not found" in result.stdout.lower()
 
-    @patch("apple_device_cli.cli.OrganizationManager")
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
     def test_org_show_not_found_returns_error(self, mock_manager_class):
         mock_manager = MagicMock(spec=OrganizationManager)
         mock_manager.get_org.return_value = None

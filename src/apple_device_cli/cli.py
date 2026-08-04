@@ -156,6 +156,7 @@ def enroll_group(ctx: typer.Context):
 def cli_main(
     ctx: typer.Context,
     version: bool = typer.Option(False, "--version", help="Show version and exit"),
+    gui: bool = typer.Option(False, "--gui", help="Launch the graphical user interface"),
 ):
     """Apple Configurator-like CLI for Linux.
 
@@ -164,15 +165,29 @@ def cli_main(
     if version:
         typer.echo(f"ios-enroll {__version__}")
         raise typer.Exit(0)
+    if gui:
+        if ctx.invoked_subcommand is not None:
+            typer.secho("--gui cannot be combined with another command", fg=typer.colors.RED)
+            raise typer.Exit(1)
+        from apple_device_cli.gui_qt import run_gui
+
+        try:
+            run_gui()
+        except RuntimeError as e:
+            typer.secho(f"GUI unavailable: {e}", fg=typer.colors.RED)
+            raise typer.Exit(1) from e
+        raise typer.Exit(0)
     if ctx.invoked_subcommand is None:
         typer.secho("ios-enroll - iOS device supervised enrollment CLI\n", fg=typer.colors.BLUE, bold=True)
         typer.echo("Manage iOS device enrollment with supervised pairing.\n")
         typer.echo("Commands:")
+        typer.echo("  ios-enroll --gui                 Launch graphical user interface")
         typer.echo("  ios-enroll enroll guided-enroll  Guided interactive enrollment")
         typer.echo("  ios-enroll device list           List connected devices")
         typer.echo("  ios-enroll org list             List organizations")
         typer.echo("  ios-enroll --help               Show all commands")
         typer.echo("\nExamples:")
+        typer.echo("  ios-enroll --gui                 Launch GUI")
         typer.echo("  ios-enroll enroll guided-enroll  Start guided enrollment")
         typer.echo("  ios-enroll device list          Show connected devices")
         typer.echo("  ios-enroll org create --name 'My Org'  Create organization")

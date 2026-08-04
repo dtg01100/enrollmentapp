@@ -11,6 +11,13 @@ import pytest
 # pytest_configure() runs. If pymobiledevice3 is not importable, fall back to
 # the bare-mock pytest_configure shim — the fixture will then also degrade to
 # bare mocks and emit a warning when used.
+#
+# Test modules that need the real class shapes for ``MagicMock(spec=...)``
+# must early-skip when ``_PYMOBILEDEVICE3_AVAILABLE`` is False. The two
+# affected files are test_enrollment.py and test_enrollment_flow_fixes.py.
+# They use ``pytest.skip(reason, allow_module_level=True)`` — NOT
+# ``pytest.importorskip("pymobiledevice3")``, which would be fooled by
+# pytest_configure injecting a bare MagicMock into ``sys.modules`` below.
 try:
     import pymobiledevice3
     from pymobiledevice3 import ca, lockdown, services

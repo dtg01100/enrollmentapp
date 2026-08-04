@@ -16,6 +16,28 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from unittest.mock import MagicMock, patch, AsyncMock
 
+# Tests in this module use ``MagicMock(spec=LockdownClient)`` (and friends)
+# to validate production code against the real pymobiledevice3 API shapes.
+# When pymobiledevice3 isn't installed, those real classes are unavailable
+# and ``from tests.conftest import LockdownClient`` would fail at collection
+# time with ImportError. Skip the whole module in that case — these tests
+# have nothing to verify without the real class shapes to spec against.
+#
+# Note: can't use ``pytest.importorskip("pymobiledevice3")`` directly
+# because conftest's ``pytest_configure`` injects a ``MagicMock`` into
+# ``sys.modules["pymobiledevice3"]`` before this test module loads, which
+# fools importorskip into thinking the module is present. Instead, check
+# the ``_PYMOBILEDEVICE3_AVAILABLE`` flag that conftest sets based on
+# whether the real package was importable at conftest load time.
+from tests.conftest import _PYMOBILEDEVICE3_AVAILABLE
+
+if not _PYMOBILEDEVICE3_AVAILABLE:
+    pytest.skip(
+        "pymobiledevice3 not installed; tests require real LockdownClient / "
+        "MobileActivationService / MobileConfigService class shapes for spec'ing.",
+        allow_module_level=True,
+    )
+
 from tests.conftest import (
     MockNoDeviceConnectedError as _NoDeviceConnectedError,
     LockdownClient,

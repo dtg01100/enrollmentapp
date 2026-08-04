@@ -7,17 +7,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# Capture the real pymobiledevice3 modules at conftest load time, *before*
-# pytest_configure() runs. If pymobiledevice3 is not importable, fall back to
-# the bare-mock pytest_configure shim — the fixture will then also degrade to
-# bare mocks and emit a warning when used.
+# pymobiledevice3 is a hard runtime dependency — the production CLI imports
+# it at module top-level (apple_device_cli/device/connection.py and
+# apple_device_cli/enrollment/supervised.py), and the core enrollment
+# workflow cannot run without it. The mock layers below (the
+# ``mock_pymobiledevice3`` fixture, etc.) use spec'd MagicMocks against the
+# real class shapes for unit testing, so the real package MUST be
+# importable on every test machine.
 #
-# Test modules that need the real class shapes for ``MagicMock(spec=...)``
-# must early-skip when ``_PYMOBILEDEVICE3_AVAILABLE`` is False. The two
-# affected files are test_enrollment.py and test_enrollment_flow_fixes.py.
-# They use ``pytest.skip(reason, allow_module_level=True)`` — NOT
-# ``pytest.importorskip("pymobiledevice3")``, which would be fooled by
-# pytest_configure injecting a bare MagicMock into ``sys.modules`` below.
+# Fail fast at conftest load time with an actionable install message
+# rather than letting tests collect and then die with confusing
+# ImportErrors halfway through.
 try:
     import pymobiledevice3
     from pymobiledevice3 import ca, lockdown, services
@@ -25,19 +25,25 @@ try:
     from pymobiledevice3.lockdown import LockdownClient
     from pymobiledevice3.services.mobile_activation import MobileActivationService
     from pymobiledevice3.services.mobile_config import MobileConfigService
+except ImportError as exc:  # pragma: no cover - exercised only when dep is genuinely missing
+    raise ImportError(
+        "pymobiledevice3 is a required test dependency (it's also a hard runtime "
+        "dependency of ios-enroll — device connection and supervised enrollment "
+        "cannot work without it). Install it with:\n"
+        "    uv pip install pymobiledevice3\n"
+        "or install the project with all runtime deps:\n"
+        "    uv pip install -e ."
+    ) from exc
 
-    _REAL_PYMOBILEDEVICE3_MODULES = {
-        "pymobiledevice3": pymobiledevice3,
-        "pymobiledevice3.ca": ca,
-        "pymobiledevice3.lockdown": lockdown,
-        "pymobiledevice3.services": services,
-        "pymobiledevice3.services.mobile_config": mobile_config,
-        "pymobiledevice3.services.mobile_activation": mobile_activation,
-    }
-    _PYMOBILEDEVICE3_AVAILABLE = True
-except ImportError:  # pragma: no cover - exercised only on bare CI runners
-    _REAL_PYMOBILEDEVICE3_MODULES = {}
-    _PYMOBILEDEVICE3_AVAILABLE = False
+
+_REAL_PYMOBILEDEVICE3_MODULES = {
+    "pymobiledevice3": pymobiledevice3,
+    "pymobiledevice3.ca": ca,
+    "pymobiledevice3.lockdown": lockdown,
+    "pymobiledevice3.services": services,
+    "pymobiledevice3.services.mobile_config": mobile_config,
+    "pymobiledevice3.services.mobile_activation": mobile_activation,
+}
 
 
 # Re-exported for test modules that need to spec their mocks against the real
@@ -67,33 +73,16 @@ class MockCloudConfigurationAlreadyPresentError(Exception):
 
 
 def pytest_configure(config):
-    """Mock optional native dependencies at the Python level if not installed.
+    """Mock optional native dependencies that production code imports lazily.
 
-    This allows tests to import the CLI modules even when pymobiledevice3 is
-    not available (e.g. on a bare CI runner without native compilation). When
-    pymobiledevice3 IS available, pytest_configure leaves sys.modules alone —
-    the per-test ``mock_pymobiledevice3`` fixture handles mocking with a
-    spec'd version of the real modules.
+    Production code imports ``ipsw_parser`` at module top-level (used for
+    IPSW parsing utilities) but the import is wrapped in try/except in the
+    relevant module. This shim lets those modules import cleanly on a
+    bare machine without the optional native dep.
+
+    pymobiledevice3 is NOT mocked here — it's a hard requirement enforced
+    at the top of this file.
     """
-    # Mock pymobiledevice3 only if it was not importable at conftest load.
-    if "pymobiledevice3" not in sys.modules:
-        mock_pm3 = MagicMock()
-        mock_pm3_lockdown = MagicMock()
-        mock_pm3_ca = MagicMock()
-        mock_pm3_services = MagicMock()
-
-        mock_pm3.lockdown = mock_pm3_lockdown
-        mock_pm3.ca = mock_pm3_ca
-        mock_pm3.services = mock_pm3_services
-
-        sys.modules["pymobiledevice3"] = mock_pm3
-        sys.modules["pymobiledevice3.lockdown"] = mock_pm3_lockdown
-        sys.modules["pymobiledevice3.ca"] = mock_pm3_ca
-        sys.modules["pymobiledevice3.services"] = mock_pm3_services
-        sys.modules["pymobiledevice3.exceptions"] = MagicMock()
-        sys.modules["pymobiledevice3.services.mobile_activation"] = MagicMock()
-        sys.modules["pymobiledevice3.services.mobile_config"] = MagicMock()
-
     if "ipsw_parser" not in sys.modules:
         mock_ipsw = MagicMock()
         sys.modules["ipsw_parser"] = mock_ipsw
@@ -124,41 +113,7 @@ def mock_pymobiledevice3():
     This fixture is autouse=True so any test exercising code paths that touch
     pymobiledevice3 gets a fresh, fully-formed mock hierarchy. Tests that don't
     touch pymobiledevice3 pay only the cost of a no-op patch.dict.
-
-    If pymobiledevice3 is not importable in this environment, the fixture
-    falls back to bare mocks (with a warning) so tests can still run.
     """
-    if not _PYMOBILEDEVICE3_AVAILABLE:  # pragma: no cover
-        import warnings
-
-        warnings.warn(
-            "pymobiledevice3 is not importable; mock_pymobiledevice3 fixture "
-            "is using bare MagicMock fallbacks. Attribute access will NOT be "
-            "type-checked against the real pymobiledevice3 API.",
-            stacklevel=2,
-        )
-        # Minimal bare-mock fallback for environments without pymobiledevice3.
-        mock_pm3 = MagicMock()
-        mock_pm3.lockdown.create_using_usbmux = AsyncMock()
-        mock_pm3.lockdown.NoDeviceConnectedError = MockNoDeviceConnectedError
-        mock_pm3.services.mobile_config.CloudConfigurationAlreadyPresentError = (
-            MockCloudConfigurationAlreadyPresentError
-        )
-        mock_pm3.ca.create_keybag_file = MagicMock()
-        with patch.dict(
-            "sys.modules",
-            {
-                "pymobiledevice3": mock_pm3,
-                "pymobiledevice3.lockdown": mock_pm3.lockdown,
-                "pymobiledevice3.services": MagicMock(),
-                "pymobiledevice3.services.mobile_config": mock_pm3.services.mobile_config,
-                "pymobiledevice3.services.mobile_activation": mock_pm3.services.mobile_activation,
-                "pymobiledevice3.ca": mock_pm3.ca,
-            },
-        ):
-            yield mock_pm3
-        return
-
     ca = _REAL_PYMOBILEDEVICE3_MODULES["pymobiledevice3.ca"]
     lockdown = _REAL_PYMOBILEDEVICE3_MODULES["pymobiledevice3.lockdown"]
     services = _REAL_PYMOBILEDEVICE3_MODULES["pymobiledevice3.services"]

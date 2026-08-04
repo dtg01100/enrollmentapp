@@ -1,0 +1,89 @@
+name: Build Executables
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    name: Build Windows Executables (Nuitka)
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .[build,gui]
+
+    - name: Build Windows executables with Nuitka
+      run: |
+        python build_nuitka.py windows
+
+    - name: Upload Windows executables
+      uses: actions/upload-artifact@v4
+      with:
+        name: ios-enroll-windows
+        path: dist/*.exe
+        retention-days: 30
+
+    - name: Create release (on tag)
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: dist/*.exe
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux:
+    runs-on: ubuntu-latest
+    name: Build Linux Executables (Nuitka)
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y patchelf
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .[build,gui]
+    
+    - name: Build Linux executables with Nuitka
+      run: |
+        python build_nuitka.py all
+    
+    - name: Upload Linux executables
+      uses: actions/upload-artifact@v4
+      with:
+        name: ios-enroll-linux
+        path: dist/*
+        retention-days: 30
+    
+    - name: Create release (on tag)
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: dist/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

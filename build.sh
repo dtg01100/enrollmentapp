@@ -27,12 +27,14 @@ if [[ "$TARGET" == "--clean" ]]; then
 fi
 
 # Targets that need the [gui] extra; everything else is plain install.
+# All builds also need the [build] extra (Nuitka + helpers) since
+# build_nuitka.py runs Nuitka regardless of the target.
 case "$TARGET" in
     gui|all|windows|windows-gui)
-        EXTRAS="gui"
+        EXTRAS="build,gui"
         ;;
     cli|windows-cli)
-        EXTRAS=""
+        EXTRAS="build"
         ;;
     *)
         echo "build.sh: unknown target '$TARGET'" >&2
@@ -50,14 +52,7 @@ fi
 source .venv-build/bin/activate
 
 pip install --upgrade pip
-
-if [[ -n "$EXTRAS" ]]; then
-    pip install -e ".[$EXTRAS]"
-else
-    pip install -e .
-fi
-
-pip install nuitka ordered-set zstandard
+pip install -e ".[$EXTRAS]"
 
 python3 build_nuitka.py "$@"
 

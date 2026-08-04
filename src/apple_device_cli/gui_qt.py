@@ -38,6 +38,7 @@ from apple_device_cli.orgs.manager import Organization, OrganizationManager
 if TYPE_CHECKING:
     from PySide6.QtCore import QEvent, QThread, Signal, Slot
     from PySide6.QtWidgets import (
+        QApplication,
         QComboBox,
         QDialog,
         QDialogButtonBox,
@@ -123,20 +124,27 @@ def _redact_in_text(text: str, secret: str | None) -> str:
 def _require_pyside6() -> None:
     """Import PySide6 and define the Qt-using classes on this module.
 
-    Called lazily on first access to ``WorkerThread``, ``EnrollmentApp``,
-    or ``run_gui`` (see module-level ``__getattr__``). Raises ``RuntimeError``
-    with an install hint on ``ImportError`` so the CLI flag, ``ios-enroll-gui``
-    script, and ``python -m`` entry point all surface a friendly message
-    instead of an unhandled ImportError traceback.
+    Called from ``run_gui()`` so the rest of the module loads cleanly when
+    PySide6 isn't installed. Raises ``RuntimeError`` with an install hint
+    on ``ImportError`` so callers (``_main``, ``cli.py --gui``) can show a
+    friendly message instead of a traceback. Idempotent: a second call
+    after a successful first call is a no-op.
     """
+    # Idempotency guard: once a Qt-using class has been materialized, the
+    # names are bound as module globals and PySide6 is importable. Subsequent
+    # calls don't need to re-define classes or re-import.
+    if "EnrollmentApp" in globals():
+        return
     global WorkerThread, EnrollmentApp
     global QEvent, QThread, Signal, Slot
+    global QApplication
     global QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout
     global QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow
     global QMessageBox, QPushButton, QTabWidget, QTextEdit, QVBoxLayout, QWidget
     try:
         from PySide6.QtCore import QEvent, QThread, Signal, Slot  # noqa: F401
         from PySide6.QtWidgets import (  # noqa: F401
+            QApplication,
             QComboBox,
             QDialog,
             QDialogButtonBox,

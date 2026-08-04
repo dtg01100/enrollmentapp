@@ -20,12 +20,14 @@ if /I "%TARGET%"=="--clean" (
     if "%TARGET%"=="" set TARGET=all
 )
 
-REM Decide whether the [gui] extra is needed.
-set EXTRAS=
-if /I "%TARGET%"=="gui"     set EXTRAS=gui
-if /I "%TARGET%"=="all"     set EXTRAS=gui
-if /I "%TARGET%"=="windows" set EXTRAS=gui
-if /I "%TARGET%"=="windows-gui" set EXTRAS=gui
+REM Decide whether the [gui] extra is needed. The [build] extra (Nuitka
+REM + helpers) is always needed because build_nuitka.py runs Nuitka
+REM regardless of the target.
+set EXTRAS=build
+if /I "%TARGET%"=="gui"     set EXTRAS=build,gui
+if /I "%TARGET%"=="all"     set EXTRAS=build,gui
+if /I "%TARGET%"=="windows" set EXTRAS=build,gui
+if /I "%TARGET%"=="windows-gui" set EXTRAS=build,gui
 
 echo === Building ios-enroll (target: %TARGET%) for Windows with Nuitka ===
 
@@ -38,14 +40,7 @@ call .venv-build\Scripts\activate.bat
 
 REM Upgrade pip and install build dependencies
 python -m pip install --upgrade pip
-
-if defined EXTRAS (
-    python -m pip install -e ".[%EXTRAS%]"
-) else (
-    python -m pip install -e .
-)
-
-python -m pip install nuitka ordered-set zstandard
+python -m pip install -e ".[%EXTRAS%]"
 
 REM Run Nuitka build
 python build_nuitka.py %*

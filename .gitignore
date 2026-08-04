@@ -33,6 +33,12 @@ workspaceStorage/
 *.ipsw.lock
 restore_*.log
 
+# Nuitka build artifacts
+nuitka-*.xml
+*.build/
+*.onefile-build/
+.nuitka-build/
+
 # Credentials & secrets — NEVER commit these
 *.der
 *.pem

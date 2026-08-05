@@ -766,7 +766,11 @@ def org_create(
     if wifi_config:
         org.wifi_config_path = str(Path(wifi_config).resolve())
     manager = OrganizationManager()
-    manager.save_org(org)
+    try:
+        manager.save_org(org)
+    except ValueError as e:
+        typer.secho(f"Create failed: {sanitize_text(str(e))}", fg=typer.colors.RED)
+        raise typer.Exit(1) from e
     typer.secho(f"Created organization: {_display_name(org.name)}", fg=typer.colors.GREEN)
     if mdm_url:
         typer.echo(f"  MDM URL: {redact_url(mdm_url)}")

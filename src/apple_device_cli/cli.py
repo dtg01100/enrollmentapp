@@ -30,6 +30,17 @@ from apple_device_cli.device.connection import (
 )
 from apple_device_cli.device.info import DeviceInfo
 
+from apple_device_cli.cli_actions import (
+    OrgNotFoundError,
+    OrgAlreadyExistsError,
+    create_org,
+    delete_org,
+    generate_org,
+    import_mobileconfig,
+    import_org,
+    set_org_field,
+    set_org_wifi,
+)
 from apple_device_cli.orgs.manager import OrganizationManager, Organization
 from apple_device_cli.orgs.identity import generate_org_identity, load_cert_info
 from apple_device_cli.enrollment.skip_panes import resolve_skip_panes
@@ -64,14 +75,17 @@ def _set_org_field(
     value: str,
     label: str,
 ) -> None:
-    """Common body for org set-{cert,key,mdm-url,checkin-url,mdm-topic} commands."""
+    """Thin presentation wrapper around ``cli_actions.set_org_field``.
+
+    All business logic lives in ``cli_actions.set_org_field``; this wrapper
+    only handles the user-facing success/error display.
+    """
     manager = OrganizationManager()
-    org = manager.get_org(name)
-    if not org:
+    try:
+        set_org_field(manager, name, field_name, value, label)
+    except OrgNotFoundError as e:
         typer.secho(f"Organization not found: {_display_name(name)}", fg=typer.colors.RED)
-        raise typer.Exit(1)
-    setattr(org, field_name, value)
-    manager.save_org(org, overwrite=True)
+        raise typer.Exit(1) from e
     typer.secho(f"Set {label} for '{_display_name(name)}'", fg=typer.colors.GREEN)
 
 
@@ -748,48 +762,50 @@ def org_create(
         ios-enroll org create --name "My Org" --mdm-url https://mdm.example.com/mdm \\
             --checkin-url https://mdm.example.com/checkin --mdm-topic com.example.mdm
     """
-    org = Organization(
-        name=name,
-        org_id=org_id,
-        address=address,
-        phone=phone,
-        email=email,
-        mdm_url=mdm_url,
-        checkin_url=checkin_url,
-        mdm_topic=mdm_topic,
-        mdm_description=mdm_description,
-    )
-    if cert:
-        org.cert_path = str(Path(cert).resolve()) if cert else None
-    if key:
-        org.key_path = str(Path(key).resolve()) if key else None
-    if wifi_config:
-        org.wifi_config_path = str(Path(wifi_config).resolve())
     manager = OrganizationManager()
     try:
-        manager.save_org(org)
+        result = create_org(
+            manager=manager,
+            name=name,
+            org_id=org_id,
+            address=address,
+            phone=phone,
+            email=email,
+            mdm_url=mdm_url,
+            checkin_url=checkin_url,
+            mdm_topic=mdm_topic,
+            mdm_description=mdm_description,
+            cert=cert,
+            key=key,
+            wifi_config=wifi_config,
+        )
+    except OrgAlreadyExistsError as e:
+        typer.secho(f"Create failed: {sanitize_text(str(e))}", fg=typer.colors.RED)
+        raise typer.Exit(1) from e
     except ValueError as e:
         typer.secho(f"Create failed: {sanitize_text(str(e))}", fg=typer.colors.RED)
         raise typer.Exit(1) from e
-    typer.secho(f"Created organization: {_display_name(org.name)}", fg=typer.colors.GREEN)
-    if mdm_url:
-        typer.echo(f"  MDM URL: {redact_url(mdm_url)}")
-    if checkin_url:
-        typer.echo(f"  Check-in URL: {redact_url(checkin_url)}")
-    if mdm_topic:
-        typer.echo(f"  MDM Topic: {_display_org_id(mdm_topic)}")
-    if org.wifi_config_path:
-        typer.echo(f"  WiFi Config: {redact_path(org.wifi_config_path)}")
+    typer.secho(f"Created organization: {_display_name(result.name)}", fg=typer.colors.GREEN)
+    if result.mdm_url:
+        typer.echo(f"  MDM URL: {redact_url(result.mdm_url)}")
+    if result.checkin_url:
+        typer.echo(f"  Check-in URL: {redact_url(result.checkin_url)}")
+    if result.mdm_topic:
+        typer.echo(f"  MDM Topic: {_display_org_id(result.mdm_topic)}")
+    if result.wifi_config_path:
+        typer.echo(f"  WiFi Config: {redact_path(result.wifi_config_path)}")
 
 
 @org_app.command("delete")
 def org_delete(name: str = typer.Option(..., "--name")):
     """Delete organization."""
     manager = OrganizationManager()
-    if manager.delete_org(name):
-        typer.secho(f"Deleted organization: {_display_name(name)}", fg=typer.colors.GREEN)
-    else:
+    try:
+        delete_org(manager, name)
+    except OrgNotFoundError:
         typer.secho(f"Organization not found: {_display_name(name)}", fg=typer.colors.RED)
+        return
+    typer.secho(f"Deleted organization: {_display_name(name)}", fg=typer.colors.GREEN)
 
 
 @org_app.command("set-cert")
@@ -883,16 +899,18 @@ def org_import(
     """Import organization from Apple Configurator .organization file, directory, or zip."""
     manager = OrganizationManager()
     try:
-        org = manager.import_org(path, password or "password")
-        typer.secho(f"Imported: {_display_name(org.name)}", fg=typer.colors.GREEN)
-        typer.echo(f"  Cert: {'Yes' if org.cert_path else 'No'}")
-        typer.echo(f"  Key: {'Yes' if org.key_path else 'No'}")
-        if org.org_id:
-            typer.echo(f"  ID: {org.org_id}")
+        org = import_org(manager, path, password)
     except ValueError as e:
         typer.secho(f"Import failed: {sanitize_text(str(e))}", fg=typer.colors.RED)
+        return
     except Exception as e:
         typer.secho(f"Import failed: {sanitize_text(str(e))}", fg=typer.colors.RED)
+        return
+    typer.secho(f"Imported: {_display_name(org.name)}", fg=typer.colors.GREEN)
+    typer.echo(f"  Cert: {'Yes' if org.cert_path else 'No'}")
+    typer.echo(f"  Key: {'Yes' if org.key_path else 'No'}")
+    if org.org_id:
+        typer.echo(f"  ID: {org.org_id}")
 
 
 @org_app.command("import-mobileconfig")
@@ -902,16 +920,18 @@ def org_import_mobileconfig(
     """Import organization from MDM .mobileconfig file."""
     manager = OrganizationManager()
     try:
-        org = manager.import_mobileconfig(path)
-        typer.secho(f"Imported: {_display_name(org.name)}", fg=typer.colors.GREEN)
-        typer.echo(f"  MDM URL: {redact_url(org.mdm_url) if org.mdm_url else 'Not set'}")
-        typer.echo(f"  Check-in URL: {redact_url(org.checkin_url) if org.checkin_url else 'Not set'}")
-        typer.echo(f"  Cert: {'Yes' if org.cert_path else 'No'}")
-        typer.echo(f"  Key: {'Yes' if org.key_path else 'No'}")
+        org = import_mobileconfig(manager, path)
     except ValueError as e:
         typer.secho(f"Import failed: {sanitize_text(str(e))}", fg=typer.colors.RED)
+        return
     except Exception as e:
         typer.secho(f"Import failed: {sanitize_text(str(e))}", fg=typer.colors.RED)
+        return
+    typer.secho(f"Imported: {_display_name(org.name)}", fg=typer.colors.GREEN)
+    typer.echo(f"  MDM URL: {redact_url(org.mdm_url) if org.mdm_url else 'Not set'}")
+    typer.echo(f"  Check-in URL: {redact_url(org.checkin_url) if org.checkin_url else 'Not set'}")
+    typer.echo(f"  Cert: {'Yes' if org.cert_path else 'No'}")
+    typer.echo(f"  Key: {'Yes' if org.key_path else 'No'}")
 
 
 @org_app.command("set-wifi")
@@ -926,34 +946,23 @@ def org_set_wifi(
     Example:
         ios-enroll org set-wifi --name "Capital Candy Company" --path wifi.mobileconfig
     """
+    from apple_device_cli.cli_actions import WifiConfigInvalidError, WifiConfigNotFoundError
+
     manager = OrganizationManager()
-    org = manager.get_org(name)
-    if not org:
+    try:
+        result = set_org_wifi(manager, name, path)
+    except OrgNotFoundError:
         typer.secho(f"Organization not found: {name}", fg=typer.colors.RED)
         raise typer.Exit(1)
-
-    wifi_path = Path(path)
-    if not wifi_path.exists():
+    except WifiConfigNotFoundError:
         typer.secho(f"WiFi config file not found: {redact_path(path)}", fg=typer.colors.RED)
         raise typer.Exit(1)
-
-    try:
-        with open(wifi_path, "rb") as f:
-            plistlib.load(f)
-    except (OSError, plistlib.InvalidFileException):
+    except WifiConfigInvalidError:
         typer.secho(f"Invalid mobileconfig: {redact_path(path)} is not a valid plist", fg=typer.colors.RED)
         raise typer.Exit(1)
 
-    org_dir = manager.orgs_dir / manager._sanitize_name(name)
-    dest_wifi = org_dir / "wifi.mobileconfig"
-    shutil.copy(wifi_path, dest_wifi)
-
-    # Update org
-    org.wifi_config_path = str(dest_wifi)
-    org.save(org_dir, skip_copy=True)
-
-    typer.secho(f"WiFi config attached to: {_display_name(org.name)}", fg=typer.colors.GREEN)
-    typer.echo(f"  File: {redact_path(dest_wifi)}")
+    typer.secho(f"WiFi config attached to: {_display_name(result.name)}", fg=typer.colors.GREEN)
+    typer.echo(f"  File: {redact_path(result.wifi_config_path)}")
 
 
 @org_app.command("export")
@@ -982,7 +991,7 @@ def org_generate(
     then saves the org with the specified MDM server configuration.
 
     Example:
-        ios-enroll org generate --name "My Org" --mdm-url https://mdm.example.com/mdm \\
+        ios-enroll org generate --name "My Org" --mdm-url https://mdm.example.com/mdm \
             --checkin-url https://mdm.example.com/checkin --mdm-topic com.example.mdm
     """
     manager = OrganizationManager()
@@ -991,37 +1000,24 @@ def org_generate(
         if not typer.confirm(f"Organization '{name}' already has a cert/key. Overwrite?"):
             return
 
-    cert_der, key_der = generate_org_identity(name, valid_days)
-
-    org_dir = manager.orgs_dir / manager._sanitize_name(name)
-    if org_dir.exists():
-        shutil.rmtree(org_dir)
-    org_dir.mkdir(parents=True, exist_ok=True)
-
-    with open(org_dir / "cert.der", "wb") as f:
-        f.write(cert_der)
-    with open(org_dir / "key.der", "wb") as f:
-        f.write(key_der)
-
-    org = Organization(
+    result = generate_org(
+        manager=manager,
         name=name,
         org_id=org_id,
         mdm_url=mdm_url,
         checkin_url=checkin_url,
         mdm_topic=mdm_topic,
         mdm_description=mdm_description,
-        cert_path=str(org_dir / "cert.der"),
-        key_path=str(org_dir / "key.der"),
+        valid_days=valid_days,
     )
-    org.save(org_dir, skip_copy=True)
 
-    typer.secho(f"Generated identity for: {_display_name(name)}", fg=typer.colors.GREEN)
-    if mdm_url:
-        typer.echo(f"  MDM URL: {redact_url(mdm_url)}")
-    if checkin_url:
-        typer.echo(f"  Check-in URL: {redact_url(checkin_url)}")
-    if mdm_topic:
-        typer.echo(f"  MDM Topic: {_display_org_id(mdm_topic)}")
+    typer.secho(f"Generated identity for: {_display_name(result.name)}", fg=typer.colors.GREEN)
+    if result.mdm_url:
+        typer.echo(f"  MDM URL: {redact_url(result.mdm_url)}")
+    if result.checkin_url:
+        typer.echo(f"  Check-in URL: {redact_url(result.checkin_url)}")
+    if result.mdm_topic:
+        typer.echo(f"  MDM Topic: {_display_org_id(result.mdm_topic)}")
 
 
 @enroll_app.command("make-supervised")

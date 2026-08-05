@@ -77,8 +77,8 @@ ios-enroll org generate --name "My Org"                  # Generate supervising 
 ios-enroll org set-cert --name "My Org" -C cert.der      # Set certificate
 ios-enroll org set-key --name "My Org" -K key.der        # Set private key
 ios-enroll org set-mdm-url --name "My Org" --mdm-url <URL>  # Set MDM URL
-ios-enroll org set-checkin-url --name "My Org" <URL>        # Set check-in URL
-ios-enroll org set-mdm-topic --name "My Org" <topic>        # Set MDM topic
+ios-enroll org set-checkin-url --name "My Org" --checkin-url <URL>   # Set check-in URL
+ios-enroll org set-mdm-topic --name "My Org" --mdm-topic <topic>     # Set MDM topic
 ios-enroll org import-mobileconfig --path <file>             # Import from MDM .mobileconfig
 ios-enroll org set-wifi --name "My Org" --wifi-config <file> # Attach WiFi config
 ```
@@ -98,6 +98,11 @@ ios-enroll enroll validate                                               # Valid
 
 ```bash
 ios-enroll --version                                     # Show version
+ios-enroll --gui                                         # Launch the GUI
+ios-enroll-gui                                           # GUI entry script (same thing, separate console_scripts entry)
+
+# Optional install for the GUI
+pip install 'ios-enroll[gui]'    # or: uv tool install 'ios-enroll[gui]'
 ```
 
 ## Organization Storage

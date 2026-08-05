@@ -201,8 +201,11 @@ enrollmentapp/
 │   └── orgs/               # Organization management (manager, identity)
 ├── tests/                  # pytest test suite
 ├── docs/                   # Project documentation
-│   └── ENROLLMENT_FLOWS.md # Enrollment flow architecture
+│   ├── ENROLLMENT_FLOWS.md # Enrollment flow architecture
+│   └── INSTALL_WINDOWS.md  # Windows install + GUI launch guide
 ├── CHANGELOG.md            # Release history
 ├── AGENTS.md               # Developer reference
-├── scripts/                # Utility scripts
+├── build.sh                # Linux native build (Nuitka)
+├── build_nuitka.py         # Cross-platform build entrypoint (used by build.sh + build_windows.bat)
+├── build_windows.bat       # Windows native build (Nuitka + MSVC)
 ```

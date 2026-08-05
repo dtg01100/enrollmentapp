@@ -1,7 +1,5 @@
 # ios-enroll AGENTS.md
 
-**Version:** 1.1
-**Date:** 2026-06-12
 **Purpose:** Technical reference for ios-enroll project development
 
 ---
@@ -29,6 +27,20 @@ python -m apple_device_cli.cli
 # Test (PYTHONPATH optional — pyproject.toml sets pythonpath = ["src"])
 PYTHONPATH=src python -m pytest tests/ -v
 ```
+
+### Optional Extras
+
+The project has two optional dependency groups in `pyproject.toml`:
+
+```bash
+# PySide6 GUI (ios-enroll-gui, --gui flag)
+pip install '.[gui]'
+
+# Native onefile builds via Nuitka
+pip install '.[build]'
+```
+
+Both are optional at runtime — `ios-enroll` works without them.
 
 ---
 
@@ -189,6 +201,9 @@ class OrganizationManager:
     def save_org(org: Organization, overwrite: bool = False)
     def delete_org(name: str) -> bool
     def import_org(path, password="password") -> Organization
+    def read_wifi_profile(name: str) -> dict | None:  # NEW since 1.1.0
+        """Read SSID/password/encryption from the org's wifi.mobileconfig.
+        Returns None if no wifi_config_path or file is unreadable."""
     def import_mobileconfig(self, path: str | Path) -> Organization
     def export_org(name, dest_path) -> bool
 ```
@@ -302,7 +317,7 @@ uv tool install .
 ios-enroll device list
 
 # Develop with tests
-cd /var/home/dlafreniere/projects/enrollmentapp
+cd /var/mnt/Disk2/projects/enrollmentapp
 source .venv/bin/activate
 PYTHONPATH=src python -m pytest tests/ -v
 

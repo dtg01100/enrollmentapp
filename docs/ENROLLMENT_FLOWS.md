@@ -81,12 +81,12 @@ after device reboot. Works without keybag but requires device to go through setu
 
 | Function | Location | Purpose |
 |----------|----------|---------|
-| `do_supervised_pairing()` | `supervised.py:433` | Core async supervision implementation |
-| `make_supervised()` | `supervised.py:475` | Sync wrapper for `do_supervised_pairing` |
-| `erase_device_for_reenrollment()` | `supervised.py:891` | Clear cloud config from device |
-| `get_device_enrollment_state()` | `supervised.py:981` | Read back current enrollment state |
-| `validate_enrollment_prerequisites()` | `supervised.py:910` | Check cert/key/org/MDM before enrolling |
-| `interactive_enroll()` | `cli.py:164` | Guided CLI workflow (step-by-step) |
+| `do_supervised_pairing()` | `supervised.py:449` | Core async supervision implementation |
+| `make_supervised()` | `supervised.py:827` | Sync wrapper for `do_supervised_pairing` |
+| `erase_device_for_reenrollment()` | `supervised.py:946` | Clear cloud config from device |
+| `get_device_enrollment_state()` | `supervised.py:1036` | Read back current enrollment state |
+| `validate_enrollment_prerequisites()` | `supervised.py:965` | Check cert/key/org/MDM before enrolling |
+| `interactive_enroll()` | `cli.py:197` | Guided CLI workflow (step-by-step) |
 
 ## Testing
 

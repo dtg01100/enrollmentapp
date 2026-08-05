@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-05
+
+### Added
+- **PySide6 GUI**: New optional graphical interface via the `[gui]` extra (`pip install 'ios-enroll[gui]'`).
+  Launch with `ios-enroll --gui` or the standalone `ios-enroll-gui` script. Provides interactive
+  device list, organization picker, enrollment form, and connection dialogs. Backed by
+  `apple_device_cli.gui_qt` with PySide6 imported lazily so headless installs still work.
+- **GUI enrollment form**: WiFi SSID/password/encryption auto-populated from selected org's
+  `wifi.mobileconfig` via the new `OrganizationManager.read_wifi_profile()` helper.
+- **`--gui` CLI flag**: Launch the GUI directly from the CLI without going through
+  `python -m apple_device_cli.gui_qt`.
+- **`ios-enroll-gui` console script**: Separate entry point registered in `pyproject.toml`,
+  mirrors `ios-enroll` but launches the GUI.
+- **Nuitka per-target build extras**: `[build]` extra added (`nuitka`, `ordered-set`, `zstandard`)
+  with per-target extras gating (`gui` builds also include `PySide6`). Cross-platform build
+  pipeline produces native onefile binaries for both `ios-enroll` and `ios-enroll-gui`.
+- **GitHub Actions CI**: `.github/workflows/build.yml` builds Linux + Windows artifacts on
+  every push; Windows job builds `ios-enroll.exe` and `ios-enroll-gui.exe` via MSVC.
+- **Windows install guide**: `docs/INSTALL_WINDOWS.md` covering Python install, iTunes /
+  Apple Mobile Device Service, libusb, and the GUI launch path.
+
 ### Bug Fixes
 - **Re-enrollment exit code**: `enroll re-enroll` now prints error message and exits with code 1 on failure
 - **Keybag cleanup**: Sensitive keybag files are now deleted after enrollment completes (ensured via `finally` block)
@@ -14,20 +35,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Re-enrollment polling**: Device reconnection now polled instead of fixed 30-second sleep
 - **State rename**: `is_mdm_managed` renamed to `was_mandatorily_unpaired` for accuracy
 - **Dead code removal**: Unused `enrollment/flows.py` and associated test files deleted
+- **Build script defaults**: `build_windows.bat` now defaults to `windows` target (was `all` -> Linux ELF), and `python build_nuitka.py all` now means "all builds for the current platform" (was invoking MinGW cross-compile on Linux CI). Affects CI job correctness.
+- **Install guide paths**: `docs/INSTALL_WINDOWS.md` artifact paths corrected to match actual Nuitka `--output-filename` behavior (`dist\ios-enroll.exe`, not `dist\ios-enroll\ios-enroll.exe`). AV section corrected (Nuitka, not PyInstaller).
+- **Friendly PySide6 hint**: `ios-enroll --gui` / `ios-enroll-gui` on a system without PySide6 now shows a single-line install hint instead of a top-level `ImportError` traceback.
+- **Bare-mock spec enforcement**: AGENTS.md documents the bare-`MagicMock()` antipattern; all class-shaped mocks in the test suite now use `spec=RealClass`.
 
 ### Changed
 - **fcntl locking**: `save_org()` and `import_mobileconfig()` now use cross-process `fcntl.flock` to prevent races
 - **Keybag cleanup**: Extracted `_cleanup_keybag()` helper, wrapped body in `try/finally` to guarantee cleanup
 - **TemporaryDirectory**: Removed empty wrapper around supervised pairing body
+- **Cross-platform org lock**: `OrganizationManager` now uses `fcntl`/`msvcrt` cross-platform wrappers for org-file locking (no behavior change on Linux/macOS, enables concurrent-safety on Windows).
+- **Pytest conftest hard-fail**: `tests/conftest.py` now raises `ImportError` at load time if `pymobiledevice3` isn't installed (was: silent skip).
 
 ### Docs
 - **Activation state string**: Documented that `"Unactivated"` is a shared pymobiledevice3 convention
 - **Skip pane mapping**: Documented `apple-pay` → `Payment` mapping per Apple's `skipkeys.yaml`
 - **Architecture**: Noted `flows.py` deletion in module docs
+- **AGENTS.md mock-spec rule**: New anti-pattern table + dedicated "Mock Spec'ing" section explaining why bare `MagicMock()` is forbidden and how to use `spec=` correctly.
 
 ### Testing
 - **Coverage**: Added tests for lock acquisition on import, keybag helper in isolation, concurrent save+import contention, cert-load exception cleanup, and re-enroll success path
 - **Test reliability**: Fixed timing-window flakiness in concurrent lock test using `threading.Event`
+- **Bare-mock conversion**: All class-shaped mocks in the existing test suite converted from bare `MagicMock()` to `spec=RealClass`.
 
 ## v1.0.0 (2026-05-27)
 

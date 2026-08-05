@@ -34,6 +34,12 @@ from apple_device_cli.core.redaction import (
     sanitize_text,
 )
 from apple_device_cli.core.exceptions import EnrollmentError
+from apple_device_cli.enrollment.supervised_actions import (
+    classify_cloud_config_apply_error,
+    decide_already_present_outcome,
+    decide_mdm_install_retry,
+    decide_post_reconnect_verification,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -603,35 +609,47 @@ async def do_supervised_pairing(
                     device_disconnected = True
         except Exception as e:
             if isinstance(e, CloudConfigurationAlreadyPresentError):
-                # Verify that the existing config matches what we want
+                # Verify that the existing config matches what we want.
+                # The pure decision lives in supervised_actions; the wrapper
+                # does the I/O (read existing config) and surfaces messages.
+                existing_config: dict[str, Any] | None = None
+                check_err: Exception | None = None
                 try:
                     async with MobileConfigService(lockdown) as svc:
                         existing_config = await _maybe_await(svc.get_cloud_configuration())
-                        if existing_config and _cloud_config_matches(existing_config, cloud_config_payload):
-                            _progress("Matching cloud config already present - enrollment will proceed via Setup Assistant")
-                            config_set = True
-                        else:
-                            _progress("Cloud config already present but does NOT match desired configuration.")
-                            errors.append("Cloud configuration mismatch: device already has different supervision settings")
-                            config_set = False
-                except Exception as check_err:
-                    _progress(f"Could not verify existing cloud config: {check_err}")
-                    errors.append(f"Cloud configuration already present and could not be verified: {check_err}")
-                    config_set = False
+                except Exception as err:
+                    check_err = err
 
-                if config_set and mdm_url:
-                    _progress(f"MDM enrollment URL in existing cloud config: {redact_url(mdm_url)}")
-                    if mdm_checkin_url:
-                        _progress(f"Check-in URL: {redact_url(mdm_checkin_url)}")
-                    if mdm_topic:
-                        _progress(f"MDM Topic: {redact_org_identifier(mdm_topic)}")
+                decision = decide_already_present_outcome(
+                    existing_config=existing_config,
+                    desired_payload=cloud_config_payload,
+                    check_error=check_err,
+                    mdm_url=mdm_url,
+                    mdm_checkin_url=mdm_checkin_url,
+                    mdm_topic=mdm_topic,
+                    matches_fn=_cloud_config_matches,
+                    format_url_fn=redact_url,
+                    format_topic_fn=redact_org_identifier,
+                )
+                for msg in decision.progress_messages:
+                    _progress(msg)
+                errors.extend(decision.error_messages)
+                config_set = decision.config_set
+                if decision.mdm_enrolled:
                     mdm_enrolled = True
-            elif isinstance(e, (BrokenPipeError, ConnectionResetError, OSError)):
-                _progress("Broken pipe during config - device may be applying, will reconnect...")
-                config_set = True
-                device_disconnected = True
             else:
-                errors.append(_format_exception_message("Failed to configure", e))
+                state = classify_cloud_config_apply_error(
+                    exception=e,
+                    is_already_present_fn=lambda exc: isinstance(
+                        exc, CloudConfigurationAlreadyPresentError
+                    ),
+                )
+                if state.device_disconnected:
+                    _progress("Broken pipe during config - device may be applying, will reconnect...")
+                    config_set = True
+                    device_disconnected = True
+                else:
+                    errors.append(_format_exception_message("Failed to configure", e))
 
         # Step 4: Reconnect if device disconnected during config
         if device_disconnected and config_set:
@@ -640,15 +658,24 @@ async def do_supervised_pairing(
             if fresh_lockdown is not None:
                 lockdown = fresh_lockdown
                 _progress("Device reconnected successfully")
+                # Read cloud config on the fresh lockdown. The pure decision
+                # (supervised_confirmed + log message) lives in supervised_actions.
+                post_reconnect_config: dict[str, Any] | None = None
+                post_reconnect_err: Exception | None = None
                 try:
                     async with MobileConfigService(lockdown) as svc:
-                        cloud_config = await _maybe_await(svc.get_cloud_configuration())
-                        if isinstance(cloud_config, dict) and cloud_config.get("IsSupervised"):
-                            _progress(f"Supervision confirmed: {redact_name(cloud_config.get('OrganizationName'))}")
-                        else:
-                            _progress("Supervision not yet confirmed, continuing with WiFi and MDM install")
+                        post_reconnect_config = await _maybe_await(svc.get_cloud_configuration())
                 except Exception as e:
-                    _progress(f"Could not verify supervision after reconnect: {e}")
+                    post_reconnect_err = e
+                verification = decide_post_reconnect_verification(
+                    cloud_config=post_reconnect_config,
+                    fetch_error=post_reconnect_err,
+                )
+                # Redact the org name in the success message (presentation).
+                if verification.supervised_confirmed and isinstance(post_reconnect_config, dict):
+                    _progress(f"Supervision confirmed: {redact_name(post_reconnect_config.get('OrganizationName'))}")
+                else:
+                    _progress(verification.progress_message)
                 device_disconnected = False
             else:
                 errors.append("Device did not reconnect within timeout after supervision")
@@ -763,14 +790,21 @@ async def do_supervised_pairing(
                             _progress("MDM enrollment profile installed")
                             break
                         except Exception as e:
-                            error_msg = _format_mobileconfig_error("MDM profile install failed", e)
-                            if attempt < max_attempts and _is_transient_mobileconfig_network_error(e):
-                                _progress(f"{error_msg} Retrying shortly ({attempt}/{max_attempts})...")
+                            decision = decide_mdm_install_retry(
+                                attempt=attempt,
+                                max_attempts=max_attempts,
+                                exception=e,
+                                is_transient_fn=_is_transient_mobileconfig_network_error,
+                                format_fn=_format_mobileconfig_error,
+                                fail_on_mdm_error=fail_on_mdm_error,
+                            )
+                            if decision.action == "retry":
+                                _progress(decision.error_message)
                                 await asyncio.sleep(5)
                                 continue
-                            if fail_on_mdm_error:
-                                errors.append(error_msg)
-                            _progress(error_msg)
+                            if decision.action == "record_error":
+                                errors.append(decision.error_message)
+                            _progress(decision.error_message)
                             break
                 else:
                     errors.append(f"MDM mobileconfig not found: {mdm_mobileconfig_path or mdm_mobileconfig}")

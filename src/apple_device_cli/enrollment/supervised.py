@@ -249,6 +249,68 @@ def _get_create_using_usbmux():
     return create_using_usbmux
 
 
+async def _pair_then_retry_connect(
+    udid: str,
+    connect,
+    ensure_pairing,
+    wait_for_udid,
+) -> Any:
+    """Run ``connect(serial=udid)``; on ``ConnectionError``, pair and retry once.
+
+    Self-heals the iOS 26 (and any future) "host is not trusted" failure:
+    on the first ``ConnectionError`` (the symptom of an unpaired host) we
+    call ``ensure_pairing(udid)`` to drive ``pymobiledevice3 lockdown pair``,
+    wait briefly for the device to reappear in usbmux, then retry the
+    connect exactly once.
+
+    Parameters are passed in (not imported) so the wrapper is trivially
+    unit-testable without pymobiledevice3, and so each call site can use
+    whichever polling/timeout knobs it wants.
+
+    Args:
+        udid: Target device UDID.
+        connect: Callable returning an awaitable that yields a lockdown
+            object (typically ``create_using_usbmux``).
+        ensure_pairing: Callable that pairs the host with the device.
+            Best-effort: it should swallow its own errors and log a warning,
+            because we still want to surface the original ConnectionError
+            if the retry also fails.
+        wait_for_udid: Callable that returns ``True`` when the device is
+            visible via usbmux. Used to give the device a moment to come
+            back after the pair prompt. MUST be sync (matches
+            ``wait_for_udid_in_usbmux`` in device.connection).
+
+    Returns:
+        The lockdown object returned by ``connect`` (first or second call).
+
+    Raises:
+        ConnectionError: Re-raises the ORIGINAL first-attempt error if the
+            retry also fails or the device never reappears in usbmux. We
+            never re-raise the second-attempt error or the pair error —
+            they would mask the real diagnostic chain.
+        Any other exception from the first attempt is passed through
+            unchanged (e.g. ``ValueError`` for an invalid UDID is NOT a
+            pairing problem and we must not try to pair to fix it).
+    """
+    try:
+        return await connect(serial=udid)
+    except ConnectionError as original_error:
+        # First attempt failed with a connection error — this is the iOS 26
+        # "host not trusted" symptom. Best-effort pair, wait, then retry.
+        ensure_pairing(udid)
+
+        if not wait_for_udid(udid):
+            # Device didn't reappear in usbmux. A retry would just fail
+            # identically — surface the original error.
+            raise original_error
+
+        try:
+            return await connect(serial=udid)
+        except ConnectionError:
+            # Retry also failed. Preserve the original diagnostic.
+            raise original_error
+
+
 def _get_mobile_activation_service():
     """Get MobileActivationService class (lazy import)."""
     from pymobiledevice3.services.mobile_activation import MobileActivationService
@@ -526,21 +588,39 @@ async def do_supervised_pairing(
             errors=[f"Private key not found: {key_path}"],
         )
 
-    # Step 1: Connect to device
+    # Step 1: Connect to device.
+    # On iOS 26 the host is not auto-trusted — a plain create_using_usbmux
+    # fails with a ConnectionError. We self-heal by pairing and retrying
+    # via ``_pair_then_retry_connect``; the original (non-trust) errors
+    # bubble up unchanged.
     _progress("Connecting to device...")
-    try:
-        if udid:
-            lockdown = await create_using_usbmux(serial=udid)
-            device_udid = udid
-        else:
+    from apple_device_cli.device.connection import (
+        ensure_device_pairing,
+        wait_for_udid_in_usbmux,
+    )
+    if udid:
+        # The user asked for a specific device. Try the specific-UDID
+        # connect; on ConnectionError (most often: "host not trusted"
+        # on iOS 26), pair and retry the same-UDID connect exactly once.
+        # We deliberately do NOT fall back to "any device" here — silently
+        # operating on a different device than the one the user named
+        # would erase/enroll the wrong iPad.
+        lockdown = await _pair_then_retry_connect(
+            udid=udid,
+            connect=create_using_usbmux,
+            ensure_pairing=ensure_device_pairing,
+            wait_for_udid=wait_for_udid_in_usbmux,
+        )
+        device_udid = udid
+    else:
+        # No specific UDID — fall back to "any connected device" as before.
+        # Pair-then-retry is not safe here because we'd be guessing which
+        # device to pair; the user is expected to re-run with --udid if
+        # the first attempt fails.
+        try:
             lockdown = await create_using_usbmux()
             device_udid = getattr(lockdown, "udid", None)
-    except ConnectionError:
-        if udid:
-            # Fallback if serial-specific connect failed for some reason
-            lockdown = await create_using_usbmux()
-            device_udid = getattr(lockdown, "udid", udid) or udid
-        else:
+        except ConnectionError:
             raise
 
     # Step 2: Check and perform activation if needed
@@ -912,20 +992,25 @@ async def _erase_device_for_reenrollment_async(udid: str | None = None):
     """
     create_using_usbmux = _get_create_using_usbmux()
     MobileConfigService = _get_mobile_config_service()
+    from apple_device_cli.device.connection import (
+        ensure_device_pairing,
+        wait_for_udid_in_usbmux,
+    )
 
-    try:
-        if udid:
-            lockdown = await create_using_usbmux(serial=udid)
-        else:
+    if udid:
+        # Same iOS 26 self-heal as do_supervised_pairing: pair-and-retry on
+        # the specific UDID. No fallback to "any device" — erasing the
+        # wrong iPad is unrecoverable.
+        lockdown = await _pair_then_retry_connect(
+            udid=udid,
+            connect=create_using_usbmux,
+            ensure_pairing=ensure_device_pairing,
+            wait_for_udid=wait_for_udid_in_usbmux,
+        )
+    else:
+        try:
             lockdown = await create_using_usbmux()
-    except ConnectionError:
-        if udid:
-            # Fallback for older devices or usbmuxd edge cases
-            lockdown = await create_using_usbmux()
-            actual_udid = getattr(lockdown, "udid", udid) or udid
-            if udid and actual_udid != udid:
-                raise EnrollmentError(f"Could not connect to specified device {udid}")
-        else:
+        except ConnectionError:
             raise
 
     async with MobileConfigService(lockdown) as svc:

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable
@@ -28,6 +29,22 @@ from apple_device_cli.enrollment.supervised import (
 )
 from apple_device_cli.orgs.identity import generate_org_identity
 from apple_device_cli.orgs.manager import Organization, OrganizationManager
+from apple_device_cli.restore.cache import (
+    cache_state,
+    resolve_cache_dir,
+    write_cache_config,
+)
+from apple_device_cli.restore.engine import (
+    ProgressEvent,
+    detect_device_mode,
+    download_ipsw,
+    enter_recovery_mode,
+    exit_recovery_mode,
+    get_product_type_for_udid,
+    list_signed_versions,
+    parse_ipsw_url,
+    restore_device as engine_restore_device,
+)
 
 
 # PySide6 is an optional dependency (``[gui]`` extra). It is imported lazily
@@ -36,12 +53,13 @@ from apple_device_cli.orgs.manager import Organization, OrganizationManager
 # apple_device_cli.gui_qt`` surface a friendly install hint via the
 # ``RuntimeError`` they raise — instead of a top-level ImportError traceback.
 if TYPE_CHECKING:
-    from PySide6.QtCore import QEvent, QThread, Signal, Slot
-    from PySide6.QtWidgets import (
+    from PySide6.QtCore import QEvent, Qt, QThread, Signal, Slot  # noqa: F401
+    from PySide6.QtWidgets import (  # noqa: F401
         QApplication,
         QComboBox,
         QDialog,
         QDialogButtonBox,
+        QFileDialog,
         QFormLayout,
         QHBoxLayout,
         QLabel,
@@ -50,6 +68,7 @@ if TYPE_CHECKING:
         QListWidgetItem,
         QMainWindow,
         QMessageBox,
+        QProgressBar,
         QPushButton,
         QTabWidget,
         QTextEdit,
@@ -135,19 +154,22 @@ def _require_pyside6() -> None:
     # calls don't need to re-define classes or re-import.
     if "EnrollmentApp" in globals():
         return
-    global WorkerThread, EnrollmentApp
-    global QEvent, QThread, Signal, Slot
+    global WorkerThread, StreamingWorkerThread, EnrollmentApp
+    global QEvent, Qt, QThread, Signal, Slot
     global QApplication
-    global QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout
+    global QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout
+    global QHBoxLayout
     global QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow
-    global QMessageBox, QPushButton, QTabWidget, QTextEdit, QVBoxLayout, QWidget
+    global QMessageBox, QProgressBar, QPushButton, QTabWidget, QTextEdit
+    global QVBoxLayout, QWidget
     try:
-        from PySide6.QtCore import QEvent, QThread, Signal, Slot  # noqa: F401
+        from PySide6.QtCore import QEvent, Qt, QThread, Signal, Slot  # noqa: F401
         from PySide6.QtWidgets import (  # noqa: F401
             QApplication,
             QComboBox,
             QDialog,
             QDialogButtonBox,
+            QFileDialog,
             QFormLayout,
             QHBoxLayout,
             QLabel,
@@ -156,6 +178,7 @@ def _require_pyside6() -> None:
             QListWidgetItem,
             QMainWindow,
             QMessageBox,
+            QProgressBar,
             QPushButton,
             QTabWidget,
             QTextEdit,
@@ -187,10 +210,78 @@ def _require_pyside6() -> None:
                 self.completed.emit(self.result, self.error)
 
 
+    class StreamingWorkerThread(QThread):
+        """Run a subprocess and stream stdout to a callback.
+
+        Distinct from ``WorkerThread`` (which wraps a single callable):
+        this one launches an external command (e.g. ``idevicerestore``)
+        and reads its stdout line by line, invoking ``on_progress`` for
+        each line. When the process exits, ``on_finished`` is called
+        once with a ``{"returncode": int, "stdout": str, "stderr": str}``
+        dict (or an exception, if the launch itself failed).
+
+        The callbacks are wired to the ``progress`` /
+        ``finished_with_result`` signals in the constructor, so they are
+        delivered on the GUI thread (queued) while the blocking read
+        loop runs on this QThread.
+
+        NOT for use with a process the user wants to cancel — the
+        restore engine does not support mid-restore cancellation (see
+        the restore spec).
+        """
+
+        progress = Signal(str)
+        finished_with_result = Signal(object, object)  # result, error
+
+        def __init__(
+            self,
+            cmd: list[str],
+            on_progress: Callable[[str], None],
+            on_finished: Callable[[Any, Exception | None], None],
+            parent=None,
+        ) -> None:
+            super().__init__(parent)
+            self._cmd = cmd
+            self._result: dict | None = None
+            self._error: Exception | None = None
+            self._proc: subprocess.Popen | None = None
+            self.progress.connect(on_progress)
+            self.finished_with_result.connect(on_finished)
+
+        def run(self) -> None:
+            try:
+                self._proc = subprocess.Popen(
+                    self._cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+                stdout_lines: list[str] = []
+                assert self._proc.stdout is not None
+                for line in self._proc.stdout:
+                    stripped = line.rstrip("\n")
+                    stdout_lines.append(line)
+                    self.progress.emit(stripped)
+                self._proc.wait()
+                self._result = {
+                    "returncode": self._proc.returncode,
+                    "stdout": "".join(stdout_lines),
+                    "stderr": "",
+                }
+            except Exception as exc:  # noqa: BLE001
+                self._error = exc
+            finally:
+                self.finished_with_result.emit(self._result, self._error)
+
+
     class EnrollmentApp(QMainWindow):
         """Main PySide6 application window."""
 
         log_signal = Signal(str)
+        restore_log_signal = Signal(str)
+        restore_progress_signal = Signal(object)  # ProgressEvent
 
         def __init__(self) -> None:
             super().__init__()
@@ -201,9 +292,13 @@ def _require_pyside6() -> None:
             self._orgs: list[Organization] = []
             self._workers: list[QThread] = []
             self._request_token: int = 0
+            self._restore_ipsw_path: Path | None = None
+            self._restore_step_label: str | None = None
 
             self._setup_ui()
             self.log_signal.connect(self._append_log)
+            self.restore_log_signal.connect(self._append_restore_log)
+            self.restore_progress_signal.connect(self._on_restore_progress_event)
             self.enroll_org_combo.currentIndexChanged.connect(self._on_enroll_org_changed)
             self._log("GUI initialized. Connect an iOS device to begin.")
             self._load_initial_state()
@@ -223,10 +318,12 @@ def _require_pyside6() -> None:
             self.devices_tab = self._create_devices_tab()
             self.orgs_tab = self._create_orgs_tab()
             self.enroll_tab = self._create_enroll_tab()
+            self.restore_tab = self._create_restore_tab()
 
             self.tabs.addTab(self.devices_tab, "Devices")
             self.tabs.addTab(self.orgs_tab, "Organizations")
             self.tabs.addTab(self.enroll_tab, "Enrollment")
+            self.tabs.addTab(self.restore_tab, "Restore")
 
             log_group = QWidget()
             log_layout = QVBoxLayout(log_group)
@@ -351,11 +448,115 @@ def _require_pyside6() -> None:
 
             return widget
 
+        def _create_restore_tab(self) -> QWidget:
+            widget = QWidget()
+            layout = QVBoxLayout(widget)
+
+            form_layout = QFormLayout()
+
+            self.restore_device_combo = QComboBox()
+            self.restore_device_combo.currentIndexChanged.connect(self._on_restore_device_changed)
+            form_layout.addRow("Device:", self.restore_device_combo)
+
+            self.restore_product_type_label = QLabel("<select a device>")
+            form_layout.addRow("ProductType:", self.restore_product_type_label)
+
+            self.restore_device_mode_label = QLabel("—")
+            form_layout.addRow("Mode:", self.restore_device_mode_label)
+
+            cache_row = QHBoxLayout()
+            self.restore_cache_path_label = QLabel(str(resolve_cache_dir()))
+            cache_row.addWidget(self.restore_cache_path_label, 1)
+            cache_folder_btn = QPushButton("Cache folder...")
+            cache_folder_btn.clicked.connect(self._pick_cache_folder)
+            cache_row.addWidget(cache_folder_btn)
+            show_cache_btn = QPushButton("Show cache")
+            show_cache_btn.clicked.connect(self._show_cache)
+            cache_row.addWidget(show_cache_btn)
+            form_layout.addRow("Cache folder:", cache_row)
+
+            self.restore_versions_combo = QComboBox()
+            form_layout.addRow("iOS Version:", self.restore_versions_combo)
+
+            self.restore_refresh_versions_btn = QPushButton("Refresh versions")
+            self.restore_refresh_versions_btn.clicked.connect(self._refresh_versions)
+            self.restore_refresh_versions_btn.setEnabled(False)
+            form_layout.addRow(self.restore_refresh_versions_btn)
+
+            browse_ipsw_btn = QPushButton("Browse for .ipsw file...")
+            browse_ipsw_btn.clicked.connect(self._browse_ipsw)
+            form_layout.addRow(browse_ipsw_btn)
+
+            self.restore_ipsw_path_label = QLabel("<not selected>")
+            form_layout.addRow("IPSW file:", self.restore_ipsw_path_label)
+
+            layout.addLayout(form_layout)
+
+            buttons_layout = QHBoxLayout()
+            self.restore_refresh_devices_btn = QPushButton("Refresh Devices")
+            self.restore_refresh_devices_btn.clicked.connect(self._refresh_devices)
+            buttons_layout.addWidget(self.restore_refresh_devices_btn)
+
+            self.restore_start_btn = QPushButton("Start Restore")
+            self.restore_start_btn.clicked.connect(self._start_restore)
+            self.restore_start_btn.setEnabled(False)
+            buttons_layout.addWidget(self.restore_start_btn)
+
+            self.restore_enter_recovery_btn = QPushButton("Enter Recovery")
+            self.restore_enter_recovery_btn.clicked.connect(self._enter_recovery)
+            self.restore_enter_recovery_btn.setEnabled(False)
+            buttons_layout.addWidget(self.restore_enter_recovery_btn)
+
+            self.restore_exit_recovery_btn = QPushButton("Exit Recovery")
+            self.restore_exit_recovery_btn.clicked.connect(self._exit_recovery)
+            self.restore_exit_recovery_btn.setEnabled(False)
+            buttons_layout.addWidget(self.restore_exit_recovery_btn)
+
+            # Always enabled: a device in Recovery mode drops off the lockdown
+            # device list, so the selection-based Exit Recovery button above
+            # cannot reach it. This one scans the USB bus for recovery devices.
+            self.restore_exit_recovery_any_btn = QPushButton("Exit Recovery (any device)")
+            self.restore_exit_recovery_any_btn.clicked.connect(self._exit_recovery_any)
+            buttons_layout.addWidget(self.restore_exit_recovery_any_btn)
+
+            buttons_layout.addStretch()
+            layout.addLayout(buttons_layout)
+
+            self.restore_progress_bar = QProgressBar()
+            self.restore_progress_bar.setObjectName("restore_progress_bar")
+            self.restore_progress_bar.setMinimumHeight(18)
+            self.restore_progress_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            # Indeterminate + hidden until a restore starts; the bar switches
+            # to determinate on the first real progress event.
+            self.restore_progress_bar.setRange(0, 0)
+            self.restore_progress_bar.setFormat("Working...")
+            self.restore_progress_bar.setVisible(False)
+            layout.addWidget(self.restore_progress_bar)
+
+            layout.addWidget(QLabel("Restore log:"))
+            self.restore_log_text = QTextEdit()
+            self.restore_log_text.setReadOnly(True)
+            layout.addWidget(self.restore_log_text)
+
+            return widget
+
         def _log(self, message: str) -> None:
             self.log_signal.emit(message)
 
         def _append_log(self, message: str) -> None:
             self.log_text.append(message)
+
+        def _log_to_restore(self, message: str) -> None:
+            """Append ``message`` to the Restore tab's log panel.
+
+            Emits a signal (like ``_log``) so calls from a worker thread are
+            delivered on the GUI thread — direct ``QTextEdit`` access from a
+            QThread is unsafe.
+            """
+            self.restore_log_signal.emit(message)
+
+        def _append_restore_log(self, message: str) -> None:
+            self.restore_log_text.append(message)
 
         def _load_initial_state(self) -> None:
             self._refresh_devices()
@@ -425,8 +626,12 @@ def _require_pyside6() -> None:
         def _refresh_devices(self) -> None:
             self._log("Refreshing device list...")
             token = self._next_token()
+            buttons = [self.refresh_devices_btn]
+            restore_btn = getattr(self, "restore_refresh_devices_btn", None)
+            if restore_btn is not None:
+                buttons.append(restore_btn)
             worker = WorkerThread(list_devices)
-            self._run_worker(worker, self._on_devices_refreshed, [self.refresh_devices_btn], token=token)
+            self._run_worker(worker, self._on_devices_refreshed, buttons, token=token)
 
         @Slot(object, object)
         def _on_devices_refreshed(self, result: Any, error: Exception | None, token: int) -> None:
@@ -444,6 +649,8 @@ def _require_pyside6() -> None:
             if self._devices:
                 self.devices_list.setCurrentRow(0)
             self._update_enroll_udids()
+            self._populate_restore_device_combo()
+            self._update_mode_labels()
             self._log(f"Found {len(self._devices)} device(s).")
 
         def _next_token(self) -> int:
@@ -933,6 +1140,372 @@ def _require_pyside6() -> None:
             else:
                 self._log("Device cloud config erased. Ready for fresh enrollment.")
 
+        def _populate_restore_device_combo(self) -> None:
+            """Fill the Restore tab's device dropdown from ``self._devices``.
+
+            Stores the UDID as the item's userData so the selected item
+            resolves to a device without re-parsing display text.
+            """
+            self.restore_device_combo.blockSignals(True)
+            try:
+                self.restore_device_combo.clear()
+                for device in self._devices:
+                    self.restore_device_combo.addItem(
+                        f"{device.device_name}  ({device.udid})",
+                        userData=device.udid,
+                    )
+            finally:
+                self.restore_device_combo.blockSignals(False)
+            self._on_restore_device_changed(self.restore_device_combo.currentIndex())
+
+        def _on_restore_device_changed(self, index: int) -> None:
+            """Update the ProductType/Mode labels and gate the action buttons."""
+            self.restore_versions_combo.clear()
+            self.restore_start_btn.setEnabled(False)
+            self.restore_refresh_versions_btn.setEnabled(False)
+            has_device = index >= 0
+            self.restore_enter_recovery_btn.setEnabled(has_device)
+            self.restore_exit_recovery_btn.setEnabled(has_device)
+            if not has_device:
+                self.restore_product_type_label.setText("<select a device>")
+                self.restore_device_mode_label.setText("—")
+                return
+            udid = self.restore_device_combo.currentData()
+            device = next((d for d in self._devices if d.udid == udid), None)
+            if device is None:
+                self.restore_product_type_label.setText("<unknown>")
+                self._update_mode_labels()
+                return
+            product_type = getattr(device, "device_type", "") or ""
+            if product_type:
+                self.restore_product_type_label.setText(product_type)
+            else:
+                self.restore_product_type_label.setText("<unknown>")
+            # Always enable refresh: when the device list lacks a ProductType,
+            # _refresh_versions falls back to reading it from lockdown.
+            self.restore_refresh_versions_btn.setEnabled(True)
+            self._update_mode_labels()
+
+        def _update_mode_labels(self) -> None:
+            """Refresh the Restore tab's device-mode label.
+
+            Detects the USB mode (normal/recovery/restore/dfu/unknown) of the
+            currently selected device. Called after every device-list refresh
+            and device-selection change so the label tracks mode changes
+            (e.g. after entering/exiting recovery).
+            """
+            udid = self.restore_device_combo.currentData()
+            if not udid:
+                self.restore_device_mode_label.setText("—")
+                return
+            try:
+                mode = detect_device_mode(udid)
+            except Exception as exc:  # noqa: BLE001
+                self._log_to_restore(f"Could not detect device mode: {exc}")
+                mode = "unknown"
+            self.restore_device_mode_label.setText(mode)
+
+        def _refresh_versions(self) -> None:
+            udid = self.restore_device_combo.currentData()
+            if not udid:
+                QMessageBox.warning(self, "No device", "Select a device first.")
+                return
+            device = next((d for d in self._devices if d.udid == udid), None)
+            product_type = device.device_type if device and device.device_type else ""
+            if not product_type:
+                # The device list didn't carry a ProductType — ask lockdown directly.
+                self._log_to_restore(f"Reading ProductType from {udid}...")
+                worker = WorkerThread(lambda: get_product_type_for_udid(udid))
+                self._run_worker(
+                    worker,
+                    self._on_product_type_resolved,
+                    [self.restore_refresh_versions_btn],
+                )
+                return
+            self._load_versions(product_type)
+
+        @Slot(object, object)
+        def _on_product_type_resolved(self, result: Any, error: Exception | None) -> None:
+            if error:
+                self._log_to_restore(f"Could not read ProductType: {error}")
+                return
+            self._load_versions(str(result))
+
+        def _load_versions(self, product_type: str) -> None:
+            self.restore_product_type_label.setText(product_type)
+            self._log_to_restore(f"Fetching signed versions for {product_type}...")
+            worker = WorkerThread(lambda: list_signed_versions(product_type))
+            self._run_worker(
+                worker,
+                self._on_versions_refreshed,
+                [self.restore_refresh_versions_btn],
+            )
+
+        @Slot(object, object)
+        def _on_versions_refreshed(self, result: Any, error: Exception | None) -> None:
+            if error:
+                self._log_to_restore(f"Failed to list signed versions: {error}")
+                return
+            versions = result or []
+            self.restore_versions_combo.clear()
+            for version in versions:
+                self.restore_versions_combo.addItem(
+                    version.display_label, userData=version.url
+                )
+            self._log_to_restore(f"Found {len(versions)} signed version(s).")
+            if versions:
+                self.restore_versions_combo.setCurrentIndex(0)
+                if not self._restore_ipsw_path:
+                    self.restore_start_btn.setEnabled(True)
+
+        def _browse_ipsw(self) -> None:
+            filename, _ = QFileDialog.getOpenFileName(
+                self, "Choose IPSW file", "", "iOS IPSW (*.ipsw);;All Files (*)"
+            )
+            if not filename:
+                return
+            self._restore_ipsw_path = Path(filename)
+            self.restore_ipsw_path_label.setText(filename)
+            self.restore_versions_combo.setEnabled(False)
+            self.restore_start_btn.setEnabled(True)
+            self._log_to_restore(f"Using local IPSW: {filename}")
+
+        def _pick_cache_folder(self) -> None:
+            folder = QFileDialog.getExistingDirectory(
+                self, "Choose firmware cache folder", str(resolve_cache_dir())
+            )
+            if not folder:
+                return
+            try:
+                write_cache_config(Path(folder))
+            except Exception as exc:  # noqa: BLE001
+                self._log_to_restore(f"Failed to save cache folder: {exc}")
+                return
+            self.restore_cache_path_label.setText(folder)
+            self._log_to_restore(f"Cache folder set to {folder}")
+
+        def _show_cache(self) -> None:
+            state = cache_state(resolve_cache_dir())
+            self._log_to_restore(f"Cache: {state['path']}")
+            self._log_to_restore(f"  size: {state['size_bytes']:,} bytes")
+            self._log_to_restore(f"  IPSW count: {state['ipsw_count']}")
+            for name in state["ipsw_files"]:
+                self._log_to_restore(f"    - {name}")
+
+        def _start_restore(self) -> None:
+            udid = self.restore_device_combo.currentData()
+            if not udid:
+                QMessageBox.warning(self, "No device", "Select a device UDID.")
+                return
+
+            local_path = self._restore_ipsw_path
+            version_url = self.restore_versions_combo.currentData()
+            if local_path is not None:
+                if not local_path.is_file():
+                    QMessageBox.warning(
+                        self, "IPSW missing", f"IPSW file not found: {local_path}"
+                    )
+                    return
+                ipsw_path: Path | None = local_path
+            elif version_url:
+                parsed = parse_ipsw_url(version_url, device="")
+                if parsed is not None:
+                    self._log_to_restore(f"Restoring {parsed.display_label} ...")
+                ipsw_path = None
+            else:
+                QMessageBox.warning(
+                    self,
+                    "No IPSW",
+                    "Pick a signed version (Refresh versions) or a local .ipsw file.",
+                )
+                return
+
+            cache_dir = resolve_cache_dir()
+            if ipsw_path is None:
+                self._log_to_restore(f"Downloading {version_url} to {cache_dir} ...")
+
+            def on_progress(event: ProgressEvent) -> None:
+                # Runs on the worker thread — hand the event to the GUI thread
+                # via a queued signal (logging + QProgressBar are not thread-safe).
+                self.restore_progress_signal.emit(event)
+
+            def work() -> Any:
+                target = (
+                    ipsw_path
+                    if ipsw_path is not None
+                    else download_ipsw(version_url, cache_dir)
+                )
+                return engine_restore_device(
+                    udid=udid,
+                    ipsw_path=target,
+                    cache_dir=cache_dir,
+                    progress_callback=on_progress,
+                )
+
+            self._reset_restore_progress_bar()
+            self._log_to_restore(f"Restore starting for {udid} (cache: {cache_dir}).")
+            worker = WorkerThread(work)
+            self._run_worker(worker, self._on_restore_finished, [self.restore_start_btn])
+
+        def _reset_restore_progress_bar(self) -> None:
+            """Put the Restore bar into its indeterminate 'working' state."""
+            self._restore_step_label = None
+            self.restore_progress_bar.setRange(0, 0)
+            self.restore_progress_bar.setFormat("Working...")
+            self.restore_progress_bar.setVisible(True)
+
+        @staticmethod
+        def _normalize_step_label(label: str) -> str:
+            """Strip a leading 'Restoring ' so the format reads naturally.
+
+            ``idevicerestore -P`` emits ``STEP: Restoring Baseband``; the bar
+            format is ``Restoring {label} 45%``, so the label should be
+            ``Baseband``, not ``Restoring Baseband``.
+            """
+            for prefix in ("Restoring ", "restoring "):
+                if label.startswith(prefix):
+                    return label[len(prefix):]
+            return label
+
+        def _update_restore_progress_format(self) -> None:
+            """Refresh the bar's format string from the current value + step."""
+            bar = self.restore_progress_bar
+            value = bar.value()
+            label = self._restore_step_label
+            if value >= 100:
+                bar.setFormat(f"Step complete: {label}" if label else "Step complete")
+            else:
+                suffix = f" {label}" if label else ""
+                # %p renders the integer percentage; the trailing % is literal.
+                bar.setFormat(f"Restoring{suffix} %p%")
+
+        @Slot(object)
+        def _on_restore_progress_event(self, event: ProgressEvent) -> None:
+            """GUI-thread handler for one engine ``ProgressEvent``.
+
+            Appends the raw line to the Restore log and drives the progress
+            bar from the parsed update (if any). Delivered via
+            ``restore_progress_signal`` so it never runs on a worker thread.
+            """
+            self._append_restore_log(f"  {event.text}")
+            update = event.progress
+            if update is None:
+                return
+            bar = self.restore_progress_bar
+            if bar.maximum() == 0:
+                # First real progress event: switch from indeterminate to
+                # determinate. setValue(0) also kicks Qt out of its busy
+                # mode, which is what makes the format text render again.
+                bar.setRange(0, 100)
+                bar.setValue(0)
+            if update.kind == "step":
+                if update.label:
+                    self._restore_step_label = self._normalize_step_label(update.label)
+                    self._update_restore_progress_format()
+            elif update.kind == "percent" and update.value is not None:
+                bar.setValue(update.value)
+                self._update_restore_progress_format()
+
+        def _finalize_restore_progress_bar(self, success: bool) -> None:
+            """Set the bar's terminal state when the restore finishes."""
+            bar = self.restore_progress_bar
+            if bar.maximum() == 0:
+                bar.setRange(0, 100)
+                bar.setValue(0)
+            if success:
+                bar.setValue(100)
+                bar.setFormat("Restore complete")
+            else:
+                bar.setFormat("Restore failed — see log")
+
+        @Slot(object, object)
+        def _on_restore_finished(self, result: Any, error: Exception | None) -> None:
+            if error:
+                self._log_to_restore(f"Restore failed: {error}")
+                self._finalize_restore_progress_bar(success=False)
+                return
+            if result is None:
+                self._log_to_restore("Restore finished with no result.")
+                self._finalize_restore_progress_bar(success=False)
+                return
+            if result.success:
+                self._log_to_restore("Restore completed successfully.")
+                self._finalize_restore_progress_bar(success=True)
+            else:
+                self._log_to_restore(f"Restore failed: {result.error}")
+                self._finalize_restore_progress_bar(success=False)
+
+        def _enter_recovery(self) -> None:
+            udid = self.restore_device_combo.currentData()
+            if not udid:
+                return
+            reply = QMessageBox.question(
+                self,
+                "Enter Recovery",
+                "Send this device into Recovery mode? This will interrupt the "
+                "running OS.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            self._log_to_restore(f"Entering recovery for {udid}...")
+            worker = WorkerThread(lambda: enter_recovery_mode(udid))
+            self._run_worker(
+                worker,
+                self._on_recovery_mode_result,
+                [self.restore_enter_recovery_btn, self.restore_exit_recovery_btn],
+            )
+
+        def _exit_recovery(self) -> None:
+            udid = self.restore_device_combo.currentData()
+            if not udid:
+                return
+            self._log_to_restore(f"Exiting recovery for {udid}...")
+            worker = WorkerThread(lambda: exit_recovery_mode(udid))
+            self._run_worker(
+                worker,
+                self._on_recovery_mode_result,
+                [self.restore_enter_recovery_btn, self.restore_exit_recovery_btn],
+            )
+
+        def _exit_recovery_any(self) -> None:
+            """Reset any recovery-mode device(s) on the USB bus.
+
+            Works without a device selection because a device in Recovery mode
+            is invisible to usbmuxd (lockdown isn't running) and therefore
+            missing from the Restore tab's device dropdown.
+            """
+            self._log_to_restore("Scanning USB bus for recovery-mode devices...")
+            worker = WorkerThread(lambda: exit_recovery_mode(udid=None))
+            self._run_worker(
+                worker,
+                self._on_exit_recovery_any_result,
+                [self.restore_exit_recovery_any_btn],
+            )
+
+        @Slot(object, object)
+        def _on_exit_recovery_any_result(self, result: Any, error: Exception | None) -> None:
+            if error:
+                self._log_to_restore(f"Exit Recovery failed: {error}")
+            else:
+                reset = result or []
+                self._log_to_restore(
+                    f"Reset {len(reset)} device(s) out of recovery mode."
+                )
+            # Refresh so the device combo + mode label reflect the new state
+            # (the device reboots and re-enumerates with a different USB PID).
+            self._refresh_devices()
+
+        @Slot(object, object)
+        def _on_recovery_mode_result(self, result: Any, error: Exception | None) -> None:
+            if error:
+                self._log_to_restore(f"Recovery mode operation failed: {error}")
+                return
+            self._log_to_restore("Recovery mode operation completed.")
+            # Refresh so the device combo + mode label reflect the new state
+            # (the device reboots and re-enumerates with a different USB PID).
+            self._refresh_devices()
+
         def closeEvent(self, event: QEvent) -> None:
             """Refuse close while workers are still running.
 
@@ -1024,7 +1597,7 @@ def run_gui() -> None:
 # at module top-level) so ``import apple_device_cli.gui_qt`` succeeds on a
 # headless install. ``__getattr__`` materializes them on first access and
 # raises the friendly ``RuntimeError`` if PySide6 is missing.
-_LAZY_QT_NAMES = frozenset({"WorkerThread", "EnrollmentApp", "run_gui"})
+_LAZY_QT_NAMES = frozenset({"WorkerThread", "StreamingWorkerThread", "EnrollmentApp", "run_gui"})
 
 
 def __getattr__(name: str) -> Any:

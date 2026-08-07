@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-07
+
+### Added
+- `ios-enroll device restore` CLI subcommand with `--udid`, `--ipsw`,
+  `--list-versions`, `--cache-dir`, `--show-cache`, `--clear-cache`.
+  Backed by `idevicerestore` (primary) with a `pymobiledevice3` fallback
+  stub (known brittle on iOS 26; the primary path is the one to use).
+- Restore tab in `ios-enroll-gui` next to Devices / Organizations /
+  Enrollment. Device picker → signed-version dropdown (populated from
+  `ipsw --urls`) → Start button. Or "Browse for .ipsw" for an explicit
+  local file.
+- Configurable firmware cache directory with 4-tier precedence:
+  `--cache-dir` flag > `IOS_ENROLL_CACHE_DIR` env >
+  `~/.config/ios-enroll/config.json` field `cache_dir` >
+  `~/.cache/ios-enroll/firmware/`. The default is NOT `/tmp` (tmpfs
+  quota on this host is ~12.5 GB; OOM risk on large IPSW downloads).
+- Resume-on-partial support for IPSW downloads via HTTP `Range:`.
+- Restore tab refresh button (was already in spec but wiring verified) and a device mode label (Normal / Recovery / Restore / DFU) that updates when the device list refreshes. "Enter Recovery" and "Exit Recovery" buttons on the Restore tab. The Exit Recovery button works even when no device is selected in the dropdown (since a device in Recovery mode doesn't show up in the lockdown list).
+
+### Notes
+- The restore subprocess has no timeout — older iPads can run 45-60+
+  minutes for a full restore. Run the CLI in a `tmux`/`screen` window
+  or via the agent's `background=true, notify_on_complete=true` mode
+  to survive the agent's 600s foreground terminal timeout.
+- Only the existing pair-on-failure wrapper (commit `a78b62a`) auto-
+  recovers. Other `idevicerestore` non-zero exit codes surface
+  immediately — looping on the same failure wastes 30+ minutes.
+
 ## [1.1.0] - 2026-08-05
 
 ### Added

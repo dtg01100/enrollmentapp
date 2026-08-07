@@ -72,6 +72,7 @@ Note: `enrollment/flows.py` was removed in 1.0.0b-post as dead code (not importe
 | `src/apple_device_cli/device/` | Device connection, info |
 | `src/apple_device_cli/enrollment/` | Supervised, activation, skip panes |
 | `src/apple_device_cli/orgs/` | Organization manager, identity |
+| `src/apple_device_cli/restore/` | `idevicerestore` restore engine, firmware cache |
 | `tests/` | pytest test suite |
 | `~/.config/apple_device_cli/orgs/` | Default org storage |
 

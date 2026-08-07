@@ -47,6 +47,13 @@ from apple_device_cli.enrollment.skip_panes import resolve_skip_panes
 from apple_device_cli.enrollment.supervised import make_supervised
 from apple_device_cli.enrollment.activation import activate_device
 from apple_device_cli.core.exceptions import AppleDeviceError
+from apple_device_cli.restore.cache import cache_state, resolve_cache_dir
+from apple_device_cli.restore.engine import (
+    get_product_type_for_udid,
+    list_signed_versions,
+    restore_device,
+)
+from apple_device_cli.restore.errors import RestoreEngineError
 
 
 def _normalize_prompted_path(path: str | None) -> str | None:
@@ -698,6 +705,189 @@ def device_info(
                 typer.echo(f"ECID: {_display_udid(info.ecid)}")
     else:
         typer.secho(f"Device not found: {_display_udid(udid)}", fg=typer.colors.RED)
+
+
+@device_app.command("restore")
+def device_restore(
+    udid: str = typer.Option(None, "--udid", help="Target device UDID"),
+    ipsw: str = typer.Option(
+        None, "--ipsw",
+        help="Path to a local .ipsw file (skips the version dropdown).",
+    ),
+    list_versions: bool = typer.Option(
+        False, "--list-versions",
+        help="Print the signed iOS versions for the device and exit.",
+    ),
+    cache_dir: str = typer.Option(
+        None, "--cache-dir",
+        help="Override firmware cache location (else uses $IOS_ENROLL_CACHE_DIR or ~/.config/ios-enroll/config.json or ~/.cache/ios-enroll/firmware/).",
+    ),
+    show_cache: bool = typer.Option(
+        False, "--show-cache",
+        help="Print the current cache state and exit.",
+    ),
+    clear_cache: bool = typer.Option(
+        False, "--clear-cache",
+        help="Remove all downloaded IPSW files from the cache and exit.",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Skip the confirmation prompt (for scripts).",
+    ),
+):
+    """Restore a device to a signed iOS version (or a local .ipsw file).
+
+    The device must be in Normal mode and trusted by the host. Older
+    iPads may take 45-60+ minutes for a full restore. To survive the
+    agent's foreground terminal timeout, run this command via
+    background=true + notify_on_complete=true, or in a tmux/screen
+    window.
+    """
+
+    # --- Cache resolution and --show-cache / --clear-cache short-circuits ---
+    try:
+        resolved_cache = resolve_cache_dir(override=cache_dir)
+    except RestoreEngineError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+    if show_cache:
+        state = cache_state(resolved_cache)
+        typer.echo(f"Cache: {state['path']}")
+        typer.echo(f"  size: {state['size_bytes']:,} bytes")
+        typer.echo(f"  IPSW count: {state['ipsw_count']}")
+        for f in state['ipsw_files']:
+            typer.echo(f"    - {f}")
+        raise typer.Exit(0)
+
+    if clear_cache:
+        state = cache_state(resolved_cache)
+        if not state['ipsw_files']:
+            typer.echo("Cache is already empty.")
+            raise typer.Exit(0)
+        if not yes and sys.stdin.isatty():
+            confirm = typer.confirm(
+                f"Delete {state['ipsw_count']} IPSW files from {state['path']}?",
+                default=False,
+            )
+            if not confirm:
+                typer.secho("Cancelled.", fg=typer.colors.YELLOW)
+                raise typer.Exit(1)
+        for f in state['ipsw_files']:
+            (resolved_cache / f).unlink()
+        typer.echo(f"Removed {state['ipsw_count']} IPSW files.")
+        raise typer.Exit(0)
+
+    if not udid and not ipsw:
+        typer.secho(
+            "Either --udid or --ipsw is required.",
+            fg=typer.colors.RED, err=True,
+        )
+        raise typer.Exit(1)
+
+    # --- Resolve product_type from the device (only if we need it) ---
+    product_type: str | None = None
+    if not ipsw:
+        try:
+            product_type = get_product_type_for_udid(udid)
+        except RestoreEngineError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED, err=True)
+            raise typer.Exit(1) from exc
+        typer.echo(f"Device {udid}: {product_type}")
+
+    # --- --list-versions short-circuit ---
+    if list_versions:
+        if product_type is None:
+            typer.secho(
+                "--list-versions requires --udid (so we can read the ProductType).",
+                fg=typer.colors.RED, err=True,
+            )
+            raise typer.Exit(1)
+        try:
+            versions = list_signed_versions(product_type)
+        except RestoreEngineError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED, err=True)
+            raise typer.Exit(1) from exc
+        for v in versions:
+            typer.echo(f"{v.display_label}  {v.url}")
+        raise typer.Exit(0)
+
+    # --- Resolve the IPSW to use ---
+    ipsw_path: Path
+    if ipsw:
+        ipsw_path = Path(ipsw).expanduser()
+        if not ipsw_path.exists():
+            typer.secho(f"IPSW not found: {ipsw_path}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(1)
+    else:
+        # CLI doesn't have an interactive version picker. The user
+        # must use --ipsw (or the GUI) to actually pick a version.
+        typer.secho(
+            "The CLI doesn't pick a version interactively. Pass "
+            "--ipsw <local-path>, or use the GUI Restore tab to pick "
+            "from the dropdown. (Use --list-versions to see what's "
+            "available for this device.)",
+            fg=typer.colors.YELLOW, err=True,
+        )
+        raise typer.Exit(1)
+
+    if not udid:
+        typer.secho("--udid is required when --ipsw is used.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+    # --- Confirmation gate (engine itself passes -y to idevicerestore) ---
+    if not yes and sys.stdin.isatty():
+        typer.secho(
+            f"\nAbout to ERASE and RESTORE {udid} to {ipsw_path.name}.",
+            fg=typer.colors.YELLOW, bold=True,
+        )
+        typer.secho(
+            "This will delete all data on the device. Older iPads "
+            "may take 45-60+ minutes — run via tmux/screen or the agent's "
+            "background mode to survive the terminal timeout.",
+            fg=typer.colors.RED,
+        )
+        confirm = typer.confirm("Continue?", default=False)
+        if not confirm:
+            typer.secho("Cancelled.", fg=typer.colors.YELLOW)
+            raise typer.Exit(1)
+
+    # --- Run the restore (no subprocess timeout) ---
+    if not shutil.which("idevicerestore"):
+        typer.secho(
+            "idevicerestore is not on PATH. The pymobiledevice3 "
+            "fallback is not implemented in this iteration. Install "
+            "libimobiledevice (brew install libimobiledevice) and try again.",
+            fg=typer.colors.RED, err=True,
+        )
+        raise typer.Exit(1)
+
+    def _progress(msg: str) -> None:
+        typer.echo(f"  {msg}")
+
+    typer.echo(f"Cache: {resolved_cache}")
+    typer.echo(
+        f"Log:   {resolved_cache / 'logs' / f'restore_{udid}.log'}"
+    )
+    typer.echo(
+        "Restore started. This can take 15-60+ minutes for older iPads."
+    )
+    typer.echo(
+        "Use Ctrl-C to abort (the device will not be left in a bad state)."
+    )
+
+    result = restore_device(
+        udid=udid,
+        ipsw_path=ipsw_path,
+        cache_dir=resolved_cache,
+        progress_callback=_progress,
+    )
+
+    if result.success:
+        typer.secho("Restore completed successfully.", fg=typer.colors.GREEN, bold=True)
+        raise typer.Exit(0)
+    typer.secho(f"Restore failed: {result.error}", fg=typer.colors.RED, err=True)
+    raise typer.Exit(1)
 
 
 @org_app.command("list")

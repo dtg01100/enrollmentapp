@@ -250,3 +250,63 @@ class TestDownloadIpsw:
                 "https://example.com/foo_Restore.ipsw",
                 dest_dir=tmp_path,
             )
+
+
+class TestGetProductTypeForUdid:
+    """Looks up lockdown.ProductType for a UDID.
+
+    Uses the existing ``_pair_then_retry_connect`` wrapper so iOS 26
+    trust failures self-heal.
+    """
+
+    def test_returns_product_type_from_lockdown(self, monkeypatch):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from apple_device_cli.restore import engine
+
+        fake_lockdown = MagicMock()
+        fake_lockdown.get_value = AsyncMock(return_value={"Value": "iPad13,4"})
+
+        async def fake_connect(serial):
+            return fake_lockdown
+
+        monkeypatch.setattr(
+            engine, "_create_using_usbmux_with_pair_retry", fake_connect
+        )
+
+        result = asyncio.run(engine.get_product_type_for_udid("UDID-A"))
+        assert result == "iPad13,4"
+
+    def test_handles_plain_string_value(self, monkeypatch):
+        """Some pymobiledevice3 versions return the value as a plain
+        string instead of ``{"Value": "..."}``. Both shapes are
+        accepted."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from apple_device_cli.restore import engine
+
+        fake_lockdown = MagicMock()
+        fake_lockdown.get_value = AsyncMock(return_value="iPhone15,2")
+        monkeypatch.setattr(
+            engine, "_create_using_usbmux_with_pair_retry",
+            AsyncMock(return_value=fake_lockdown),
+        )
+
+        result = asyncio.run(engine.get_product_type_for_udid("UDID-B"))
+        assert result == "iPhone15,2"
+
+    def test_missing_product_type_raises_engine_error(self, monkeypatch):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from apple_device_cli.restore import engine
+        from apple_device_cli.restore.errors import RestoreEngineError
+
+        fake_lockdown = MagicMock()
+        fake_lockdown.get_value = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            engine, "_create_using_usbmux_with_pair_retry",
+            AsyncMock(return_value=fake_lockdown),
+        )
+
+        with pytest.raises(RestoreEngineError, match="ProductType"):
+            asyncio.run(engine.get_product_type_for_udid("UDID-C"))

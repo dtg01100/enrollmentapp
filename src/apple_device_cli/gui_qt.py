@@ -340,17 +340,32 @@ def _require_pyside6() -> None:
 
             log_group = QWidget()
             log_layout = QVBoxLayout(log_group)
-            log_layout.addWidget(QLabel("Log:"))
+            log_layout.setContentsMargins(8, 0, 8, 4)
+            log_layout.setSpacing(2)
+
+            log_header = QLabel("Log")
+            log_header.setStyleSheet("color: palette(mid); font-weight: 600;")
+            log_layout.addWidget(log_header)
+
             self.log_text = QTextEdit()
             self.log_text.setReadOnly(True)
+            self.log_text.setObjectName("log_text")
+            # Cap the log at ~25% of the window so a verbose operation
+            # can't squeeze the tab content to zero height. Min keeps at
+            # least 4 lines visible.
+            self.log_text.setMaximumHeight(180)
+            self.log_text.setMinimumHeight(80)
             log_layout.addWidget(self.log_text)
             layout.addWidget(log_group)
 
         def _create_devices_tab(self) -> QWidget:
             widget = QWidget()
             layout = QVBoxLayout(widget)
+            layout.setContentsMargins(8, 8, 8, 8)
+            layout.setSpacing(6)
 
             toolbar = QHBoxLayout()
+            toolbar.setSpacing(6)
             self.refresh_devices_btn = QPushButton("Refresh Devices")
             self.refresh_devices_btn.clicked.connect(self._refresh_devices)
             toolbar.addWidget(self.refresh_devices_btn)
@@ -363,23 +378,40 @@ def _require_pyside6() -> None:
             self.activate_btn.clicked.connect(self._activate_device)
             toolbar.addWidget(self.activate_btn)
 
-            self.pair_btn = QPushButton("Pair/Trust")
+            self.pair_btn = QPushButton("Pair / Trust")
             self.pair_btn.clicked.connect(self._pair_device)
             toolbar.addWidget(self.pair_btn)
 
             toolbar.addStretch()
             layout.addLayout(toolbar)
 
+            # List takes the remaining vertical space; placeholder shown
+            # below it when the list is empty (so resizing the list
+            # doesn't require keeping the placeholder geometry in sync).
             self.devices_list = QListWidget()
-            layout.addWidget(self.devices_list)
+            layout.addWidget(self.devices_list, 1)
+
+            self.devices_empty_label = QLabel(
+                "No devices found. Connect an iOS device over USB and "
+                "click Refresh Devices."
+            )
+            self.devices_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.devices_empty_label.setStyleSheet(
+                "color: palette(mid); font-size: 13px; padding: 4px;"
+            )
+            layout.addWidget(self.devices_empty_label)
+            self.devices_empty_label.setVisible(self.devices_list.count() == 0)
 
             return widget
 
         def _create_orgs_tab(self) -> QWidget:
             widget = QWidget()
             layout = QVBoxLayout(widget)
+            layout.setContentsMargins(8, 8, 8, 8)
+            layout.setSpacing(6)
 
             toolbar = QHBoxLayout()
+            toolbar.setSpacing(6)
             self.refresh_orgs_btn = QPushButton("Refresh Orgs")
             self.refresh_orgs_btn.clicked.connect(self._refresh_orgs)
             toolbar.addWidget(self.refresh_orgs_btn)
@@ -400,64 +432,106 @@ def _require_pyside6() -> None:
             layout.addLayout(toolbar)
 
             self.orgs_list = QListWidget()
-            layout.addWidget(self.orgs_list)
+            layout.addWidget(self.orgs_list, 1)
+
+            self.orgs_empty_label = QLabel(
+                "No organizations yet. Click Create Org or Refresh Orgs."
+            )
+            self.orgs_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.orgs_empty_label.setStyleSheet(
+                "color: palette(mid); font-size: 13px; padding: 4px;"
+            )
+            layout.addWidget(self.orgs_empty_label)
+            self.orgs_empty_label.setVisible(self.orgs_list.count() == 0)
 
             return widget
 
         def _create_enroll_tab(self) -> QWidget:
+            """Build the Enrollment tab.
+
+            Mirrors the Restore tab's groupbox pattern: three logical sections
+            (Organization & device / WiFi / Actions), with the primary action
+            (Make Supervised) visually distinct from the secondary ones.
+            """
             widget = QWidget()
             layout = QVBoxLayout(widget)
+            layout.setContentsMargins(8, 8, 8, 8)
+            layout.setSpacing(8)
 
-            form_layout = QFormLayout()
+            # ----- Organization & device groupbox -----
+            org_box = QGroupBox("Organization & device")
+            org_form = QFormLayout(org_box)
+            org_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
             self.enroll_org_combo = QComboBox()
-            form_layout.addRow("Organization:", self.enroll_org_combo)
+            org_form.addRow("Organization:", self.enroll_org_combo)
 
             self.enroll_preset_combo = QComboBox()
             self.enroll_preset_combo.addItems(list(PRESETS.keys()))
             self.enroll_preset_combo.setCurrentText("standard")
-            form_layout.addRow("Skip preset:", self.enroll_preset_combo)
+            org_form.addRow("Skip preset:", self.enroll_preset_combo)
+
+            udid_row = QHBoxLayout()
+            self.enroll_udid_combo = QComboBox()
+            udid_row.addWidget(self.enroll_udid_combo, 1)
+            use_device_btn = QPushButton("Use Selected Device")
+            use_device_btn.clicked.connect(self._use_selected_device)
+            udid_row.addWidget(use_device_btn)
+            org_form.addRow("Device UDID:", udid_row)
+
+            layout.addWidget(org_box)
+
+            # ----- WiFi groupbox -----
+            wifi_box = QGroupBox("WiFi (optional)")
+            wifi_form = QFormLayout(wifi_box)
+            wifi_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
             self.enroll_wifi_ssid = QLineEdit()
-            form_layout.addRow("WiFi SSID:", self.enroll_wifi_ssid)
+            wifi_form.addRow("SSID:", self.enroll_wifi_ssid)
 
             self.enroll_wifi_password = QLineEdit()
             self.enroll_wifi_password.setEchoMode(QLineEdit.EchoMode.Password)
-            form_layout.addRow("WiFi Password:", self.enroll_wifi_password)
+            wifi_form.addRow("Password:", self.enroll_wifi_password)
 
             self.enroll_wifi_enc = QComboBox()
             self.enroll_wifi_enc.addItems(["WPA", "WEP", "None"])
             self.enroll_wifi_enc.setCurrentText("WPA")
-            form_layout.addRow("WiFi Encryption:", self.enroll_wifi_enc)
+            wifi_form.addRow("Encryption:", self.enroll_wifi_enc)
 
-            self.enroll_udid_combo = QComboBox()
-            form_layout.addRow("Device UDID:", self.enroll_udid_combo)
+            layout.addWidget(wifi_box)
 
-            use_device_btn = QPushButton("Use Selected Device")
-            use_device_btn.clicked.connect(self._use_selected_device)
-            form_layout.addRow(use_device_btn)
+            # ----- Actions row (primary + secondary) -----
+            actions_row = QHBoxLayout()
+            actions_row.setSpacing(8)
 
-            layout.addLayout(form_layout)
+            # Primary action — bold + taller so the eye lands on it.
+            self.make_supervised_btn = QPushButton("Make Supervised")
+            self.make_supervised_btn.setObjectName("make_supervised_btn")
+            f = self.make_supervised_btn.font()
+            f.setBold(True)
+            self.make_supervised_btn.setFont(f)
+            self.make_supervised_btn.setMinimumHeight(36)
+            self.make_supervised_btn.clicked.connect(self._make_supervised)
+            actions_row.addWidget(self.make_supervised_btn)
 
-            buttons_layout = QHBoxLayout()
+            actions_row.addSpacing(16)
+
             self.validate_btn = QPushButton("Validate Prerequisites")
             self.validate_btn.clicked.connect(self._validate_prereqs)
-            buttons_layout.addWidget(self.validate_btn)
-
-            self.make_supervised_btn = QPushButton("Make Supervised")
-            self.make_supervised_btn.clicked.connect(self._make_supervised)
-            buttons_layout.addWidget(self.make_supervised_btn)
+            actions_row.addWidget(self.validate_btn)
 
             self.check_status_btn = QPushButton("Check Status")
             self.check_status_btn.clicked.connect(self._check_status)
-            buttons_layout.addWidget(self.check_status_btn)
+            actions_row.addWidget(self.check_status_btn)
 
             self.prepare_reenroll_btn = QPushButton("Prepare Re-Enrollment")
             self.prepare_reenroll_btn.clicked.connect(self._prepare_reenroll)
-            buttons_layout.addWidget(self.prepare_reenroll_btn)
+            actions_row.addWidget(self.prepare_reenroll_btn)
 
-            buttons_layout.addStretch()
-            layout.addLayout(buttons_layout)
+            actions_row.addStretch()
+            layout.addLayout(actions_row)
+
+            layout.addStretch(1)
 
             return widget
 
@@ -741,6 +815,8 @@ def _require_pyside6() -> None:
             for device in self._devices:
                 display = f"{device.device_name}  ({device.udid})"
                 QListWidgetItem(display, self.devices_list)
+            # Toggle the empty-state placeholder to match the list state.
+            self.devices_empty_label.setVisible(self.devices_list.count() == 0)
             if self._devices:
                 self.devices_list.setCurrentRow(0)
             self._update_enroll_udids()
@@ -849,6 +925,7 @@ def _require_pyside6() -> None:
                 has_identity = "yes" if org.cert_path and org.key_path else "no"
                 display = f"{org.name}  (MDM: {org.mdm_url or 'none'}, identity: {has_identity})"
                 QListWidgetItem(display, self.orgs_list)
+            self.orgs_empty_label.setVisible(self.orgs_list.count() == 0)
             if self._orgs:
                 self.orgs_list.setCurrentRow(0)
             self._update_enroll_orgs()

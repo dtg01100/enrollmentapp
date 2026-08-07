@@ -181,9 +181,10 @@ class TestDownloadIpsw:
         from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
 
-        # Pre-existing partial file
-        dest = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
-        dest.write_bytes(b"hello-")  # 6 bytes
+        # Pre-existing partial file (the production code looks at
+        # <basename>.partial, not <basename>, to decide how much to resume).
+        partial = tmp_path / "iPad_26.6_23G71_Restore.ipsw.partial"
+        partial.write_bytes(b"hello-")  # 6 bytes
 
         class FakeResp:
             def __init__(self, data: bytes):

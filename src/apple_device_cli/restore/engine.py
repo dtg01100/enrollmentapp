@@ -22,6 +22,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 
 @dataclass(frozen=True)
@@ -139,3 +141,76 @@ def list_signed_versions(product_type: str) -> list[SignedVersion]:
         )
 
     return versions
+
+
+MAX_DOWNLOAD_ATTEMPTS = 3
+_DOWNLOAD_CHUNK = 64 * 1024
+
+
+def _filename_from_url(url: str) -> str:
+    """Extract the basename from an Apple CDN URL.
+
+    Falls back to ``ipsw.partial`` if the URL has no recognizable
+    filename (shouldn't happen for Apple URLs, but defensive).
+    """
+    tail = url.rstrip("/").rsplit("/", 1)[-1]
+    return tail if tail else "ipsw.partial"
+
+
+def download_ipsw(url: str, dest_dir: Path) -> Path:
+    """Stream the URL to ``dest_dir/<basename>`` with HTTP Range-resume.
+
+    Behavior:
+      - If ``dest_dir/<basename>`` exists, check size and use
+        ``Range: bytes=<existing>-`` to resume. (The pre-existing
+        file is left in place during download under a ``.partial``
+        suffix and renamed on success.)
+      - Writes to ``dest_dir/<basename>.partial`` during download
+        and renames on success.
+      - Up to ``MAX_DOWNLOAD_ATTEMPTS`` retries on network errors.
+        After that, raises ``RestoreEngineError`` with the last
+        urllib error attached.
+    """
+    from apple_device_cli.restore.errors import RestoreEngineError
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    filename = _filename_from_url(url)
+    final = dest_dir / filename
+    partial = dest_dir / (filename + ".partial")
+
+    last_exc: Exception | None = None
+    for attempt in range(1, MAX_DOWNLOAD_ATTEMPTS + 1):
+        existing = partial.stat().st_size if partial.exists() else 0
+        req = Request(url)
+        if existing > 0:
+            req.add_header("Range", f"bytes={existing}-")
+
+        try:
+            with urlopen(req, timeout=60) as resp:
+                # If we asked for a Range but the server replied 200 (full
+                # content from byte 0), the partial is stale — discard it
+                # and start fresh. (urlopen raises HTTPError for 416; we
+                # treat that as 'partial is at-or-past the end'.)
+                if existing > 0 and resp.headers.get("Content-Range") is None:
+                    # Server didn't honor the Range — full body coming
+                    existing = 0
+                mode = "ab" if existing > 0 else "wb"
+                with open(partial, mode) as f:
+                    while True:
+                        chunk = resp.read(_DOWNLOAD_CHUNK)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                partial.replace(final)
+                return final
+        except (URLError, OSError) as exc:
+            last_exc = exc
+            if attempt < MAX_DOWNLOAD_ATTEMPTS:
+                continue
+            break
+
+    raise RestoreEngineError(
+        f"Failed to download {url} after {MAX_DOWNLOAD_ATTEMPTS} attempts. "
+        f"Last error: {last_exc}. Check network and free disk space at "
+        f"{dest_dir}."
+    )

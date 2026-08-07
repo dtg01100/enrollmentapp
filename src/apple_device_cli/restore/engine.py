@@ -214,3 +214,63 @@ def download_ipsw(url: str, dest_dir: Path) -> Path:
         f"Last error: {last_exc}. Check network and free disk space at "
         f"{dest_dir}."
     )
+
+
+def _create_using_usbmux_with_pair_retry(serial: str):
+    """Coroutine: connect to ``serial`` with pair-on-failure retry.
+
+    Thin wrapper around the existing ``_pair_then_retry_connect``
+    from ``apple_device_cli.enrollment.supervised``. Returns a
+    coroutine that resolves to the lockdown. Kept here as a
+    module-level indirection so tests can patch it.
+    """
+    from apple_device_cli.enrollment.supervised import (
+        _pair_then_retry_connect,
+    )
+    from apple_device_cli.device.connection import (
+        ensure_device_pairing,
+        wait_for_udid_in_usbmux,
+    )
+    from pymobiledevice3.lockdown import create_using_usbmux
+
+    async def _connect():
+        return await _pair_then_retry_connect(
+            udid=serial,
+            connect=create_using_usbmux,
+            ensure_pairing=ensure_device_pairing,
+            wait_for_udid=wait_for_udid_in_usbmux,
+        )
+    return _connect()
+
+
+async def get_product_type_for_udid(udid: str) -> str:
+    """Connect to ``udid`` (with iOS 26 pair-on-failure) and return
+    lockdown.ProductType.
+
+    Raises ``RestoreEngineError`` if the device is in recovery/DFU
+    (no Normal-mode lockdown), or if ProductType is missing.
+    """
+    from apple_device_cli.restore.errors import RestoreEngineError
+
+    try:
+        lockdown = await _create_using_usbmux_with_pair_retry(udid)
+    except ConnectionError as exc:
+        raise RestoreEngineError(
+            f"Could not connect to device {udid}. If the device is in "
+            f"recovery or DFU mode, exit recovery (or use the "
+            f"ios-device-recovery skill for stuck devices) and plug it "
+            f"in normally. Underlying error: {exc}"
+        ) from exc
+
+    raw = await lockdown.get_value(None, "ProductType")
+    if isinstance(raw, dict) and "Value" in raw:
+        product_type = raw["Value"]
+    else:
+        product_type = raw
+    if not product_type:
+        raise RestoreEngineError(
+            f"Device {udid} returned no ProductType from lockdown. "
+            f"The device may be in an unusual state — check "
+            f"`ideviceinfo -u {udid}`."
+        )
+    return str(product_type)

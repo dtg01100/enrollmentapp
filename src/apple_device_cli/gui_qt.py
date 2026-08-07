@@ -35,6 +35,7 @@ from apple_device_cli.restore.cache import (
     write_cache_config,
 )
 from apple_device_cli.restore.engine import (
+    ProgressEvent,
     download_ipsw,
     get_product_type_for_udid,
     list_signed_versions,
@@ -49,7 +50,7 @@ from apple_device_cli.restore.engine import (
 # apple_device_cli.gui_qt`` surface a friendly install hint via the
 # ``RuntimeError`` they raise — instead of a top-level ImportError traceback.
 if TYPE_CHECKING:
-    from PySide6.QtCore import QEvent, QThread, Signal, Slot  # noqa: F401
+    from PySide6.QtCore import QEvent, Qt, QThread, Signal, Slot  # noqa: F401
     from PySide6.QtWidgets import (  # noqa: F401
         QApplication,
         QComboBox,
@@ -64,6 +65,7 @@ if TYPE_CHECKING:
         QListWidgetItem,
         QMainWindow,
         QMessageBox,
+        QProgressBar,
         QPushButton,
         QTabWidget,
         QTextEdit,
@@ -150,14 +152,15 @@ def _require_pyside6() -> None:
     if "EnrollmentApp" in globals():
         return
     global WorkerThread, StreamingWorkerThread, EnrollmentApp
-    global QEvent, QThread, Signal, Slot
+    global QEvent, Qt, QThread, Signal, Slot
     global QApplication
     global QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout
     global QHBoxLayout
     global QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow
-    global QMessageBox, QPushButton, QTabWidget, QTextEdit, QVBoxLayout, QWidget
+    global QMessageBox, QProgressBar, QPushButton, QTabWidget, QTextEdit
+    global QVBoxLayout, QWidget
     try:
-        from PySide6.QtCore import QEvent, QThread, Signal, Slot  # noqa: F401
+        from PySide6.QtCore import QEvent, Qt, QThread, Signal, Slot  # noqa: F401
         from PySide6.QtWidgets import (  # noqa: F401
             QApplication,
             QComboBox,
@@ -172,6 +175,7 @@ def _require_pyside6() -> None:
             QListWidgetItem,
             QMainWindow,
             QMessageBox,
+            QProgressBar,
             QPushButton,
             QTabWidget,
             QTextEdit,
@@ -274,6 +278,7 @@ def _require_pyside6() -> None:
 
         log_signal = Signal(str)
         restore_log_signal = Signal(str)
+        restore_progress_signal = Signal(object)  # ProgressEvent
 
         def __init__(self) -> None:
             super().__init__()
@@ -285,10 +290,12 @@ def _require_pyside6() -> None:
             self._workers: list[QThread] = []
             self._request_token: int = 0
             self._restore_ipsw_path: Path | None = None
+            self._restore_step_label: str | None = None
 
             self._setup_ui()
             self.log_signal.connect(self._append_log)
             self.restore_log_signal.connect(self._append_restore_log)
+            self.restore_progress_signal.connect(self._on_restore_progress_event)
             self.enroll_org_combo.currentIndexChanged.connect(self._on_enroll_org_changed)
             self._log("GUI initialized. Connect an iOS device to begin.")
             self._load_initial_state()
@@ -486,6 +493,17 @@ def _require_pyside6() -> None:
             buttons_layout.addWidget(self.restore_start_btn)
             buttons_layout.addStretch()
             layout.addLayout(buttons_layout)
+
+            self.restore_progress_bar = QProgressBar()
+            self.restore_progress_bar.setObjectName("restore_progress_bar")
+            self.restore_progress_bar.setMinimumHeight(18)
+            self.restore_progress_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            # Indeterminate + hidden until a restore starts; the bar switches
+            # to determinate on the first real progress event.
+            self.restore_progress_bar.setRange(0, 0)
+            self.restore_progress_bar.setFormat("Working...")
+            self.restore_progress_bar.setVisible(False)
+            layout.addWidget(self.restore_progress_bar)
 
             layout.addWidget(QLabel("Restore log:"))
             self.restore_log_text = QTextEdit()
@@ -1248,6 +1266,11 @@ def _require_pyside6() -> None:
             if ipsw_path is None:
                 self._log_to_restore(f"Downloading {version_url} to {cache_dir} ...")
 
+            def on_progress(event: ProgressEvent) -> None:
+                # Runs on the worker thread — hand the event to the GUI thread
+                # via a queued signal (logging + QProgressBar are not thread-safe).
+                self.restore_progress_signal.emit(event)
+
             def work() -> Any:
                 target = (
                     ipsw_path
@@ -1258,25 +1281,101 @@ def _require_pyside6() -> None:
                     udid=udid,
                     ipsw_path=target,
                     cache_dir=cache_dir,
-                    progress_callback=lambda line: self._log_to_restore(f"  {line}"),
+                    progress_callback=on_progress,
                 )
 
+            self._reset_restore_progress_bar()
             self._log_to_restore(f"Restore starting for {udid} (cache: {cache_dir}).")
             worker = WorkerThread(work)
             self._run_worker(worker, self._on_restore_finished, [self.restore_start_btn])
+
+        def _reset_restore_progress_bar(self) -> None:
+            """Put the Restore bar into its indeterminate 'working' state."""
+            self._restore_step_label = None
+            self.restore_progress_bar.setRange(0, 0)
+            self.restore_progress_bar.setFormat("Working...")
+            self.restore_progress_bar.setVisible(True)
+
+        @staticmethod
+        def _normalize_step_label(label: str) -> str:
+            """Strip a leading 'Restoring ' so the format reads naturally.
+
+            ``idevicerestore -P`` emits ``STEP: Restoring Baseband``; the bar
+            format is ``Restoring {label} 45%``, so the label should be
+            ``Baseband``, not ``Restoring Baseband``.
+            """
+            for prefix in ("Restoring ", "restoring "):
+                if label.startswith(prefix):
+                    return label[len(prefix):]
+            return label
+
+        def _update_restore_progress_format(self) -> None:
+            """Refresh the bar's format string from the current value + step."""
+            bar = self.restore_progress_bar
+            value = bar.value()
+            label = self._restore_step_label
+            if value >= 100:
+                bar.setFormat(f"Step complete: {label}" if label else "Step complete")
+            else:
+                suffix = f" {label}" if label else ""
+                # %p renders the integer percentage; the trailing % is literal.
+                bar.setFormat(f"Restoring{suffix} %p%")
+
+        @Slot(object)
+        def _on_restore_progress_event(self, event: ProgressEvent) -> None:
+            """GUI-thread handler for one engine ``ProgressEvent``.
+
+            Appends the raw line to the Restore log and drives the progress
+            bar from the parsed update (if any). Delivered via
+            ``restore_progress_signal`` so it never runs on a worker thread.
+            """
+            self._append_restore_log(f"  {event.text}")
+            update = event.progress
+            if update is None:
+                return
+            bar = self.restore_progress_bar
+            if bar.maximum() == 0:
+                # First real progress event: switch from indeterminate to
+                # determinate. setValue(0) also kicks Qt out of its busy
+                # mode, which is what makes the format text render again.
+                bar.setRange(0, 100)
+                bar.setValue(0)
+            if update.kind == "step":
+                if update.label:
+                    self._restore_step_label = self._normalize_step_label(update.label)
+                    self._update_restore_progress_format()
+            elif update.kind == "percent" and update.value is not None:
+                bar.setValue(update.value)
+                self._update_restore_progress_format()
+
+        def _finalize_restore_progress_bar(self, success: bool) -> None:
+            """Set the bar's terminal state when the restore finishes."""
+            bar = self.restore_progress_bar
+            if bar.maximum() == 0:
+                bar.setRange(0, 100)
+                bar.setValue(0)
+            if success:
+                bar.setValue(100)
+                bar.setFormat("Restore complete")
+            else:
+                bar.setFormat("Restore failed — see log")
 
         @Slot(object, object)
         def _on_restore_finished(self, result: Any, error: Exception | None) -> None:
             if error:
                 self._log_to_restore(f"Restore failed: {error}")
+                self._finalize_restore_progress_bar(success=False)
                 return
             if result is None:
                 self._log_to_restore("Restore finished with no result.")
+                self._finalize_restore_progress_bar(success=False)
                 return
             if result.success:
                 self._log_to_restore("Restore completed successfully.")
+                self._finalize_restore_progress_bar(success=True)
             else:
                 self._log_to_restore(f"Restore failed: {result.error}")
+                self._finalize_restore_progress_bar(success=False)
 
         def closeEvent(self, event: QEvent) -> None:
             """Refuse close while workers are still running.

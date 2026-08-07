@@ -21,6 +21,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from apple_device_cli.device.info import DeviceInfo  # noqa: E402
+from apple_device_cli.restore.engine import ProgressEvent, ProgressUpdate  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -360,7 +361,7 @@ class TestRestoreStart:
         monkeypatch.setattr(gui_qt, "engine_restore_device", fake_restore)
 
         app._start_restore()
-        captured["progress_callback"]("Sending NAND image...")
+        captured["progress_callback"](ProgressEvent(text="Sending NAND image..."))
 
         assert "Sending NAND image..." in app.restore_log_text.toPlainText()
 
@@ -437,3 +438,79 @@ class TestRestoreCacheUi:
         assert app.restore_ipsw_path_label.text() == "/tmp/Manual_26.6_23G71_Restore.ipsw"
         assert app.restore_start_btn.isEnabled()
         assert not app.restore_versions_combo.isEnabled()
+
+
+class TestRestoreProgressBar:
+    """The QProgressBar is driven by parsed idevicerestore progress events."""
+
+    def test_progress_bar_exists_in_restore_tab(self, make_app):
+        app = make_app()
+        assert app.restore_progress_bar is not None
+        assert app.restore_progress_bar.objectName() == "restore_progress_bar"
+        # Hidden + indeterminate until a restore actually starts.
+        assert app.restore_progress_bar.isHidden()
+        assert app.restore_progress_bar.maximum() == 0
+
+    def test_plain_progress_events_drive_value_and_format(self, make_app):
+        app = make_app()
+        app._reset_restore_progress_bar()
+        assert not app.restore_progress_bar.isHidden()
+        assert app.restore_progress_bar.maximum() == 0  # indeterminate
+        assert app.restore_progress_bar.format() == "Working..."
+
+        app._on_restore_progress_event(
+            ProgressEvent(
+                text="STEP: Restoring Baseband",
+                progress=ProgressUpdate(kind="step", value=None, total=None, label="Restoring Baseband"),
+            )
+        )
+        # First progress event switches to determinate; format shows the step.
+        assert app.restore_progress_bar.maximum() == 100
+        assert app.restore_progress_bar.text() == "Restoring Baseband 0%"
+
+        app._on_restore_progress_event(
+            ProgressEvent(
+                text="PROGRESS: 12/30",
+                progress=ProgressUpdate(kind="percent", value=40, total=30, label=None),
+            )
+        )
+        assert app.restore_progress_bar.value() == 40
+        assert app.restore_progress_bar.text() == "Restoring Baseband 40%"
+
+    def test_step_complete_format_at_100(self, make_app):
+        app = make_app()
+        app._reset_restore_progress_bar()
+        app._on_restore_progress_event(
+            ProgressEvent(
+                text="STEP: Restoring Baseband",
+                progress=ProgressUpdate(kind="step", value=None, total=None, label="Restoring Baseband"),
+            )
+        )
+        app._on_restore_progress_event(
+            ProgressEvent(
+                text="PROGRESS: 30/30",
+                progress=ProgressUpdate(kind="percent", value=100, total=30, label=None),
+            )
+        )
+        assert app.restore_progress_bar.value() == 100
+        assert app.restore_progress_bar.text() == "Step complete: Baseband"
+
+    def test_final_state_on_success_and_failure(self, make_app):
+        app = make_app()
+        app._reset_restore_progress_bar()
+        app._finalize_restore_progress_bar(success=True)
+        assert app.restore_progress_bar.value() == 100
+        assert app.restore_progress_bar.text() == "Restore complete"
+
+        failed_app = make_app()
+        failed_app._reset_restore_progress_bar()
+        failed_app._finalize_restore_progress_bar(success=False)
+        assert failed_app.restore_progress_bar.text() == "Restore failed — see log"
+
+    def test_plain_log_lines_do_not_touch_the_bar(self, make_app):
+        app = make_app()
+        app._reset_restore_progress_bar()
+        app._on_restore_progress_event(ProgressEvent(text="Sending LLB (185208 bytes)..."))
+
+        assert app.restore_progress_bar.maximum() == 0  # still indeterminate
+        assert "Sending LLB" in app.restore_log_text.toPlainText()

@@ -57,3 +57,86 @@ class TestParseIpswUrl:
         assert result is not None
         assert result.version == "17.0"
         assert result.build == "21A342"
+
+
+class TestListSignedVersions:
+    """Subprocess wrapper around ``ipsw download ipsw --device X --urls``."""
+
+    def test_parses_ipsw_urls_output(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from apple_device_cli.restore import engine
+
+        sample_output = (
+            "https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-58358/abc/iPad_Pro_Spring_2021_26.6_23G71_Restore.ipsw\n"
+            "https://updates.cdn-apple.com/2026SpringFCS/fullrestores/122-38416/def/iPad_Pro_Spring_2021_26.5.2_23F84_Restore.ipsw\n"
+        )
+        fake_proc = MagicMock()
+        fake_proc.stdout = sample_output
+        fake_proc.returncode = 0
+        fake_proc.wait = MagicMock()
+
+        fake_popen = MagicMock(return_value=fake_proc)
+        monkeypatch.setattr(engine, "_popen_capture", fake_popen)
+
+        results = engine.list_signed_versions("iPad13,4")
+
+        assert len(results) == 2
+        assert results[0].version == "26.6"
+        assert results[0].build == "23G71"
+        assert results[1].version == "26.5.2"
+        assert results[1].build == "23F84"
+        # Constructed command must include the right flags
+        args, _kwargs = fake_popen.call_args
+        cmd = args[0]
+        assert cmd[0] == "ipsw"
+        assert "download" in cmd
+        assert "ipsw" in cmd
+        assert "--device" in cmd
+        assert "iPad13,4" in cmd
+        assert "--urls" in cmd
+
+    def test_skips_lines_that_dont_match_url_pattern(self, monkeypatch):
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+
+        sample_output = (
+            "https://updates.cdn-apple.com/foo/iPad_Pro_26.6_23G71_Restore.ipsw\n"
+            "   • Latest release found is: 26.6\n"  # noise line
+            "  \n"  # blank line
+            "https://updates.cdn-apple.com/foo/iPad_Pro_26.5_23F77_Restore.ipsw\n"
+        )
+        fake_proc = MagicMock()
+        fake_proc.stdout = sample_output
+        fake_proc.returncode = 0
+        fake_proc.wait = MagicMock()
+        monkeypatch.setattr(engine, "_popen_capture", MagicMock(return_value=fake_proc))
+
+        results = engine.list_signed_versions("iPad13,4")
+        assert len(results) == 2
+        assert [r.version for r in results] == ["26.6", "26.5"]
+
+    def test_missing_ipsw_binary_raises_engine_error(self, monkeypatch):
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+        from apple_device_cli.restore.errors import RestoreEngineError
+
+        monkeypatch.setattr(
+            "shutil.which", lambda name: None if name == "ipsw" else "/usr/bin/x"
+        )
+        with pytest.raises(RestoreEngineError, match="ipsw"):
+            engine.list_signed_versions("iPad13,4")
+
+    def test_nonzero_exit_raises_engine_error(self, monkeypatch):
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+        from apple_device_cli.restore.errors import RestoreEngineError
+
+        fake_proc = MagicMock()
+        fake_proc.stdout = ""
+        fake_proc.returncode = 1
+        fake_proc.wait = MagicMock()
+        monkeypatch.setattr(engine, "_popen_capture", MagicMock(return_value=fake_proc))
+
+        with pytest.raises(RestoreEngineError, match="ipsw"):
+            engine.list_signed_versions("iPad13,4")

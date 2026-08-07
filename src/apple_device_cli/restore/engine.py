@@ -13,11 +13,15 @@ Public surface (see ios-enroll-restore-tab spec):
   - ``get_product_type_for_udid(udid)``: lockdown lookup
   - ``detect_device_mode(udid)``: USB product-ID lookup (normal/recovery/restore/dfu)
   - ``detect_recovery_devices_present()``: True if any iBoot-mode USB device is on the bus
-  - ``enter_recovery_mode(udid)``: lockdownd EnterRecovery request
-  - ``exit_recovery_mode(udid=None)``: USB reset out of recovery (no UDID needed)
-   - ``restore_device(...)``: idevicerestore wrapper (mode-aware: ``-u`` in
-     Normal mode, ``-i <ecid>`` for Recovery/restore/DFU-mode devices)
-   - ``restore_device_via_pymd3(...)``: pymobiledevice3 fallback
+   - ``enter_recovery_mode(udid)``: lockdownd EnterRecovery request
+   - ``exit_recovery_mode(udid=None)``: ``irecovery --normal`` out of recovery
+     (no UDID needed)
+   - ``recovery_device_descriptor()``: ``(SRNM, ECID)`` of the first
+     Recovery-mode USB device, or None (feeds the GUI's synthetic
+     device-combo entry)
+    - ``restore_device(...)``: idevicerestore wrapper (mode-aware: ``-u`` in
+      Normal mode, ``-i <ecid>`` for Recovery/restore/DFU-mode devices)
+    - ``restore_device_via_pymd3(...)``: pymobiledevice3 fallback
 
 All subprocess calls use ``Popen`` with ``stdin=DEVNULL`` and no
 timeout — older iPads can run 45-60+ minutes for a full restore.
@@ -38,7 +42,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Callable, Literal
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -614,9 +618,41 @@ _DFU_PID = 0x1227
 _APPLE_VENDOR_ID = 0x05ac
 
 
+# Structured iBoot USB serial descriptors (recovery mode) carry the device's
+# actual serial inside ``srnm:[...]`` and its ECID inside ``ecid:...``, e.g.:
+#   sdom:01 cpid:8120 cprv:11 cpfm:03 scep:01 bdid:10 ecid:00094daa01d80032 ibfl:3d sika:00 srnm:[jxmwm7422v]
+# A Normal-mode lockdown UDID never matches these — the descriptor has no UDID.
+_SRNM_RE = re.compile(r"srnm:\[([^\]]+)\]")
+_ECID_RE = re.compile(r"ecid:([0-9a-fA-F]+)")
+
+
+def _srnm_from_descriptor(serial: str) -> str | None:
+    """Return the ``srnm:[...]`` value from a structured iBoot descriptor
+    (e.g. ``jxmwm7422v``), or None when the string has no such field."""
+    match = _SRNM_RE.search(serial or "")
+    return match.group(1) if match else None
+
+
 def _normalize_serial(value: str) -> str:
-    """Strip NUL padding, whitespace, and dashes so serials compare cleanly."""
-    return (value or "").replace("-", "").replace("\x00", "").strip().lower()
+    """Strip NUL padding, whitespace, and dashes so serials compare cleanly.
+
+    Recovery-mode USB serials are structured iBoot descriptor strings whose
+    real serial lives inside ``srnm:[...]``. When that field is present, the
+    inner value is used as the canonical serial so comparisons match the SRNM
+    (e.g. ``JXMWM7422V``) instead of the whole descriptor.
+    """
+    raw = (value or "").replace("\x00", "").strip()
+    srnm = _srnm_from_descriptor(raw)
+    if srnm is not None:
+        raw = srnm
+    return raw.replace("-", "").lower()
+
+
+def _ecid_from_descriptor(serial: str) -> str:
+    """Extract the ECID (bare hex, no ``0x`` prefix) from a structured iBoot
+    USB descriptor string, or "" when the field is absent."""
+    match = _ECID_RE.search(serial or "")
+    return match.group(1) if match else ""
 
 
 def _iter_apple_usb_devices():
@@ -661,6 +697,11 @@ def _strip_ecid_prefix(value: str) -> str:
     if stripped.startswith("0x"):
         return stripped[2:]
     return stripped
+
+
+def _normalize_ecid(value: str) -> str:
+    """Normalize an ECID for equality comparison (drops ``0x`` + dashes)."""
+    return _strip_ecid_prefix(value).replace("-", "").lower()
 
 
 def _failed_to_discover_mode(output: str) -> bool:
@@ -708,8 +749,9 @@ def _device_ecid(udid: str | None = None) -> str | None:
 
     1. Match ``udid`` against each Apple USB device's serial number. In
        Normal mode the USB serial equals the UDID; in Recovery mode the
-       serial is the SRNM (e.g. ``JXMWM7422V``), which also matches if the
-       caller passes that instead.
+       descriptor's ``srnm:[...]`` field (e.g. ``JXMWM7422V``) matches when
+       the caller passes that instead. When the matched descriptor carries an
+       ``ecid:...`` field, that is returned directly (no subprocess needed).
     2. No serial match (or no ``udid``): when any Recovery/DFU-mode device
        is present, query it directly with ``irecovery -q``.
 
@@ -719,12 +761,30 @@ def _device_ecid(udid: str | None = None) -> str | None:
     target = _normalize_serial(udid) if udid else ""
     recovery_present = False
     for serial, pid, _bus, _device in _iter_apple_usb_devices():
+        ecid = _ecid_from_descriptor(serial)
         if target and _normalize_serial(serial) == target:
-            return _query_recovery_ecid()
+            return ecid or _query_recovery_ecid()
         if pid in _RECOVERY_PIDS or pid == _DFU_PID:
             recovery_present = True
     if recovery_present:
         return _query_recovery_ecid()
+    return None
+
+
+def recovery_device_descriptor() -> tuple[str, str] | None:
+    """Return ``(srnm, ecid)`` for the first Recovery-mode USB device on the
+    bus, or None when none is present.
+
+    Recovery-mode devices are invisible to usbmuxd (lockdown isn't running),
+    so they never appear in normal device enumeration. This helper extracts
+    their SRNM serial and ECID from the structured iBoot descriptor so the
+    GUI can present a selectable "Recovery mode" entry. ``ecid`` is the bare
+    hex (no ``0x``), or "" when the descriptor lacks the field.
+    """
+    for serial, pid, _bus, _device in _iter_apple_usb_devices():
+        if pid in _RECOVERY_PIDS:
+            srnm = _srnm_from_descriptor(serial) or _normalize_serial(serial)
+            return srnm, _ecid_from_descriptor(serial)
     return None
 
 
@@ -737,6 +797,15 @@ def detect_device_mode(udid: str) -> str:
     while the device runs in Normal mode. Never raises: any lookup problem
     (no matching device, unreadable descriptors, missing libusb) yields
     ``"unknown"``.
+
+    Recovery-mode devices cannot be matched by a Normal-mode lockdown UDID:
+    their USB serial is a structured iBoot descriptor (``sdom:01 ... srnm:[...]
+    ecid:...``) carrying the SRNM serial and ECID, not the UDID, so
+    ``_normalize_serial(serial) == _normalize_serial(udid)`` fails against a
+    lockdown UDID. That is EXPECTED — ``"unknown"`` for a recovery device
+    looked up by UDID is correct; ``detect_recovery_devices_present()`` and
+    ``recovery_device_descriptor()`` are the real signals (and the SRNM
+    matches when the caller passes that instead of a UDID).
     """
     target = _normalize_serial(udid)
     for serial, pid, _bus, _device in _iter_apple_usb_devices():
@@ -767,40 +836,58 @@ def detect_recovery_devices_present() -> bool:
 
 
 def exit_recovery_mode(udid: str | None = None) -> list[str]:
-    """Reset recovery-mode device(s) to Normal mode via a USB reset.
+    """Reset recovery-mode device(s) to Normal mode via ``irecovery --normal``.
 
-    If ``udid`` is provided, only reset that device (matched by serial). If
+    If ``udid`` is provided, only reset that device. The ``udid`` argument
+    may be the recovery descriptor's SRNM serial (``JXMWM7422V``) or its
+    ECID (``0x...`` or bare hex) — both appear in the structured iBoot USB
+    serial string (``srnm:[...]`` / ``ecid:...``). A Normal-mode lockdown
+    UDID will NOT match (the recovery descriptor does not carry it). If
     ``udid`` is None (the default), scan for any iBoot-mode USB device
     (recovery PID 0x1280-0x1283) and reset every recovery-mode device found.
 
-    Returns a list of the reset devices' USB serials. Raises
-    ``RestoreEngineError`` if no recovery-mode device is found, if the only
-    device found is in DFU (a USB reset cannot exit DFU — the device needs a
-    power cycle), or if a libusb reset fails.
+    ``irecovery --normal`` (libirecovery) sends the "boot to normal" command
+    to the recovery iBSS, which re-enumerates the device in Normal mode. A
+    bare USB reset (``device.reset()``) would instead reboot iBSS straight
+    back into the recovery loop — that is why plain USB resets visibly "do
+    nothing" for exit-recovery.
 
-    The returned serial is the device's "iBoot serial" (a different string
-    from the Normal-mode lockdown UDID — usually ``CPID:ECID``). The caller
-    should not rely on it matching any Normal-mode UDID.
+    Returns a list of the reset devices' USB serials (the raw descriptor
+    string as yielded by ``_iter_apple_usb_devices``; for a real device this
+    is the structured iBoot descriptor, not a Normal-mode lockdown UDID).
+    Raises ``RestoreEngineError`` when no recovery-mode device is found, when
+    the only device found is in DFU (``irecovery --normal`` cannot exit DFU —
+    the device needs a power cycle), when ``irecovery`` is missing from PATH,
+    or when the command itself fails.
     """
     from apple_device_cli.restore.errors import RestoreEngineError
 
-    recovery: list[tuple[str, Any]] = []
-    dfu: list[tuple[str, Any]] = []
-    for serial, pid, _bus, device in _iter_apple_usb_devices():
+    if not shutil.which("irecovery"):
+        raise RestoreEngineError(
+            "`irecovery` is required to exit recovery mode. Install it with: "
+            "brew install libirecovery (or `apt install libirecovery-utils` "
+            "on Debian/Ubuntu) — the package that provides the `irecovery` CLI."
+        )
+
+    recovery: list[str] = []
+    dfu: list[str] = []
+    for serial, pid, _bus, _device in _iter_apple_usb_devices():
         if pid in _RECOVERY_PIDS:
-            recovery.append((serial, device))
+            recovery.append(serial)
         elif pid == _DFU_PID:
-            dfu.append((serial, device))
+            dfu.append(serial)
 
     if udid:
         norm = _normalize_serial(udid)
+        udid_ecid = _normalize_ecid(udid)
         matches = [
-            (serial, device)
-            for serial, device in recovery
+            serial
+            for serial in recovery
             if _normalize_serial(serial) == norm
+            or (udid_ecid and _normalize_ecid(_ecid_from_descriptor(serial)) == udid_ecid)
         ]
         dfu_matches = [
-            serial for serial, _dev in dfu if _normalize_serial(serial) == norm
+            serial for serial in dfu if _normalize_serial(serial) == norm
         ]
         if not matches and not dfu_matches:
             raise RestoreEngineError(
@@ -809,8 +896,8 @@ def exit_recovery_mode(udid: str | None = None) -> list[str]:
             )
         if not matches:
             raise RestoreEngineError(
-                "Device is in DFU mode, not Recovery — USB reset will not exit "
-                "DFU; power cycle the device manually."
+                "Device is in DFU mode, not Recovery — `irecovery --normal` "
+                "cannot exit DFU; power cycle the device manually."
             )
         targets = matches
     else:
@@ -821,19 +908,25 @@ def exit_recovery_mode(udid: str | None = None) -> list[str]:
             )
         if not recovery:
             raise RestoreEngineError(
-                "Device is in DFU mode, not Recovery — USB reset will not exit "
-                "DFU; power cycle the device manually."
+                "Device is in DFU mode, not Recovery — `irecovery --normal` "
+                "cannot exit DFU; power cycle the device manually."
             )
         targets = recovery
 
     reset_serials: list[str] = []
-    for serial, device in targets:
-        try:
-            device.reset()
-        except Exception as exc:
+    for serial in targets:
+        proc = subprocess.run(
+            ["irecovery", "--normal"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        if proc.returncode != 0:
             raise RestoreEngineError(
-                f"Failed to reset device out of recovery mode: {exc}"
-            ) from exc
+                f"`irecovery --normal` failed (code {proc.returncode}) for "
+                f"device {serial}.\nOutput:\n{proc.stdout}"
+            )
         reset_serials.append(serial)
     return reset_serials
 

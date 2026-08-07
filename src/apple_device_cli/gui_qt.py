@@ -45,6 +45,7 @@ from apple_device_cli.restore.engine import (
     get_product_type_for_udid,
     list_signed_versions,
     parse_ipsw_url,
+    recovery_device_descriptor,
     restore_device as engine_restore_device,
 )
 
@@ -1146,7 +1147,13 @@ def _require_pyside6() -> None:
             """Fill the Restore tab's device dropdown from ``self._devices``.
 
             Stores the UDID as the item's userData so the selected item
-            resolves to a device without re-parsing display text.
+            resolves to a device without re-parsing display text. When a
+            Recovery-mode device is on the USB bus — invisible to usbmuxd, so
+            missing from ``self._devices`` — a synthetic "Recovery mode"
+            entry is appended with the descriptor's SRNM serial as userData.
+            ``exit_recovery_mode`` / ``_device_ecid`` resolve that serial to
+            the actual device (SRNM match), so the recovery buttons and the
+            Start button work for it.
             """
             self.restore_device_combo.blockSignals(True)
             try:
@@ -1156,6 +1163,15 @@ def _require_pyside6() -> None:
                         f"{device.device_name}  ({device.udid})",
                         userData=device.udid,
                     )
+                if detect_recovery_devices_present():
+                    recovery = recovery_device_descriptor()
+                    if recovery is not None:
+                        srnm, ecid = recovery
+                        label = f"{srnm or 'Recovery device'} (Recovery mode)"
+                        self.restore_device_combo.addItem(
+                            label,
+                            userData=srnm or ecid,
+                        )
             finally:
                 self.restore_device_combo.blockSignals(False)
             self._on_restore_device_changed(self.restore_device_combo.currentIndex())

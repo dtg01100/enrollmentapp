@@ -188,6 +188,45 @@ class TestRestoreDeviceCombo:
         assert not app.restore_start_btn.isEnabled()
 
 
+class TestRecoveryDeviceInCombo:
+    """Recovery-mode devices are invisible to usbmuxd, so the Restore tab's
+    combo cannot enumerate them. When one is on the USB bus, a synthetic
+    'Recovery mode' entry appears so the recovery buttons + Start can target
+    it (the engine resolves the stored SRNM serial to the actual device).
+    """
+
+    def test_refresh_devices_shows_recovery_device_when_present(
+        self, make_app, monkeypatch
+    ):
+        import apple_device_cli.gui_qt as gui_qt
+
+        monkeypatch.setattr(gui_qt, "detect_recovery_devices_present", lambda: True)
+        monkeypatch.setattr(
+            gui_qt,
+            "recovery_device_descriptor",
+            lambda: ("jxmwm7422v", "00094daa01d80032"),
+        )
+
+        app = make_app(devices=[])
+        app._populate_restore_device_combo()
+
+        texts = [
+            app.restore_device_combo.itemText(i)
+            for i in range(app.restore_device_combo.count())
+        ]
+        assert any("Recovery" in text for text in texts)
+        assert app.restore_device_combo.currentData() == "jxmwm7422v"
+
+    def test_no_recovery_device_means_no_extra_entry(self, make_app, monkeypatch):
+        import apple_device_cli.gui_qt as gui_qt
+
+        monkeypatch.setattr(gui_qt, "detect_recovery_devices_present", lambda: False)
+        app = make_app(devices=[])
+        app._populate_restore_device_combo()
+
+        assert app.restore_device_combo.count() == 0
+
+
 class TestRestoreVersionRefresh:
     def test_refresh_versions_populates_combo_and_enables_start(
         self, make_app, sample_devices, monkeypatch

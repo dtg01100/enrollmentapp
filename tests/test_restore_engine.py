@@ -913,12 +913,45 @@ class TestEnterRecoveryMode:
             engine.enter_recovery_mode("UDID-A")
 
 
+class TestNormalizeSerial:
+    """Serial normalization — incl. structured iBoot recovery descriptors."""
+
+    RECOVERY_DESCRIPTOR = (
+        "sdom:01 cpid:8120 cprv:11 cpfm:03 scep:01 bdid:10 "
+        "ecid:00094daa01d80032 ibfl:3d sika:00 srnm:[jxmwm7422v]"
+    )
+
+    def test_normalize_serial_extracts_srnm_from_recovery_descriptor(self):
+        from apple_device_cli.restore import engine
+
+        # Recovery-mode USB serials are structured iBoot descriptor strings;
+        # the real serial lives inside srnm:[...]. The UDID never matches the
+        # whole descriptor, so the srnm value is what comparisons must use.
+        result = engine._normalize_serial(self.RECOVERY_DESCRIPTOR)
+        assert result == "jxmwm7422v"
+
+    def test_normalize_serial_plain_udid(self):
+        from apple_device_cli.restore import engine
+
+        assert engine._normalize_serial("00008101-001234567890ABCD") == (
+            "00008101001234567890abcd"
+        )
+
+    def test_normalize_serial_none_and_empty(self):
+        from apple_device_cli.restore import engine
+
+        assert engine._normalize_serial(None) == ""
+        assert engine._normalize_serial("") == ""
+
+
 class TestExitRecoveryMode:
-    """USB reset (D+/D- toggle) out of recovery mode.
+    """``irecovery --normal`` based exit from recovery mode.
 
     ``exit_recovery_mode`` scans ``_iter_apple_usb_devices`` (no lockdown /
     usbmux access — the device is in iBoot mode) and can be called with or
-    without a UDID.
+    without a UDID. The reset command is ``irecovery --normal`` (libirecovery),
+    which reboots the recovery iBSS into Normal mode — a bare ``device.reset()``
+    would only re-enumerate back into the recovery loop.
     """
 
     @staticmethod
@@ -927,65 +960,182 @@ class TestExitRecoveryMode:
         entries = [(serial, pid, 1, device) for serial, pid, device in devices]
         return lambda: iter(entries)
 
-    def test_exit_recovery_mode_calls_usb_reset(self, monkeypatch):
+    @staticmethod
+    def _fake_completed(returncode: int = 0, stdout: str = ""):
+        from subprocess import CompletedProcess
+        from unittest.mock import MagicMock
+
+        proc = MagicMock(spec=CompletedProcess)
+        proc.returncode = returncode
+        proc.stdout = stdout
+        return proc
+
+    def test_exit_recovery_mode_runs_irecovery_normal(self, monkeypatch):
+        from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
 
-        reset_calls: list[str] = []
         device = SimpleNamespace(idVendor=0x05ac, idProduct=0x1281)
-        device.reset = lambda: reset_calls.append("reset")
         monkeypatch.setattr(
             engine,
             "_iter_apple_usb_devices",
             self._iter_devices(("UDID-A", 0x1281, device)),
         )
+        monkeypatch.setattr(
+            engine.subprocess, "run", MagicMock(return_value=self._fake_completed())
+        )
 
-        result = engine.exit_recovery_mode("UDID-A")
+        result = engine.exit_recovery_mode()
 
-        assert reset_calls == ["reset"]
         assert result == ["UDID-A"]
+        cmd = engine.subprocess.run.call_args.args[0]
+        assert cmd == ["irecovery", "--normal"]
 
-    def test_exit_recovery_mode_raises_engine_error_on_failure(self, monkeypatch):
+    def test_exit_recovery_mode_no_device_raises(self, monkeypatch):
         from apple_device_cli.restore import engine
         from apple_device_cli.restore.errors import RestoreEngineError
 
         monkeypatch.setattr(engine, "_iter_apple_usb_devices", lambda: iter(()))
-        with pytest.raises(RestoreEngineError, match="recovery"):
-            engine.exit_recovery_mode("UDID-A")
+        with pytest.raises(RestoreEngineError, match="No recovery device"):
+            engine.exit_recovery_mode()
 
-    def test_exit_recovery_mode_reset_error_raises(self, monkeypatch):
+    def test_exit_recovery_mode_dfu_only_raises(self, monkeypatch):
+        from apple_device_cli.restore import engine
+        from apple_device_cli.restore.errors import RestoreEngineError
+
+        device = SimpleNamespace(idVendor=0x05ac, idProduct=0x1227)
+        monkeypatch.setattr(
+            engine,
+            "_iter_apple_usb_devices",
+            self._iter_devices(("SERIAL", 0x1227, device)),
+        )
+
+        with pytest.raises(RestoreEngineError, match="DFU|power cycle"):
+            engine.exit_recovery_mode()
+
+    def test_exit_recovery_mode_missing_irecovery_raises(self, monkeypatch):
+        from apple_device_cli.restore import engine
+        from apple_device_cli.restore.errors import RestoreEngineError
+
+        monkeypatch.setattr(
+            "shutil.which",
+            lambda name: None if name == "irecovery" else "/usr/bin/x",
+        )
+        device = SimpleNamespace(idVendor=0x05ac, idProduct=0x1281)
+        monkeypatch.setattr(
+            engine,
+            "_iter_apple_usb_devices",
+            self._iter_devices(("SERIAL", 0x1281, device)),
+        )
+
+        with pytest.raises(RestoreEngineError, match="irecovery"):
+            engine.exit_recovery_mode()
+
+    def test_exit_recovery_mode_irecovery_failure_raises(self, monkeypatch):
+        from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
         from apple_device_cli.restore.errors import RestoreEngineError
 
         device = SimpleNamespace(idVendor=0x05ac, idProduct=0x1281)
-
-        def boom():
-            raise RuntimeError("USBError: reset failed")
-
-        device.reset = boom
         monkeypatch.setattr(
             engine,
             "_iter_apple_usb_devices",
-            self._iter_devices(("UDID-A", 0x1281, device)),
+            self._iter_devices(("SERIAL", 0x1281, device)),
         )
-        with pytest.raises(RestoreEngineError, match="reset"):
-            engine.exit_recovery_mode("UDID-A")
+        monkeypatch.setattr(
+            engine.subprocess,
+            "run",
+            MagicMock(return_value=self._fake_completed(returncode=1, stdout="nope")),
+        )
 
-    def test_exit_recovery_mode_without_udid_resets_any_recovery_device(self, monkeypatch):
+        with pytest.raises(RestoreEngineError, match="irecovery --normal"):
+            engine.exit_recovery_mode()
+
+    def test_exit_recovery_mode_by_udid_matches_srnm(self, monkeypatch):
+        from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
 
-        reset_calls: list[str] = []
+        descriptor = (
+            "sdom:01 cpid:8120 cprv:11 cpfm:03 scep:01 bdid:10 "
+            "ecid:00094daa01d80032 ibfl:3d sika:00 srnm:[jxmwm7422v]"
+        )
         device = SimpleNamespace(idVendor=0x05ac, idProduct=0x1281)
-        device.reset = lambda: reset_calls.append("reset")
+        monkeypatch.setattr(
+            engine,
+            "_iter_apple_usb_devices",
+            self._iter_devices((descriptor, 0x1281, device)),
+        )
+        monkeypatch.setattr(
+            engine.subprocess, "run", MagicMock(return_value=self._fake_completed())
+        )
+
+        result = engine.exit_recovery_mode("JXMWM7422V")
+
+        assert result == [descriptor]
+        cmd = engine.subprocess.run.call_args.args[0]
+        assert cmd == ["irecovery", "--normal"]
+
+    def test_exit_recovery_mode_by_udid_matches_ecid(self, monkeypatch):
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+
+        descriptor = (
+            "sdom:01 cpid:8120 cprv:11 cpfm:03 scep:01 bdid:10 "
+            "ecid:00094daa01d80032 ibfl:3d sika:00 srnm:[jxmwm7422v]"
+        )
+        device = SimpleNamespace(idVendor=0x05ac, idProduct=0x1281)
+        monkeypatch.setattr(
+            engine,
+            "_iter_apple_usb_devices",
+            self._iter_devices((descriptor, 0x1281, device)),
+        )
+        monkeypatch.setattr(
+            engine.subprocess, "run", MagicMock(return_value=self._fake_completed())
+        )
+
+        result = engine.exit_recovery_mode("0x00094daa01d80032")
+
+        assert result == [descriptor]
+        assert engine.subprocess.run.call_count == 1
+
+    def test_exit_recovery_mode_by_udid_no_match_raises(self, monkeypatch):
+        from apple_device_cli.restore import engine
+        from apple_device_cli.restore.errors import RestoreEngineError
+
+        descriptor = (
+            "sdom:01 cpid:8120 cprv:11 cpfm:03 scep:01 bdid:10 "
+            "ecid:00094daa01d80032 ibfl:3d sika:00 srnm:[jxmwm7422v]"
+        )
+        device = SimpleNamespace(idVendor=0x05ac, idProduct=0x1281)
+        monkeypatch.setattr(
+            engine,
+            "_iter_apple_usb_devices",
+            self._iter_devices((descriptor, 0x1281, device)),
+        )
+
+        # A Normal-mode lockdown UDID cannot match a recovery descriptor —
+        # the descriptor carries the SRNM + ECID, not the UDID.
+        with pytest.raises(RestoreEngineError, match="No recovery device found"):
+            engine.exit_recovery_mode("00008120-00094DAA01D80032")
+
+    def test_exit_recovery_mode_without_udid_resets_any_recovery_device(self, monkeypatch):
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+
+        device = SimpleNamespace(idVendor=0x05ac, idProduct=0x1281)
         monkeypatch.setattr(
             engine,
             "_iter_apple_usb_devices",
             self._iter_devices(("CPID:0x8010", 0x1281, device)),
         )
+        monkeypatch.setattr(
+            engine.subprocess, "run", MagicMock(return_value=self._fake_completed())
+        )
 
         result = engine.exit_recovery_mode()
 
-        assert reset_calls == ["reset"]
         assert result == ["CPID:0x8010"]
+        cmd = engine.subprocess.run.call_args.args[0]
+        assert cmd == ["irecovery", "--normal"]
 
     def test_exit_recovery_mode_without_udid_no_recovery_device_raises(self, monkeypatch):
         from apple_device_cli.restore import engine
@@ -1010,13 +1160,11 @@ class TestExitRecoveryMode:
             engine.exit_recovery_mode()
 
     def test_exit_recovery_mode_without_udid_multiple_recovery_devices(self, monkeypatch):
+        from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
 
-        reset_calls: list[str] = []
         device1 = SimpleNamespace(idVendor=0x05ac, idProduct=0x1281)
-        device1.reset = lambda: reset_calls.append("reset-1")
         device2 = SimpleNamespace(idVendor=0x05ac, idProduct=0x1281)
-        device2.reset = lambda: reset_calls.append("reset-2")
         monkeypatch.setattr(
             engine,
             "_iter_apple_usb_devices",
@@ -1024,11 +1172,14 @@ class TestExitRecoveryMode:
                 ("SERIAL-A", 0x1281, device1), ("SERIAL-B", 0x1281, device2)
             ),
         )
+        monkeypatch.setattr(
+            engine.subprocess, "run", MagicMock(return_value=self._fake_completed())
+        )
 
         result = engine.exit_recovery_mode()
 
-        assert reset_calls == ["reset-1", "reset-2"]
         assert result == ["SERIAL-A", "SERIAL-B"]
+        assert engine.subprocess.run.call_count == 2
 
 
 class TestDetectRecoveryDevicesPresent:

@@ -877,3 +877,85 @@ class TestExitRecoveryAnyButton:
             with patch("apple_device_cli.gui_qt.list_devices", return_value=[]):
                 app.restore_exit_recovery_any_btn.click()
         mock_exit.assert_called_once_with(udid=None)
+
+
+class TestRecoveryRestoreFlow:
+    """Driving a restore from the synthetic '(Recovery mode)' combo entry.
+
+    A device in Recovery mode is invisible to usbmuxd, so it never lands in
+    ``self._devices``. Selecting the synthetic entry (SRNM/ECID as userData)
+    must still enable Start — targeted by ECID — and surface cached IPSW
+    files instead of signed versions (which need lockdown).
+    """
+
+    def _select_recovery(self, app, monkeypatch):
+        import apple_device_cli.gui_qt as gui_qt
+
+        monkeypatch.setattr(gui_qt, "detect_recovery_devices_present", lambda: True)
+        monkeypatch.setattr(
+            gui_qt,
+            "recovery_device_descriptor",
+            lambda: ("jxmwm7422v", "00094daa01d80032"),
+        )
+        app._populate_restore_device_combo()
+
+    def test_recovery_combo_selection_enables_start_with_cached_ipsw(
+        self, make_app, tmp_path, monkeypatch
+    ):
+        cached = tmp_path / "iPad_Pro_26.6_23G71_Restore.ipsw"
+        cached.write_bytes(b"fake")
+
+        app = make_app(devices=[])
+        self._select_recovery(app, monkeypatch)
+
+        assert app._restore_is_recovery is True
+        assert app.restore_product_type_label.text() == "Recovery mode"
+        assert app.restore_start_btn.isEnabled()
+        assert app.restore_versions_combo.count() == 1
+        assert app.restore_versions_combo.currentData() == str(cached)
+        assert app._restore_ipsw_path == cached
+        assert app.restore_ipsw_path_label.text() == str(cached)
+
+    def test_recovery_combo_selection_without_cached_ipsw(
+        self, make_app, monkeypatch
+    ):
+        app = make_app(devices=[])
+        self._select_recovery(app, monkeypatch)
+
+        assert app._restore_is_recovery is True
+        assert not app.restore_start_btn.isEnabled()
+        assert app._restore_ipsw_path is None
+        assert "No cached IPSW" in app.restore_log_text.toPlainText()
+
+    def test_recovery_start_routes_to_ecid(self, make_app, tmp_path, monkeypatch):
+        import apple_device_cli.gui_qt as gui_qt
+
+        cached = tmp_path / "iPad_Pro_26.6_23G71_Restore.ipsw"
+        cached.write_bytes(b"fake")
+
+        app = make_app(devices=[])
+        self._select_recovery(app, monkeypatch)
+        monkeypatch.setattr(gui_qt, "_device_ecid", lambda: "00094daa01d80032")
+
+        captured: dict = {}
+        fake_result = SimpleNamespace(success=True, error=None, udid=None, ipsw_path=cached)
+
+        def fake_restore(udid, ipsw_path, cache_dir, progress_callback, ecid=None):
+            captured["udid"] = udid
+            captured["ecid"] = ecid
+            captured["ipsw_path"] = ipsw_path
+            return fake_result
+
+        monkeypatch.setattr(gui_qt, "engine_restore_device", fake_restore)
+
+        app._start_restore()
+
+        assert captured["udid"] is None
+        assert captured["ecid"] == "00094daa01d80032"
+        assert captured["ipsw_path"] == cached
+
+    def test_recovery_mode_label_shows_recovery(self, make_app, monkeypatch):
+        app = make_app(devices=[])
+        self._select_recovery(app, monkeypatch)
+
+        assert app.restore_device_mode_label.text() == "Recovery"

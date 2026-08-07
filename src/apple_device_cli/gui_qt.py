@@ -299,6 +299,7 @@ def _require_pyside6() -> None:
             self._restore_ipsw_path: Path | None = None
             self._restore_step_label: str | None = None
             self._restore_last_percent: int = 0
+            self._restore_is_recovery: bool = False
 
             self._setup_ui()
             self.log_signal.connect(self._append_log)
@@ -1160,6 +1161,7 @@ def _require_pyside6() -> None:
             self.restore_device_combo.blockSignals(True)
             try:
                 self.restore_device_combo.clear()
+                self._restore_is_recovery = False
                 for device in self._devices:
                     self.restore_device_combo.addItem(
                         f"{device.device_name}  ({device.udid})",
@@ -1183,6 +1185,7 @@ def _require_pyside6() -> None:
             self.restore_versions_combo.clear()
             self.restore_start_btn.setEnabled(False)
             self.restore_refresh_versions_btn.setEnabled(False)
+            self._restore_is_recovery = False
             has_device = index >= 0
             self.restore_enter_recovery_btn.setEnabled(has_device)
             self.restore_exit_recovery_btn.setEnabled(has_device)
@@ -1193,6 +1196,23 @@ def _require_pyside6() -> None:
             udid = self.restore_device_combo.currentData()
             device = next((d for d in self._devices if d.udid == udid), None)
             if device is None:
+                # Could be the synthetic "(Recovery mode)" entry (SRNM/ECID as
+                # userData). Recovery devices are invisible to usbmuxd, so they
+                # never land in self._devices. Treat the selection as a
+                # recovery device so the user can still drive a restore
+                # (targeted by ECID).
+                if detect_recovery_devices_present():
+                    rec = recovery_device_descriptor()
+                    if rec is not None and udid in (rec[0], rec[1]):
+                        self._restore_is_recovery = True
+                        self.restore_product_type_label.setText("Recovery mode")
+                        self.restore_refresh_versions_btn.setEnabled(False)
+                        self._update_mode_labels()  # shows "Recovery"
+                        # "Find firmwares": populate the versions combo with any
+                        # cached IPSW files so the user can pick one without
+                        # browsing.
+                        self._load_cached_ipsw_for_recovery()
+                        return
                 self.restore_product_type_label.setText("<unknown>")
                 self._update_mode_labels()
                 return
@@ -1205,6 +1225,30 @@ def _require_pyside6() -> None:
             # _refresh_versions falls back to reading it from lockdown.
             self.restore_refresh_versions_btn.setEnabled(True)
             self._update_mode_labels()
+
+        def _load_cached_ipsw_for_recovery(self) -> None:
+            """Populate the versions combo with cached .ipsw files (Recovery mode).
+
+            A device in Recovery mode can't fetch signed versions over lockdown,
+            so instead surface locally-cached IPSW files from the cache dir and
+            enable Start if any are present.
+            """
+            cache_dir = resolve_cache_dir()
+            ipsws = sorted(cache_dir.glob("*.ipsw")) if cache_dir and cache_dir.is_dir() else []
+            self.restore_versions_combo.clear()
+            for p in ipsws:
+                self.restore_versions_combo.addItem(p.name, userData=str(p))
+            if ipsws:
+                self.restore_versions_combo.setCurrentIndex(0)
+                self._restore_ipsw_path = ipsws[0]
+                self.restore_ipsw_path_label.setText(str(ipsws[0]))
+                self.restore_start_btn.setEnabled(True)
+                self._log_to_restore(f"Found {len(ipsws)} cached IPSW(s) in {cache_dir}.")
+            else:
+                self._restore_ipsw_path = None
+                self._log_to_restore(
+                    f"No cached IPSW in {cache_dir}. Use 'Browse...' to pick one."
+                )
 
         def _update_mode_labels(self) -> None:
             """Refresh the Restore tab's device-mode label.
@@ -1220,6 +1264,9 @@ def _require_pyside6() -> None:
             if not udid:
                 self.restore_device_mode_label.setText("—")
                 self._update_restore_start_for_recovery()
+                return
+            if self._restore_is_recovery:
+                self.restore_device_mode_label.setText("Recovery")
                 return
             try:
                 mode = detect_device_mode(udid)
@@ -1334,11 +1381,13 @@ def _require_pyside6() -> None:
         def _start_restore(self) -> None:
             udid = self.restore_device_combo.currentData()
             ecid: str | None = None
-            if not udid:
+            if not udid or self._restore_is_recovery:
                 # A device in Recovery mode drops off the lockdown device
                 # list (invisible to usbmuxd), so it never appears in the
                 # combo. Fall back to targeting it by ECID when one is on
-                # the USB bus.
+                # the USB bus. This also fires for the synthetic "(Recovery
+                # mode)" combo entry, whose userData is an SRNM/ECID rather
+                # than a real UDID.
                 if detect_recovery_devices_present():
                     ecid = _device_ecid()
                     if not ecid:
@@ -1350,15 +1399,23 @@ def _require_pyside6() -> None:
                             "device and retry.",
                         )
                         return
+                    udid = None
                     self._log_to_restore(
                         f"Device in Recovery mode detected — restoring via ECID {ecid}."
                     )
                 else:
-                    QMessageBox.warning(self, "No device", "Select a device UDID.")
+                    QMessageBox.warning(self, "No device", "Select a device UDID or connect a device.")
                     return
 
             local_path = self._restore_ipsw_path
             version_url = self.restore_versions_combo.currentData()
+            if local_path is None and version_url:
+                # The combo may carry a cached .ipsw path (Recovery mode
+                # selection) rather than a download URL — treat an existing
+                # local file as such.
+                cand = Path(version_url)
+                if cand.suffix == ".ipsw" and cand.is_file():
+                    local_path = cand
             if local_path is not None:
                 if not local_path.is_file():
                     QMessageBox.warning(

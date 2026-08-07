@@ -8,8 +8,9 @@ Public surface (see ios-enroll-restore-tab spec):
   - ``ProgressEvent``: one output line plus an optional ``ProgressUpdate``
   - ``parse_ipsw_url``: pure parser for Apple CDN URLs (no subprocess)
   - ``parse_progress_line``: pure parser for idevicerestore progress lines
-  - ``list_signed_versions(product_type)``: subprocess wrapper
-  - ``download_ipsw(url, dest_dir)``: urllib wrapper with resume
+   - ``list_signed_versions(product_type)``: subprocess wrapper
+   - ``download_ipsw(url, dest_dir, progress_callback=None)``: urllib wrapper
+     with resume, cache-hit short-circuit, and streaming progress
   - ``get_product_type_for_udid(udid)``: lockdown lookup
   - ``detect_device_mode(udid)``: USB product-ID lookup (normal/recovery/restore/dfu)
   - ``detect_recovery_devices_present()``: True if any iBoot-mode USB device is on the bus
@@ -130,6 +131,12 @@ def parse_ipsw_url(url: str, device: str) -> SignedVersion | None:
 _PLAIN_PROGRESS_RE = re.compile(
     r"^PROGRESS:\s*(\d+)\s*/\s*(\d+)\s*$", re.IGNORECASE
 )
+# A STEP: line that carries its own trailing percentage, e.g.
+# ``STEP: Restoring Baseband 45%``. Parsed as a percent event so the bar
+# moves even when the plain format never emits PROGRESS: lines.
+_PLAIN_STEP_PERCENT_RE = re.compile(
+    r"^STEP:\s*(.+?)\s+(\d{1,3}(?:\.\d+)?)\s*%\s*$", re.IGNORECASE
+)
 _PLAIN_STEP_RE = re.compile(r"^STEP:\s*(.+?)\s*$", re.IGNORECASE)
 _UPLOADING_RE = re.compile(
     r"^\s*Uploading\s+\[.*\]\s*(\d+(?:\.\d+)?)\s*%\s*$", re.IGNORECASE
@@ -142,7 +149,10 @@ def parse_progress_line(line: str) -> ProgressUpdate | None:
     Handles both output formats:
 
     - Plain (``-P, --plain-progress``): ``PROGRESS: 12/30`` and
-      ``STEP: Restoring Baseband``.
+      ``STEP: Restoring Baseband``. A ``STEP:`` line that carries its own
+      trailing percentage (``STEP: Restoring Baseband 45%``) is parsed as a
+      percent event (value 45, total 100) with the step name kept as the
+      label, so the bar moves even when ``PROGRESS:`` lines are sparse.
     - Default: ``Uploading [====...] 49.7%``. This parser is
       stateless, so the step label from the preceding ``Sending`` /
       ``Personalizing`` header lines is NOT recovered here — the
@@ -162,6 +172,13 @@ def parse_progress_line(line: str) -> ProgressUpdate | None:
         total = int(match.group(2))
         value = int(round((current / total) * 100)) if total else 0
         return ProgressUpdate(kind="percent", value=value, total=total, label=None)
+
+    match = _PLAIN_STEP_PERCENT_RE.match(stripped)
+    if match:
+        value = int(round(float(match.group(2))))
+        return ProgressUpdate(
+            kind="percent", value=value, total=100, label=match.group(1).strip()
+        )
 
     match = _PLAIN_STEP_RE.match(stripped)
     if match:
@@ -254,11 +271,20 @@ def _filename_from_url(url: str) -> str:
     return tail if tail else "ipsw.partial"
 
 
-def download_ipsw(url: str, dest_dir: Path) -> Path:
+def download_ipsw(
+    url: str,
+    dest_dir: Path,
+    progress_callback: Callable[[ProgressEvent], None] | None = None,
+) -> Path:
     """Stream the URL to ``dest_dir/<basename>`` with HTTP Range-resume.
 
     Behavior:
-      - If ``dest_dir/<basename>`` exists, check size and use
+      - **Cache hit:** if ``dest_dir/<basename>`` already exists and is
+        non-empty, emit one 100% ``ProgressEvent`` (label ``"Using cached
+        IPSW"``) and return it immediately — no network I/O. When both the
+        final file and a ``.partial`` exist, the final file wins and the
+        stale ``.partial`` is deleted.
+      - If ``dest_dir/<basename>.partial`` exists, check size and use
         ``Range: bytes=<existing>-`` to resume. (The pre-existing
         file is left in place during download under a ``.partial``
         suffix and renamed on success.)
@@ -267,6 +293,13 @@ def download_ipsw(url: str, dest_dir: Path) -> Path:
       - Up to ``MAX_DOWNLOAD_ATTEMPTS`` retries on network errors.
         After that, raises ``RestoreEngineError`` with the last
         urllib error attached.
+      - ``progress_callback`` (optional) receives a ``ProgressEvent`` per
+        integer-percent change while streaming (throttled: a 9.9 GB IPSW at
+        64 KB chunks would otherwise emit ~150k queued signals), plus a
+        final 100% event on completion. When the server sends no
+        ``Content-Length``, a single ``step`` event (label ``"Downloading
+        <basename>"``) is emitted instead so the UI shows a label rather than
+        a frozen bar.
     """
     from apple_device_cli.restore.errors import RestoreEngineError
 
@@ -274,6 +307,23 @@ def download_ipsw(url: str, dest_dir: Path) -> Path:
     filename = _filename_from_url(url)
     final = dest_dir / filename
     partial = dest_dir / (filename + ".partial")
+
+    def _emit(event: ProgressEvent) -> None:
+        if progress_callback is not None:
+            progress_callback(event)
+
+    if final.exists() and final.stat().st_size > 0:
+        if partial.exists():
+            partial.unlink()
+        _emit(
+            ProgressEvent(
+                text=f"Using cached IPSW: {final}",
+                progress=ProgressUpdate(
+                    kind="percent", value=100, total=100, label="Using cached IPSW"
+                ),
+            )
+        )
+        return final
 
     last_exc: Exception | None = None
     for attempt in range(1, MAX_DOWNLOAD_ATTEMPTS + 1):
@@ -292,13 +342,60 @@ def download_ipsw(url: str, dest_dir: Path) -> Path:
                     # Server didn't honor the Range — full body coming
                     existing = 0
                 mode = "ab" if existing > 0 else "wb"
+                content_length = resp.headers.get("Content-Length")
+                try:
+                    remaining = int(content_length) if content_length else 0
+                except ValueError:
+                    remaining = 0
+                # When resuming, Content-Length is the remaining bytes only.
+                total = existing + remaining
+                downloaded = existing
+                last_pct = -1
+                label_emitted = False
                 with open(partial, mode) as f:
                     while True:
                         chunk = resp.read(_DOWNLOAD_CHUNK)
                         if not chunk:
                             break
                         f.write(chunk)
+                        downloaded += len(chunk)
+                        if total:
+                            pct = int(round((downloaded / total) * 100))
+                            if pct != last_pct:
+                                last_pct = pct
+                                _emit(
+                                    ProgressEvent(
+                                        text=f"Downloaded {pct}%",
+                                        progress=ProgressUpdate(
+                                            kind="percent",
+                                            value=pct,
+                                            total=total,
+                                            label=None,
+                                        ),
+                                    )
+                                )
+                        elif not label_emitted:
+                            label_emitted = True
+                            _emit(
+                                ProgressEvent(
+                                    text="Downloading",
+                                    progress=ProgressUpdate(
+                                        kind="step",
+                                        value=None,
+                                        total=None,
+                                        label=f"Downloading {filename}",
+                                    ),
+                                )
+                            )
                 partial.replace(final)
+                _emit(
+                    ProgressEvent(
+                        text="Download complete",
+                        progress=ProgressUpdate(
+                            kind="percent", value=100, total=total or 100, label=None
+                        ),
+                    )
+                )
                 return final
         except (URLError, OSError) as exc:
             last_exc = exc

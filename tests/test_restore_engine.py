@@ -82,6 +82,23 @@ class TestParseProgressLine:
         assert result.total is None
         assert result.label == "Restoring Baseband"
 
+    def test_plain_step_line_with_trailing_percent(self):
+        """A STEP: line that carries its own percentage is parsed as a
+        percent event so the bar moves even when PROGRESS: lines are sparse."""
+        result = parse_progress_line("STEP: Restoring Baseband 45%")
+        assert result is not None
+        assert result.kind == "percent"
+        assert result.value == 45
+        assert result.total == 100
+        assert result.label == "Restoring Baseband"
+
+    def test_plain_step_line_with_trailing_percent_decimal(self):
+        result = parse_progress_line("STEP: Restoring Baseband 45.0%")
+        assert result is not None
+        assert result.kind == "percent"
+        assert result.value == 45
+        assert result.label == "Restoring Baseband"
+
     def test_default_uploading_line(self):
         result = parse_progress_line(
             "  Uploading [==================================================] 100.0%"
@@ -299,6 +316,148 @@ class TestDownloadIpsw:
                 "https://example.com/foo_Restore.ipsw",
                 dest_dir=tmp_path,
             )
+
+    def test_download_ipsw_uses_existing_final_file(self, tmp_path, monkeypatch):
+        """Cache hit: the final IPSW already exists — no network, return it."""
+        from apple_device_cli.restore import engine
+
+        final = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
+        final.write_bytes(b"complete-ipsw")
+
+        def boom(*args, **kwargs):
+            raise AssertionError("network must not be used on a cache hit")
+
+        monkeypatch.setattr(engine, "urlopen", boom)
+
+        captured: list[engine.ProgressEvent] = []
+        result = engine.download_ipsw(
+            "https://example.com/iPad_26.6_23G71_Restore.ipsw",
+            dest_dir=tmp_path,
+            progress_callback=captured.append,
+        )
+
+        assert result == final
+        assert final.read_bytes() == b"complete-ipsw"
+        assert captured, "expected a cached-IPSW progress event"
+        last = captured[-1]
+        assert last.progress is not None
+        assert last.progress.kind == "percent"
+        assert last.progress.value == 100
+        assert last.progress.label == "Using cached IPSW"
+
+    def test_download_ipsw_prefers_final_over_partial(self, tmp_path, monkeypatch):
+        """Both final and .partial exist — final wins, stale partial removed."""
+        from apple_device_cli.restore import engine
+
+        final = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
+        final.write_bytes(b"complete")
+        partial = tmp_path / "iPad_26.6_23G71_Restore.ipsw.partial"
+        partial.write_bytes(b"stale")
+
+        monkeypatch.setattr(
+            engine,
+            "urlopen",
+            lambda *a, **kw: (_ for _ in ()).throw(AssertionError("no network")),
+        )
+
+        captured: list[engine.ProgressEvent] = []
+        result = engine.download_ipsw(
+            "https://example.com/iPad_26.6_23G71_Restore.ipsw",
+            dest_dir=tmp_path,
+            progress_callback=captured.append,
+        )
+
+        assert result == final
+        assert not partial.exists()
+        assert captured[-1].progress is not None
+        assert captured[-1].progress.value == 100
+
+    def test_download_ipsw_emits_percent_progress(self, tmp_path, monkeypatch):
+        """Streaming emits throttled percent events ending at 100."""
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+
+        class FakeResp:
+            def __init__(self, total: int, chunk: int):
+                self._remaining = total
+                self._chunk = chunk
+                self.headers = {"Content-Length": str(total)}
+
+            def read(self, n=-1):
+                if self._remaining <= 0:
+                    return b""
+                take = min(self._chunk, self._remaining)
+                self._remaining -= take
+                return b"\x00" * take
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+        monkeypatch.setattr(engine, "urlopen", MagicMock(return_value=FakeResp(1024, 64)))
+
+        captured: list[engine.ProgressEvent] = []
+        engine.download_ipsw(
+            "https://example.com/iPad_26.6_23G71_Restore.ipsw",
+            dest_dir=tmp_path,
+            progress_callback=captured.append,
+        )
+
+        percents = [
+            e.progress.value
+            for e in captured
+            if e.progress is not None and e.progress.kind == "percent"
+        ]
+        assert len(percents) >= 2
+        assert percents == sorted(percents), "percent events must be non-decreasing"
+        assert percents[0] < percents[-1]
+        assert percents[-1] == 100
+        # The file was fully written.
+        assert (
+            tmp_path / "iPad_26.6_23G71_Restore.ipsw"
+        ).read_bytes() == b"\x00" * 1024
+
+    def test_download_ipsw_no_content_length_emits_step(self, tmp_path, monkeypatch):
+        """Without Content-Length, emit a 'Downloading <name>' step label."""
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+
+        class FakeResp:
+            def __init__(self):
+                self._remaining = 10
+                self.headers = {}
+
+            def read(self, n=-1):
+                if self._remaining <= 0:
+                    return b""
+                self._remaining -= 1
+                return b"\x00"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+        monkeypatch.setattr(engine, "urlopen", MagicMock(return_value=FakeResp()))
+
+        captured: list[engine.ProgressEvent] = []
+        engine.download_ipsw(
+            "https://example.com/iPad_26.6_23G71_Restore.ipsw",
+            dest_dir=tmp_path,
+            progress_callback=captured.append,
+        )
+
+        steps = [
+            e.progress
+            for e in captured
+            if e.progress is not None and e.progress.kind == "step"
+        ]
+        assert steps, "expected a 'Downloading' step event"
+        assert steps[0].label == "Downloading iPad_26.6_23G71_Restore.ipsw"
+        assert (tmp_path / "iPad_26.6_23G71_Restore.ipsw").exists()
 
 
 class TestGetProductTypeForUdid:

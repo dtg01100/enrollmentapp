@@ -319,7 +319,10 @@ class TestRestoreStart:
         )
 
         ipsw_path = Path("/tmp/fake.ipsw")
-        monkeypatch.setattr(gui_qt, "download_ipsw", lambda url, dest_dir: ipsw_path)
+        monkeypatch.setattr(
+            gui_qt, "download_ipsw",
+            lambda url, dest_dir, progress_callback=None: ipsw_path,
+        )
 
         captured: dict = {}
         fake_result = SimpleNamespace(success=True, error=None, udid="x", ipsw_path=ipsw_path)
@@ -414,7 +417,7 @@ class TestRestoreStart:
         )
         monkeypatch.setattr(
             gui_qt, "download_ipsw",
-            lambda url, dest_dir: Path("/tmp/fake.ipsw"),
+            lambda url, dest_dir, progress_callback=None: Path("/tmp/fake.ipsw"),
         )
         monkeypatch.setattr(
             gui_qt, "engine_restore_device",
@@ -426,6 +429,55 @@ class TestRestoreStart:
         app._start_restore()
 
         assert "idevicerestore exited with code 1" in app.restore_log_text.toPlainText()
+
+    def test_download_phase_drives_progress_bar(
+        self, make_app, sample_devices, tmp_path, monkeypatch
+    ):
+        """Download progress must move the bar before the restore starts.
+
+        The GUI passes its ``on_progress`` callback into ``download_ipsw``, so
+        percent events from the download phase switch the bar to determinate
+        and move it. (The mocked restore reports failure so ``_finalize`` does
+        not overwrite the download's value with 100.)
+        """
+        import apple_device_cli.gui_qt as gui_qt
+
+        ipsw_path = tmp_path / "iPad_Pro_26.6_23G71_Restore.ipsw"
+        ipsw_path.write_bytes(b"fake")
+
+        app = make_app(devices=sample_devices)
+        app.restore_versions_combo.addItem(
+            "iOS 26.6 (23G71)",
+            userData="https://example.com/iPad_Pro_26.6_23G71_Restore.ipsw",
+        )
+
+        def fake_download(url, dest_dir, progress_callback=None):
+            progress_callback(
+                ProgressEvent(
+                    text="Downloaded 42%",
+                    progress=ProgressUpdate(
+                        kind="percent", value=42, total=1024, label=None
+                    ),
+                )
+            )
+            return ipsw_path
+
+        monkeypatch.setattr(gui_qt, "download_ipsw", fake_download)
+        monkeypatch.setattr(
+            gui_qt,
+            "engine_restore_device",
+            lambda **kwargs: SimpleNamespace(
+                success=False,
+                error="stopped before restore",
+                udid="x",
+                ipsw_path=ipsw_path,
+            ),
+        )
+
+        app._start_restore()
+
+        assert app.restore_progress_bar.maximum() == 100
+        assert app.restore_progress_bar.value() == 42
 
     def test_start_restore_with_recovery_device_uses_ecid(
         self, make_app, tmp_path, monkeypatch
@@ -588,8 +640,10 @@ class TestRestoreProgressBar:
             )
         )
         # First progress event switches to determinate; format shows the step.
+        # A bare step at 0% is bumped to a 1% floor so the bar shows activity
+        # (see _on_restore_progress_event).
         assert app.restore_progress_bar.maximum() == 100
-        assert app.restore_progress_bar.text() == "Restoring Baseband 0%"
+        assert app.restore_progress_bar.text() == "Restoring Baseband 1%"
 
         app._on_restore_progress_event(
             ProgressEvent(

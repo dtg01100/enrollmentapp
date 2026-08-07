@@ -37,6 +37,7 @@ from apple_device_cli.restore.cache import (
 from apple_device_cli.restore.engine import (
     ProgressEvent,
     _device_ecid,
+    _filename_from_url,
     detect_device_mode,
     detect_recovery_devices_present,
     download_ipsw,
@@ -297,6 +298,7 @@ def _require_pyside6() -> None:
             self._request_token: int = 0
             self._restore_ipsw_path: Path | None = None
             self._restore_step_label: str | None = None
+            self._restore_last_percent: int = 0
 
             self._setup_ui()
             self.log_signal.connect(self._append_log)
@@ -1385,12 +1387,24 @@ def _require_pyside6() -> None:
                 # Runs on the worker thread — hand the event to the GUI thread
                 # via a queued signal (logging + QProgressBar are not thread-safe).
                 self.restore_progress_signal.emit(event)
+                if (
+                    event.progress is not None
+                    and event.progress.label == "Using cached IPSW"
+                ):
+                    self._log_to_restore(
+                        "Using cached IPSW at "
+                        f"{cache_dir / _filename_from_url(version_url)}"
+                    )
 
             def work() -> Any:
                 target = (
                     ipsw_path
                     if ipsw_path is not None
-                    else download_ipsw(version_url, cache_dir)
+                    else download_ipsw(
+                        version_url,
+                        cache_dir,
+                        progress_callback=on_progress,
+                    )
                 )
                 return engine_restore_device(
                     udid=udid,
@@ -1411,6 +1425,7 @@ def _require_pyside6() -> None:
         def _reset_restore_progress_bar(self) -> None:
             """Put the Restore bar into its indeterminate 'working' state."""
             self._restore_step_label = None
+            self._restore_last_percent = 0
             self.restore_progress_bar.setRange(0, 0)
             self.restore_progress_bar.setFormat("Working...")
             self.restore_progress_bar.setVisible(True)
@@ -1463,7 +1478,29 @@ def _require_pyside6() -> None:
                 if update.label:
                     self._restore_step_label = self._normalize_step_label(update.label)
                     self._update_restore_progress_format()
+                # idevicerestore -P often emits only STEP: lines until the
+                # late per-image PROGRESS: phase. Two rules keep the bar from
+                # looking frozen:
+                #   1. A step that follows a phase at 100% (a completed
+                #      download, or the previous step's PROGRESS hitting 30/30)
+                #      opens a new progress phase — reset off the pinned 100%.
+                #   2. A bare step at 0% is bumped to a 1% floor. 1% is
+                #      "alive", not a real measurement, so it never overrides
+                #      a genuine value.
+                if self._restore_last_percent >= 100 and bar.maximum() == 100:
+                    self._restore_last_percent = 0
+                    bar.setValue(1)
+                    self._update_restore_progress_format()
+                elif (
+                    bar.maximum() == 100
+                    and bar.value() == 0
+                    and self._restore_last_percent == 0
+                ):
+                    bar.setValue(1)
             elif update.kind == "percent" and update.value is not None:
+                if update.label:
+                    self._restore_step_label = self._normalize_step_label(update.label)
+                self._restore_last_percent = update.value
                 bar.setValue(update.value)
                 self._update_restore_progress_format()
 

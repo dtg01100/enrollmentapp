@@ -105,6 +105,37 @@ ios-enroll-gui                                           # GUI entry script (sam
 pip install 'ios-enroll[gui]'    # or: uv tool install 'ios-enroll[gui]'
 ```
 
+### Restore Commands
+
+```bash
+ios-enroll device restore --udid <UDID> --list-versions    # List signed iOS versions for a device
+ios-enroll device restore --udid <UDID> --ipsw <path>      # Restore a local .ipsw file
+ios-enroll device restore --show-cache                     # Show firmware cache contents
+ios-enroll device restore --clear-cache                    # Remove downloaded IPSW files
+ios-enroll device restore --cache-dir <DIR>                # Override the firmware cache location
+```
+
+`idevicerestore` performs the restore (with a `pymobiledevice3` fallback when
+it's not on PATH). There is **no timeout** on the restore subprocess — older
+iPads can take 45-60+ minutes. For long restores, run via `tmux`/`screen` or
+the agent's background mode so the terminal session doesn't kill the process.
+
+The firmware cache (4-7 GB per IPSW) is resolved with 4-tier precedence:
+
+1. `--cache-dir <DIR>` (or the GUI "Cache folder..." button)
+2. `IOS_ENROLL_CACHE_DIR` env var
+3. `~/.config/ios-enroll/config.json` field `cache_dir`
+4. `~/.cache/ios-enroll/firmware/` (XDG default)
+
+Downloads resume via HTTP `Range:` after a partial transfer. The default is
+never `/tmp` (tmpfs quota can OOM the host on large IPSW downloads).
+
+The GUI also has a **Restore tab** (next to Devices / Organizations /
+Enrollment): pick a device, refresh the signed-version dropdown (or browse
+for a local `.ipsw`), and click Start Restore. The cache folder is
+configurable from the tab, and the live `idevicerestore` output streams into
+the tab's log panel.
+
 ## Organization Storage
 
 Organizations are stored in `~/.config/apple_device_cli/orgs/` by default. Each org directory contains `org.json` and optionally `cert.der` and `key.der`.

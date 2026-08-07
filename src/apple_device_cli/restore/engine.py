@@ -798,19 +798,23 @@ def _iter_apple_usb_devices():
 
 
 def _strip_ecid_prefix(value: str) -> str:
-    """Normalize an ECID to lowercase hex without the ``0x`` prefix.
+    """Normalize an ECID to lowercase hex WITH the ``0x`` prefix.
 
-    ``idevicerestore`` accepts ``0x...`` hex and bare decimal; the engine
-    emits the bare-hex form so ``-i`` args and log output stay consistent.
+    ``idevicerestore -i`` requires the ``0x`` prefix (e.g.
+    ``0x00094daa01d80032``); the bare-hex form ``00094daa01d80032`` is
+    rejected with "Could not parse ECID". Always emit the prefixed form.
     """
-    stripped = value.strip().lower()
+    stripped = (value or "").strip().lower()
+    if not stripped:
+        return ""
     if stripped.startswith("0x"):
-        return stripped[2:]
-    return stripped
+        return "0x" + stripped[2:]
+    return "0x" + stripped
 
 
 def _normalize_ecid(value: str) -> str:
-    """Normalize an ECID for equality comparison (drops ``0x`` + dashes)."""
+    """Normalize an ECID for equality comparison (``0x``-prefixed lowercase
+    hex, dashes stripped)."""
     return _strip_ecid_prefix(value).replace("-", "").lower()
 
 
@@ -851,11 +855,12 @@ def _query_recovery_ecid() -> str | None:
 
 
 def _device_ecid(udid: str | None = None) -> str | None:
-    """Resolve a device to its ECID (hex, no ``0x`` prefix), or None.
+    """Resolve a device to its ECID (hex with the ``0x`` prefix), or None.
 
     Recovery/restore/DFU-mode devices are invisible to usbmuxd, so
     ``idevicerestore`` cannot target them with ``-u <udid>`` — only by ECID
-    (``-i``). This helper resolves the ECID:
+    (``-i``). ``idevicerestore -i`` requires the ``0x`` prefix, so every
+    returned ECID is emitted in that form. This helper resolves the ECID:
 
     1. Match ``udid`` against each Apple USB device's serial number. In
        Normal mode the USB serial equals the UDID; in Recovery mode the
@@ -873,7 +878,7 @@ def _device_ecid(udid: str | None = None) -> str | None:
     for serial, pid, _bus, _device in _iter_apple_usb_devices():
         ecid = _ecid_from_descriptor(serial)
         if target and _normalize_serial(serial) == target:
-            return ecid or _query_recovery_ecid()
+            return _strip_ecid_prefix(ecid) or _query_recovery_ecid()
         if pid in _RECOVERY_PIDS or pid == _DFU_PID:
             recovery_present = True
     if recovery_present:
@@ -888,13 +893,14 @@ def recovery_device_descriptor() -> tuple[str, str] | None:
     Recovery-mode devices are invisible to usbmuxd (lockdown isn't running),
     so they never appear in normal device enumeration. This helper extracts
     their SRNM serial and ECID from the structured iBoot descriptor so the
-    GUI can present a selectable "Recovery mode" entry. ``ecid`` is the bare
-    hex (no ``0x``), or "" when the descriptor lacks the field.
+    GUI can present a selectable "Recovery mode" entry. ``ecid`` is hex with
+    the ``0x`` prefix (as ``idevicerestore -i`` requires), or "" when the
+    descriptor lacks the field.
     """
     for serial, pid, _bus, _device in _iter_apple_usb_devices():
         if pid in _RECOVERY_PIDS:
             srnm = _srnm_from_descriptor(serial) or _normalize_serial(serial)
-            return srnm, _ecid_from_descriptor(serial)
+            return srnm, _strip_ecid_prefix(_ecid_from_descriptor(serial))
     return None
 
 

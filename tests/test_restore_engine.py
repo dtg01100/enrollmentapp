@@ -785,6 +785,33 @@ class TestRestoreDevice:
         assert "00094daa01d80032" in cmd
         assert "-u" not in cmd
 
+    def test_restore_device_recovery_builds_0x_ecid_arg(self, tmp_path, monkeypatch):
+        """``idevicerestore -i`` rejects bare hex ("Could not parse ECID") —
+        an explicit ECID must be emitted with the ``0x`` prefix."""
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+
+        ipsw = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
+        ipsw.write_bytes(b"fake")
+        cache = tmp_path / "cache"
+        cache.mkdir()
+
+        fake_proc = self._fake_proc(returncode=0, stdout="Restore OK\n")
+        fake_popen = MagicMock(return_value=fake_proc)
+        monkeypatch.setattr(engine, "_popen_capture", fake_popen)
+
+        engine.restore_device(
+            ipsw_path=ipsw,
+            cache_dir=cache,
+            progress_callback=lambda event: None,
+            ecid="00094daa01d80032",
+        )
+
+        cmd = fake_popen.call_args.args[0]
+        assert "-i" in cmd
+        assert "0x00094daa01d80032" in cmd
+        assert "-u" not in cmd
+
     def test_restore_device_recovery_mode_ecid_unresolved_raises(self, tmp_path, monkeypatch):
         from apple_device_cli.restore import engine
         from apple_device_cli.restore.errors import RestoreEngineError
@@ -884,10 +911,10 @@ class TestDeviceEcidHelper:
             lambda: iter([("UDID-A", 0x12a8, 1, SimpleNamespace())]),
         )
         monkeypatch.setattr(
-            engine, "_query_recovery_ecid", lambda: "00094daa01d80032"
+            engine, "_query_recovery_ecid", lambda: "0x00094daa01d80032"
         )
 
-        assert engine._device_ecid("UDID-A") == "00094daa01d80032"
+        assert engine._device_ecid("UDID-A") == "0x00094daa01d80032"
 
     def test_device_ecid_helper_parses_irecovery_output(self, monkeypatch):
         from unittest.mock import MagicMock
@@ -908,7 +935,7 @@ class TestDeviceEcidHelper:
         )
         monkeypatch.setattr(engine.subprocess, "run", MagicMock(return_value=fake_proc))
 
-        assert engine._device_ecid("UDID-A") == "00094daa01d80032"
+        assert engine._device_ecid("UDID-A") == "0x00094daa01d80032"
 
     def test_device_ecid_helper_returns_none_when_no_device(self, monkeypatch):
         from apple_device_cli.restore import engine
@@ -919,6 +946,33 @@ class TestDeviceEcidHelper:
         )
 
         assert engine._device_ecid("UDID-A") is None
+
+
+class TestStripEcidPrefix:
+    """``idevicerestore -i`` requires the ``0x`` prefix — the engine must
+    always emit the prefixed form. Bare hex is rejected with
+    "Could not parse ECID"."""
+
+    def test_strip_ecid_prefix_adds_0x_to_bare(self):
+        from apple_device_cli.restore import engine
+
+        assert engine._strip_ecid_prefix("00094daa01d80032") == "0x00094daa01d80032"
+
+    def test_strip_ecid_prefix_preserves_0x(self):
+        from apple_device_cli.restore import engine
+
+        assert engine._strip_ecid_prefix("0x00094daa01d80032") == "0x00094daa01d80032"
+
+    def test_strip_ecid_prefix_lowercases_and_strips(self):
+        from apple_device_cli.restore import engine
+
+        assert engine._strip_ecid_prefix(" 0X00094DAA01D80032 ") == "0x00094daa01d80032"
+
+    def test_strip_ecid_prefix_empty_returns_empty(self):
+        from apple_device_cli.restore import engine
+
+        assert engine._strip_ecid_prefix("") == ""
+        assert engine._strip_ecid_prefix(None) == ""
 
 
 class TestDetectDeviceMode:

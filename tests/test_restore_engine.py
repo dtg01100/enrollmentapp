@@ -541,7 +541,12 @@ class TestRestoreDevice:
 
 
 class TestDetectDeviceMode:
-    """USB product-ID based mode detection (normal/recovery/restore/dfu)."""
+    """USB product-ID based mode detection (normal/recovery/restore/dfu).
+
+    ``_iter_apple_usb_devices`` yields ``(serial, product_id, bus, device)``;
+    the device object is a placeholder here because mode detection only reads
+    the product ID.
+    """
 
     def _patch_bus(self, monkeypatch, devices):
         from apple_device_cli.restore import engine
@@ -551,38 +556,38 @@ class TestDetectDeviceMode:
     def test_detect_device_mode_normal(self, monkeypatch):
         from apple_device_cli.restore import engine
 
-        self._patch_bus(monkeypatch, [("UDID-A", 0x12a8)])
+        self._patch_bus(monkeypatch, [("UDID-A", 0x12a8, 1, SimpleNamespace())])
         assert engine.detect_device_mode("UDID-A") == "normal"
 
     def test_detect_device_mode_normal_v2_pid(self, monkeypatch):
         """Newer devices report 0x12ab in normal mode — still 'normal'."""
         from apple_device_cli.restore import engine
 
-        self._patch_bus(monkeypatch, [("UDID-A", 0x12ab)])
+        self._patch_bus(monkeypatch, [("UDID-A", 0x12ab, 1, SimpleNamespace())])
         assert engine.detect_device_mode("UDID-A") == "normal"
 
     def test_detect_device_mode_recovery(self, monkeypatch):
         from apple_device_cli.restore import engine
 
-        self._patch_bus(monkeypatch, [("UDID-A", 0x1281)])
+        self._patch_bus(monkeypatch, [("UDID-A", 0x1281, 1, SimpleNamespace())])
         assert engine.detect_device_mode("UDID-A") == "recovery"
 
     def test_detect_device_mode_restore(self, monkeypatch):
         from apple_device_cli.restore import engine
 
-        self._patch_bus(monkeypatch, [("UDID-A", 0x12ac)])
+        self._patch_bus(monkeypatch, [("UDID-A", 0x12ac, 1, SimpleNamespace())])
         assert engine.detect_device_mode("UDID-A") == "restore"
 
     def test_detect_device_mode_dfu(self, monkeypatch):
         from apple_device_cli.restore import engine
 
-        self._patch_bus(monkeypatch, [("UDID-A", 0x1227)])
+        self._patch_bus(monkeypatch, [("UDID-A", 0x1227, 1, SimpleNamespace())])
         assert engine.detect_device_mode("UDID-A") == "dfu"
 
     def test_detect_device_mode_unknown(self, monkeypatch):
         from apple_device_cli.restore import engine
 
-        self._patch_bus(monkeypatch, [("UDID-A", 0x9999)])
+        self._patch_bus(monkeypatch, [("UDID-A", 0x9999, 1, SimpleNamespace())])
         assert engine.detect_device_mode("UDID-A") == "unknown"
 
     def test_detect_device_mode_no_device(self, monkeypatch):
@@ -594,13 +599,16 @@ class TestDetectDeviceMode:
     def test_detect_device_mode_serial_mismatch(self, monkeypatch):
         from apple_device_cli.restore import engine
 
-        self._patch_bus(monkeypatch, [("OTHER", 0x12a8)])
+        self._patch_bus(monkeypatch, [("OTHER", 0x12a8, 1, SimpleNamespace())])
         assert engine.detect_device_mode("UDID-A") == "unknown"
 
     def test_detect_device_mode_normalizes_dashes_and_nulls(self, monkeypatch):
         from apple_device_cli.restore import engine
 
-        self._patch_bus(monkeypatch, [("00008101-001234567890ABCD", 0x12a8)])
+        self._patch_bus(
+            monkeypatch,
+            [("00008101-001234567890ABCD", 0x12a8, 1, SimpleNamespace())],
+        )
         assert engine.detect_device_mode("00008101001234567890ABCD") == "normal"
 
 
@@ -657,7 +665,18 @@ class TestEnterRecoveryMode:
 
 
 class TestExitRecoveryMode:
-    """USB reset (D+/D- toggle) out of recovery mode."""
+    """USB reset (D+/D- toggle) out of recovery mode.
+
+    ``exit_recovery_mode`` scans ``_iter_apple_usb_devices`` (no lockdown /
+    usbmux access — the device is in iBoot mode) and can be called with or
+    without a UDID.
+    """
+
+    @staticmethod
+    def _iter_devices(*devices):
+        """Build an ``_iter_apple_usb_devices`` replacement from (serial, pid, device)."""
+        entries = [(serial, pid, 1, device) for serial, pid, device in devices]
+        return lambda: iter(entries)
 
     def test_exit_recovery_mode_calls_usb_reset(self, monkeypatch):
         from apple_device_cli.restore import engine
@@ -665,17 +684,22 @@ class TestExitRecoveryMode:
         reset_calls: list[str] = []
         device = SimpleNamespace(idVendor=0x05ac, idProduct=0x1281)
         device.reset = lambda: reset_calls.append("reset")
-        monkeypatch.setattr(engine, "_find_recovery_usb_devices", lambda: [device])
+        monkeypatch.setattr(
+            engine,
+            "_iter_apple_usb_devices",
+            self._iter_devices(("UDID-A", 0x1281, device)),
+        )
 
-        engine.exit_recovery_mode("UDID-A")
+        result = engine.exit_recovery_mode("UDID-A")
 
         assert reset_calls == ["reset"]
+        assert result == ["UDID-A"]
 
     def test_exit_recovery_mode_raises_engine_error_on_failure(self, monkeypatch):
         from apple_device_cli.restore import engine
         from apple_device_cli.restore.errors import RestoreEngineError
 
-        monkeypatch.setattr(engine, "_find_recovery_usb_devices", lambda: [])
+        monkeypatch.setattr(engine, "_iter_apple_usb_devices", lambda: iter(()))
         with pytest.raises(RestoreEngineError, match="recovery"):
             engine.exit_recovery_mode("UDID-A")
 
@@ -689,16 +713,119 @@ class TestExitRecoveryMode:
             raise RuntimeError("USBError: reset failed")
 
         device.reset = boom
-        monkeypatch.setattr(engine, "_find_recovery_usb_devices", lambda: [device])
+        monkeypatch.setattr(
+            engine,
+            "_iter_apple_usb_devices",
+            self._iter_devices(("UDID-A", 0x1281, device)),
+        )
         with pytest.raises(RestoreEngineError, match="reset"):
             engine.exit_recovery_mode("UDID-A")
 
-    def test_exit_recovery_mode_ambiguous_without_udid(self, monkeypatch):
+    def test_exit_recovery_mode_without_udid_resets_any_recovery_device(self, monkeypatch):
+        from apple_device_cli.restore import engine
+
+        reset_calls: list[str] = []
+        device = SimpleNamespace(idVendor=0x05ac, idProduct=0x1281)
+        device.reset = lambda: reset_calls.append("reset")
+        monkeypatch.setattr(
+            engine,
+            "_iter_apple_usb_devices",
+            self._iter_devices(("CPID:0x8010", 0x1281, device)),
+        )
+
+        result = engine.exit_recovery_mode()
+
+        assert reset_calls == ["reset"]
+        assert result == ["CPID:0x8010"]
+
+    def test_exit_recovery_mode_without_udid_no_recovery_device_raises(self, monkeypatch):
         from apple_device_cli.restore import engine
         from apple_device_cli.restore.errors import RestoreEngineError
 
-        device1 = SimpleNamespace(idVendor=0x05ac, idProduct=0x1281)
-        device2 = SimpleNamespace(idVendor=0x05ac, idProduct=0x1281)
-        monkeypatch.setattr(engine, "_find_recovery_usb_devices", lambda: [device1, device2])
-        with pytest.raises(RestoreEngineError, match="disconnect"):
+        monkeypatch.setattr(engine, "_iter_apple_usb_devices", lambda: iter(()))
+        with pytest.raises(RestoreEngineError, match=r"(?i)no recovery device"):
             engine.exit_recovery_mode()
+
+    def test_exit_recovery_mode_without_udid_dfu_only_raises(self, monkeypatch):
+        from apple_device_cli.restore import engine
+        from apple_device_cli.restore.errors import RestoreEngineError
+
+        device = SimpleNamespace(idVendor=0x05ac, idProduct=0x1227)
+        monkeypatch.setattr(
+            engine,
+            "_iter_apple_usb_devices",
+            self._iter_devices(("SERIAL", 0x1227, device)),
+        )
+
+        with pytest.raises(RestoreEngineError, match="power cycle"):
+            engine.exit_recovery_mode()
+
+    def test_exit_recovery_mode_without_udid_multiple_recovery_devices(self, monkeypatch):
+        from apple_device_cli.restore import engine
+
+        reset_calls: list[str] = []
+        device1 = SimpleNamespace(idVendor=0x05ac, idProduct=0x1281)
+        device1.reset = lambda: reset_calls.append("reset-1")
+        device2 = SimpleNamespace(idVendor=0x05ac, idProduct=0x1281)
+        device2.reset = lambda: reset_calls.append("reset-2")
+        monkeypatch.setattr(
+            engine,
+            "_iter_apple_usb_devices",
+            self._iter_devices(
+                ("SERIAL-A", 0x1281, device1), ("SERIAL-B", 0x1281, device2)
+            ),
+        )
+
+        result = engine.exit_recovery_mode()
+
+        assert reset_calls == ["reset-1", "reset-2"]
+        assert result == ["SERIAL-A", "SERIAL-B"]
+
+
+class TestDetectRecoveryDevicesPresent:
+    """USB-bus scan for iBoot-mode (recovery/DFU) devices."""
+
+    def test_detect_recovery_devices_present_true(self, monkeypatch):
+        from apple_device_cli.restore import engine
+
+        monkeypatch.setattr(
+            engine,
+            "_iter_apple_usb_devices",
+            lambda: iter([("SERIAL", 0x1281, 1, SimpleNamespace())]),
+        )
+        assert engine.detect_recovery_devices_present() is True
+
+    def test_detect_recovery_devices_present_true_for_dfu(self, monkeypatch):
+        from apple_device_cli.restore import engine
+
+        monkeypatch.setattr(
+            engine,
+            "_iter_apple_usb_devices",
+            lambda: iter([("SERIAL", 0x1227, 1, SimpleNamespace())]),
+        )
+        assert engine.detect_recovery_devices_present() is True
+
+    def test_detect_recovery_devices_present_false_no_devices(self, monkeypatch):
+        from apple_device_cli.restore import engine
+
+        monkeypatch.setattr(engine, "_iter_apple_usb_devices", lambda: iter(()))
+        assert engine.detect_recovery_devices_present() is False
+
+    def test_detect_recovery_devices_present_false_only_normal(self, monkeypatch):
+        from apple_device_cli.restore import engine
+
+        monkeypatch.setattr(
+            engine,
+            "_iter_apple_usb_devices",
+            lambda: iter([("UDID-A", 0x12a8, 1, SimpleNamespace())]),
+        )
+        assert engine.detect_recovery_devices_present() is False
+
+    def test_detect_recovery_devices_present_never_raises(self, monkeypatch):
+        from apple_device_cli.restore import engine
+
+        def boom():
+            raise RuntimeError("libusb gone")
+
+        monkeypatch.setattr(engine, "_iter_apple_usb_devices", boom)
+        assert engine.detect_recovery_devices_present() is False

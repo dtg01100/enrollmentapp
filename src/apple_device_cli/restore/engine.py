@@ -12,8 +12,9 @@ Public surface (see ios-enroll-restore-tab spec):
   - ``download_ipsw(url, dest_dir)``: urllib wrapper with resume
   - ``get_product_type_for_udid(udid)``: lockdown lookup
   - ``detect_device_mode(udid)``: USB product-ID lookup (normal/recovery/restore/dfu)
+  - ``detect_recovery_devices_present()``: True if any iBoot-mode USB device is on the bus
   - ``enter_recovery_mode(udid)``: lockdownd EnterRecovery request
-  - ``exit_recovery_mode(udid)``: USB reset out of recovery
+  - ``exit_recovery_mode(udid=None)``: USB reset out of recovery (no UDID needed)
   - ``restore_device(...)``: idevicerestore wrapper
   - ``restore_device_via_pymd3(...)``: pymobiledevice3 fallback
 
@@ -36,7 +37,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -524,10 +525,11 @@ _MODE_BY_PID = {
     0x1227: "dfu",
 }
 
-# Recovery/restore mode devices respond to a USB reset (D+/D- toggle) and will
-# re-enumerate into Normal mode. DFU devices do NOT — they need a hard reset or
-# power cycle.
-_RESETTABLE_PIDS = (0x1280, 0x1281, 0x1282, 0x1283, 0x12ac)
+# iBoot (recovery) mode product IDs. Recovery-mode devices respond to a USB
+# reset (D+/D- toggle) and re-enumerate into Normal mode. DFU devices do NOT —
+# they need a hard reset or power cycle.
+_RECOVERY_PIDS = (0x1280, 0x1281, 0x1282, 0x1283)
+_DFU_PID = 0x1227
 
 _APPLE_VENDOR_ID = 0x05ac
 
@@ -538,7 +540,11 @@ def _normalize_serial(value: str) -> str:
 
 
 def _iter_apple_usb_devices():
-    """Yield ``(serial, product_id)`` for each Apple USB device on the bus.
+    """Yield ``(serial, product_id, bus, device)`` per Apple USB device on the bus.
+
+    ``serial`` is the device's USB serial string (normalized); ``product_id``
+    is the USB product ID (see ``_MODE_BY_PID``); ``bus`` is the USB bus
+    number; ``device`` is the pyusb ``Device`` object (used for USB resets).
 
     pyusb is a hard dependency of pymobiledevice3, so it is always present at
     runtime. Defensive try/except keeps this helper usable on hosts where
@@ -559,9 +565,10 @@ def _iter_apple_usb_devices():
                 continue
             serial = _normalize_serial(device.serial_number)
             pid = int(device.idProduct)
+            bus = int(device.bus)
         except Exception:
             continue
-        yield serial, pid
+        yield serial, pid, bus, device
 
 
 def detect_device_mode(udid: str) -> str:
@@ -575,88 +582,103 @@ def detect_device_mode(udid: str) -> str:
     ``"unknown"``.
     """
     target = _normalize_serial(udid)
-    for serial, pid in _iter_apple_usb_devices():
+    for serial, pid, _bus, _device in _iter_apple_usb_devices():
         if _normalize_serial(serial) == target:
             return _MODE_BY_PID.get(pid, "unknown")
     return "unknown"
 
 
-def _find_recovery_usb_devices():
-    """Return the pyusb ``Device`` objects currently in recovery/restore mode.
+def detect_recovery_devices_present() -> bool:
+    """Return True if any iBoot-mode USB device is on the bus.
 
-    Recovery-mode devices (iBSS/iBEC) are NOT visible to usbmuxd — they only
-    exist as raw USB devices. DFU devices are deliberately excluded: they do
-    not respond to a USB reset.
+    "iBoot-mode" covers Recovery (PID 0x1280-0x1283) and DFU (0x1227) — both
+    states are invisible to usbmuxd, so the Restore tab's device dropdown
+    cannot show the device. Used by the GUI's "Exit Recovery (any device)"
+    button to enable itself when a device has gone into Recovery. The button
+    is also clickable unconditionally, but this helper is useful for showing
+    a status indicator (e.g. "Recovery device detected") in the GUI.
+
+    Never raises: any lookup problem yields False.
     """
     try:
-        from usb.core import find as usb_find
+        for _serial, pid, _bus, _device in _iter_apple_usb_devices():
+            if pid in _RECOVERY_PIDS or pid == _DFU_PID:
+                return True
     except Exception:
-        return []
-    try:
-        devices = usb_find(find_all=True) or ()
-    except Exception:
-        return []
-    found = []
-    for device in devices:
-        try:
-            if int(device.idVendor) != _APPLE_VENDOR_ID:
-                continue
-            if int(device.idProduct) not in _RESETTABLE_PIDS:
-                continue
-        except Exception:
-            continue
-        found.append(device)
-    return found
+        return False
+    return False
 
 
-def exit_recovery_mode(udid: str | None = None) -> None:
-    """Reset a device out of recovery mode via a USB reset.
+def exit_recovery_mode(udid: str | None = None) -> list[str]:
+    """Reset recovery-mode device(s) to Normal mode via a USB reset.
 
-    Toggling the USB port's D+/D- lines makes the device re-enumerate and boot
-    normally. Works for recovery/restore mode but NOT DFU mode — DFU devices
-    need a hard reset (hold Power + Home / Side buttons) or a power cycle.
+    If ``udid`` is provided, only reset that device (matched by serial). If
+    ``udid`` is None (the default), scan for any iBoot-mode USB device
+    (recovery PID 0x1280-0x1283) and reset every recovery-mode device found.
 
-    ``udid`` is best-effort: a recovery-mode device's USB serial is an iBoot
-    ``SRNM:...`` string, not the UDID, so it cannot be matched reliably. When
-    exactly one resettable device is attached it is reset regardless of
-    ``udid``.
+    Returns a list of the reset devices' USB serials. Raises
+    ``RestoreEngineError`` if no recovery-mode device is found, if the only
+    device found is in DFU (a USB reset cannot exit DFU — the device needs a
+    power cycle), or if a libusb reset fails.
 
-    Raises ``RestoreEngineError`` if no recovery device is found, multiple
-    recovery devices are attached (ambiguous), or the USB reset fails.
+    The returned serial is the device's "iBoot serial" (a different string
+    from the Normal-mode lockdown UDID — usually ``CPID:ECID``). The caller
+    should not rely on it matching any Normal-mode UDID.
     """
     from apple_device_cli.restore.errors import RestoreEngineError
 
-    candidates = _find_recovery_usb_devices()
-    if not candidates:
-        raise RestoreEngineError(
-            "No device found in recovery mode. Put the device into recovery "
-            "(hold Power + Home / Side buttons) and try again."
-        )
+    recovery: list[tuple[str, Any]] = []
+    dfu: list[tuple[str, Any]] = []
+    for serial, pid, _bus, device in _iter_apple_usb_devices():
+        if pid in _RECOVERY_PIDS:
+            recovery.append((serial, device))
+        elif pid == _DFU_PID:
+            dfu.append((serial, device))
 
-    device = candidates[0]
-    if len(candidates) > 1:
-        device = None
-        if udid:
-            norm = _normalize_serial(udid)
-            for candidate in candidates:
-                try:
-                    if _normalize_serial(candidate.serial_number) == norm:
-                        device = candidate
-                        break
-                except Exception:
-                    continue
-        if device is None:
+    if udid:
+        norm = _normalize_serial(udid)
+        matches = [
+            (serial, device)
+            for serial, device in recovery
+            if _normalize_serial(serial) == norm
+        ]
+        dfu_matches = [
+            serial for serial, _dev in dfu if _normalize_serial(serial) == norm
+        ]
+        if not matches and not dfu_matches:
             raise RestoreEngineError(
-                f"{len(candidates)} devices found in recovery mode — disconnect "
-                "all but the one you want to reset, or pass its UDID."
+                f"No recovery device found matching {udid}. Put the device "
+                "into recovery (hold Power + Home / Side buttons) and try again."
             )
+        if not matches:
+            raise RestoreEngineError(
+                "Device is in DFU mode, not Recovery — USB reset will not exit "
+                "DFU; power cycle the device manually."
+            )
+        targets = matches
+    else:
+        if not recovery and not dfu:
+            raise RestoreEngineError(
+                "No recovery device found. Put the device into recovery "
+                "(hold Power + Home / Side buttons) and try again."
+            )
+        if not recovery:
+            raise RestoreEngineError(
+                "Device is in DFU mode, not Recovery — USB reset will not exit "
+                "DFU; power cycle the device manually."
+            )
+        targets = recovery
 
-    try:
-        device.reset()
-    except Exception as exc:
-        raise RestoreEngineError(
-            f"Failed to reset device out of recovery mode: {exc}"
-        ) from exc
+    reset_serials: list[str] = []
+    for serial, device in targets:
+        try:
+            device.reset()
+        except Exception as exc:
+            raise RestoreEngineError(
+                f"Failed to reset device out of recovery mode: {exc}"
+            ) from exc
+        reset_serials.append(serial)
+    return reset_serials
 
 
 def enter_recovery_mode(udid: str) -> None:

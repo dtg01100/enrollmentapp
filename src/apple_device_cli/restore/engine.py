@@ -4,7 +4,10 @@ supervised Restore flow and the GUI Restore tab.
 Public surface (see ios-enroll-restore-tab spec):
   - ``SignedVersion``: frozen dataclass for one signed iOS restore image
   - ``RestoreResult``: dataclass for the outcome of a restore
+  - ``ProgressUpdate``: one parsed progress event (step name or percent)
+  - ``ProgressEvent``: one output line plus an optional ``ProgressUpdate``
   - ``parse_ipsw_url``: pure parser for Apple CDN URLs (no subprocess)
+  - ``parse_progress_line``: pure parser for idevicerestore progress lines
   - ``list_signed_versions(product_type)``: subprocess wrapper
   - ``download_ipsw(url, dest_dir)``: urllib wrapper with resume
   - ``get_product_type_for_udid(udid)``: lockdown lookup
@@ -13,6 +16,13 @@ Public surface (see ios-enroll-restore-tab spec):
 
 All subprocess calls use ``Popen`` with ``stdin=DEVNULL`` and no
 timeout — older iPads can run 45-60+ minutes for a full restore.
+
+Progress: ``restore_device`` runs ``idevicerestore -P`` (plain
+progress) and every output line is delivered to the callback as a
+``ProgressEvent``. ``parse_progress_line`` understands both the
+plain format (``PROGRESS: 12/30`` / ``STEP: Restoring Baseband``)
+and the default format (``Uploading [====...] 49.7%``), so the bar
+keeps working even if ``idevicerestore`` ever drops ``-P``.
 """
 from __future__ import annotations
 
@@ -22,7 +32,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -47,6 +57,34 @@ class RestoreResult:
     ipsw_path: Path | None = None
     error: str | None = None
     log_excerpt: str = ""  # last ~50 lines of idevicerestore output
+
+
+@dataclass(frozen=True)
+class ProgressUpdate:
+    """One parsed progress event from ``idevicerestore`` output.
+
+    ``kind == "step"`` carries the current step's name in ``label``
+    (from the plain ``-P`` output: ``STEP: Restoring Baseband``).
+    ``kind == "percent"`` carries ``value`` (already computed to a
+    0-100 int by the parser) and ``total`` (the raw denominator,
+    preserved so the UI can render ``12/30`` if it wants to).
+    """
+    kind: Literal["step", "percent"]
+    value: int | None
+    total: int | None
+    label: str | None
+
+
+@dataclass(frozen=True)
+class ProgressEvent:
+    """One line of ``idevicerestore`` output delivered to the callback.
+
+    ``text`` is the raw line (newline stripped) for the log scrollback;
+    ``progress`` is the parsed ``ProgressUpdate``, or ``None`` when the
+    line carries no progress information.
+    """
+    text: str
+    progress: ProgressUpdate | None = None
 
 
 # Apple CDN URL pattern:
@@ -77,6 +115,54 @@ def parse_ipsw_url(url: str, device: str) -> SignedVersion | None:
         url=url.strip(),
         device=device,
     )
+
+
+_PLAIN_PROGRESS_RE = re.compile(
+    r"^PROGRESS:\s*(\d+)\s*/\s*(\d+)\s*$", re.IGNORECASE
+)
+_PLAIN_STEP_RE = re.compile(r"^STEP:\s*(.+?)\s*$", re.IGNORECASE)
+_UPLOADING_RE = re.compile(
+    r"^\s*Uploading\s+\[.*\]\s*(\d+(?:\.\d+)?)\s*%\s*$", re.IGNORECASE
+)
+
+
+def parse_progress_line(line: str) -> ProgressUpdate | None:
+    """Parse one ``idevicerestore`` line into a ``ProgressUpdate``.
+
+    Handles both output formats:
+
+    - Plain (``-P, --plain-progress``): ``PROGRESS: 12/30`` and
+      ``STEP: Restoring Baseband``.
+    - Default: ``Uploading [====...] 49.7%``. This parser is
+      stateless, so the step label from the preceding ``Sending`` /
+      ``Personalizing`` header lines is NOT recovered here — the
+      caller (GUI) tracks the current step name instead.
+
+    Returns ``None`` for lines that carry no progress information
+    (they still flow to the log scrollback as ``ProgressEvent`` with
+    ``progress=None``).
+    """
+    stripped = line.strip()
+    if not stripped:
+        return None
+
+    match = _PLAIN_PROGRESS_RE.match(stripped)
+    if match:
+        current = int(match.group(1))
+        total = int(match.group(2))
+        value = int(round((current / total) * 100)) if total else 0
+        return ProgressUpdate(kind="percent", value=value, total=total, label=None)
+
+    match = _PLAIN_STEP_RE.match(stripped)
+    if match:
+        return ProgressUpdate(kind="step", value=None, total=None, label=match.group(1).strip())
+
+    match = _UPLOADING_RE.match(stripped)
+    if match:
+        value = int(round(float(match.group(1))))
+        return ProgressUpdate(kind="percent", value=value, total=100, label=None)
+
+    return None
 
 
 def _popen_capture(cmd: list[str], **kwargs):
@@ -280,7 +366,7 @@ async def get_product_type_for_udid(udid: str) -> str:
 def _stream_subprocess_to_callback(proc, progress_callback) -> str:
     """Read lines from ``proc.stdout`` until EOF. Returns the full
     output as one string. Each line is also passed to
-    ``progress_callback`` for streaming.
+    ``progress_callback`` as a ``ProgressEvent`` for streaming.
 
     Runs synchronously in the caller's thread; safe to use from a
     QThread worker (which is what the GUI does).
@@ -291,7 +377,9 @@ def _stream_subprocess_to_callback(proc, progress_callback) -> str:
     for line in proc.stdout:
         stripped = line.rstrip("\n")
         output_lines.append(line)
-        progress_callback(stripped)
+        progress_callback(
+            ProgressEvent(text=stripped, progress=parse_progress_line(stripped))
+        )
     return "".join(output_lines)
 
 
@@ -299,11 +387,18 @@ def restore_device(
     udid: str,
     ipsw_path: Path,
     cache_dir: Path,
-    progress_callback: Callable[[str], None],
+    progress_callback: Callable[[ProgressEvent], None],
 ) -> RestoreResult:
-    """Run ``idevicerestore -e -u <udid> -y -C <cache_dir>
+    """Run ``idevicerestore -e -u <udid> -y -P -C <cache_dir>
     --logfile=<cache_dir>/logs/restore_<udid>_<ts>.log <ipsw_path>``
-    and stream stdout/stderr to ``progress_callback``.
+    and stream stdout/stderr to ``progress_callback`` as
+    ``ProgressEvent`` objects (see ``parse_progress_line`` for the
+    two supported progress formats).
+
+    ``-P`` (plain progress) is passed so the engine gets clean
+    ``PROGRESS: x/y`` / ``STEP: ...`` lines to drive a progress bar;
+    the default-format parser is the fallback if ``idevicerestore``
+    ever drops the flag.
 
     No timeout. ``stdin=DEVNULL`` so ``idevicerestore`` cannot prompt
     on a TTY. SIGINT (Ctrl-C) reaches the child via the parent's
@@ -314,8 +409,10 @@ def restore_device(
     """
     if not shutil.which("idevicerestore"):
         progress_callback(
-            "idevicerestore not found, falling back to pymobiledevice3 "
-            "(slower, fewer features; known broken on iOS 26)."
+            ProgressEvent(
+                text="idevicerestore not found, falling back to pymobiledevice3 "
+                "(slower, fewer features; known broken on iOS 26)."
+            )
         )
         return restore_device_via_pymd3(udid, ipsw_path, cache_dir, progress_callback)
 
@@ -329,6 +426,7 @@ def restore_device(
         "-e",
         "-u", udid,
         "-y",
+        "-P",
         "-C", str(cache_dir),
         "--logfile", str(log_path),
         str(ipsw_path),
@@ -364,7 +462,7 @@ def restore_device_via_pymd3(
     udid: str,
     ipsw_path: Path,
     cache_dir: Path,
-    progress_callback: Callable[[str], None],
+    progress_callback: Callable[[ProgressEvent], None],
 ) -> RestoreResult:
     """Pure-Python fallback using pymobiledevice3.restore.restore.Restore.
 
@@ -384,10 +482,12 @@ def restore_device_via_pymd3(
     A real pymd3 implementation can land in a follow-up.
     """
     progress_callback(
-        "pymobiledevice3 restore path is the fallback. It is known "
-        "to fail on iOS 26 — if the restore fails here, install "
-        "libimobiledevice (brew install libimobiledevice) and try again "
-        "with the idevicerestore path."
+        ProgressEvent(
+            text="pymobiledevice3 restore path is the fallback. It is known "
+            "to fail on iOS 26 — if the restore fails here, install "
+            "libimobiledevice (brew install libimobiledevice) and try again "
+            "with the idevicerestore path."
+        )
     )
     return RestoreResult(
         success=False,

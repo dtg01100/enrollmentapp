@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-import plistlib
 import shutil
 from typing import Callable
 import json
@@ -49,6 +48,7 @@ from apple_device_cli.enrollment.activation import activate_device
 from apple_device_cli.core.exceptions import AppleDeviceError
 from apple_device_cli.restore.cache import cache_state, resolve_cache_dir
 from apple_device_cli.restore.engine import (
+    ProgressEvent,
     get_product_type_for_udid,
     list_signed_versions,
     restore_device,
@@ -862,8 +862,8 @@ def device_restore(
         )
         raise typer.Exit(1)
 
-    def _progress(msg: str) -> None:
-        typer.echo(f"  {msg}")
+    def _progress(event: ProgressEvent) -> None:
+        typer.echo(f"  {event.text}")
 
     typer.echo(f"Cache: {resolved_cache}")
     typer.echo(

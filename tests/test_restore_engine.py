@@ -6,6 +6,7 @@ import pytest
 from apple_device_cli.restore.engine import (
     SignedVersion,
     parse_ipsw_url,
+    parse_progress_line,
 )
 
 
@@ -57,6 +58,52 @@ class TestParseIpswUrl:
         assert result is not None
         assert result.version == "17.0"
         assert result.build == "21A342"
+
+
+class TestParseProgressLine:
+    """Parser for idevicerestore progress lines (plain -P + default)."""
+
+    def test_plain_progress_line(self):
+        result = parse_progress_line("PROGRESS: 12/30")
+        assert result is not None
+        assert result.kind == "percent"
+        assert result.value == 40  # 12/30 * 100, rounded to int
+        assert result.total == 30
+        assert result.label is None
+
+    def test_plain_step_line(self):
+        result = parse_progress_line("STEP: Restoring Baseband")
+        assert result is not None
+        assert result.kind == "step"
+        assert result.value is None
+        assert result.total is None
+        assert result.label == "Restoring Baseband"
+
+    def test_default_uploading_line(self):
+        result = parse_progress_line(
+            "  Uploading [==================================================] 100.0%"
+        )
+        assert result is not None
+        assert result.kind == "percent"
+        assert result.value == 100
+        assert result.total == 100
+        assert result.label is None
+
+    def test_default_uploading_partial_value(self):
+        result = parse_progress_line(
+            "  Uploading [===                                               ]   6.2%"
+        )
+        assert result is not None
+        assert result.kind == "percent"
+        assert result.value == 6
+        assert result.total == 100
+
+    def test_non_progress_lines_return_none(self):
+        assert parse_progress_line("Sending LLB (185208 bytes)...") is None
+        assert parse_progress_line("Restore OK") is None
+        assert parse_progress_line("   • Latest release found is: 26.6") is None
+        assert parse_progress_line("") is None
+        assert parse_progress_line("   ") is None
 
 
 class TestListSignedVersions:
@@ -117,7 +164,6 @@ class TestListSignedVersions:
         assert [r.version for r in results] == ["26.6", "26.5"]
 
     def test_missing_ipsw_binary_raises_engine_error(self, monkeypatch):
-        from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
         from apple_device_cli.restore.errors import RestoreEngineError
 
@@ -345,7 +391,7 @@ class TestRestoreDevice:
             udid="UDID-A",
             ipsw_path=ipsw,
             cache_dir=cache,
-            progress_callback=lambda line: None,
+            progress_callback=lambda event: None,
         )
 
         assert result.success is True
@@ -362,6 +408,7 @@ class TestRestoreDevice:
         assert "-u" in cmd
         assert "UDID-A" in cmd
         assert "-y" in cmd
+        assert "-P" in cmd
         assert "-C" in cmd
         assert str(cache) in cmd
         assert "--logfile" in " ".join(cmd)
@@ -392,7 +439,7 @@ class TestRestoreDevice:
             udid="UDID-B",
             ipsw_path=ipsw,
             cache_dir=cache,
-            progress_callback=lambda line: None,
+            progress_callback=lambda event: None,
         )
 
         assert result.success is False
@@ -426,7 +473,7 @@ class TestRestoreDevice:
             udid="UDID-C",
             ipsw_path=ipsw,
             cache_dir=cache,
-            progress_callback=lambda line: None,
+            progress_callback=lambda event: None,
         )
         # The pymd3 fallback was called and its result is returned
         assert result.success is False
@@ -450,9 +497,42 @@ class TestRestoreDevice:
             udid="UDID-D",
             ipsw_path=ipsw,
             cache_dir=cache,
-            progress_callback=received.append,
+            progress_callback=lambda event: received.append(event.text),
         )
         # The callback was called with the lines
         assert "line1" in received
         assert "line2" in received
         assert "line3" in received
+
+    def test_progress_callback_receives_progress_events(self, tmp_path, monkeypatch):
+        """Lines that match a progress format arrive as events with progress set."""
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+
+        ipsw = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
+        ipsw.write_bytes(b"fake")
+        cache = tmp_path / "cache"
+        cache.mkdir()
+
+        fake_proc = self._fake_proc(
+            returncode=0,
+            stdout="PROGRESS: 12/30\nSTEP: Restoring Baseband\n",
+        )
+        monkeypatch.setattr(engine, "_popen_capture", MagicMock(return_value=fake_proc))
+
+        received: list[engine.ProgressEvent] = []
+        engine.restore_device(
+            udid="UDID-E",
+            ipsw_path=ipsw,
+            cache_dir=cache,
+            progress_callback=received.append,
+        )
+
+        assert received[0].text == "PROGRESS: 12/30"
+        assert received[0].progress is not None
+        assert received[0].progress.kind == "percent"
+        assert received[0].progress.value == 40
+        assert received[1].text == "STEP: Restoring Baseband"
+        assert received[1].progress is not None
+        assert received[1].progress.kind == "step"
+        assert received[1].progress.label == "Restoring Baseband"

@@ -140,3 +140,112 @@ class TestListSignedVersions:
 
         with pytest.raises(RestoreEngineError, match="ipsw"):
             engine.list_signed_versions("iPad13,4")
+
+
+class TestDownloadIpsw:
+    """urllib wrapper for IPSW downloads with Range-resume."""
+
+    def test_writes_complete_file_when_no_partial(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+
+        class FakeResp:
+            def __init__(self, data: bytes):
+                self._data = data
+                self.headers = {"Content-Length": str(len(data))}
+            def read(self, n=-1):
+                if n == -1:
+                    chunk, self._data = self._data, b""
+                    return chunk
+                chunk, self._data = self._data[:n], self._data[n:]
+                return chunk
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+
+        fake_urlopen = MagicMock(return_value=FakeResp(b"hello-world"))
+        monkeypatch.setattr(engine, "urlopen", fake_urlopen)
+
+        result = engine.download_ipsw(
+            "https://example.com/iPad_26.6_23G71_Restore.ipsw",
+            dest_dir=tmp_path,
+        )
+
+        assert result == tmp_path / "iPad_26.6_23G71_Restore.ipsw"
+        assert result.read_bytes() == b"hello-world"
+        # No Range header on first write
+        args, kwargs = fake_urlopen.call_args
+        request_obj = args[0]
+        assert "Range" not in request_obj.headers
+
+    def test_resumes_partial_with_range_header(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+
+        # Pre-existing partial file
+        dest = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
+        dest.write_bytes(b"hello-")  # 6 bytes
+
+        class FakeResp:
+            def __init__(self, data: bytes):
+                self._data = data
+                self.headers = {"Content-Length": str(6 + len(data))}
+            def read(self, n=-1):
+                if n == -1:
+                    chunk, self._data = self._data, b""
+                    return chunk
+                chunk, self._data = self._data[:n], self._data[n:]
+                return chunk
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+
+        fake_urlopen = MagicMock(return_value=FakeResp(b"world"))
+        monkeypatch.setattr(engine, "urlopen", fake_urlopen)
+
+        engine.download_ipsw(
+            "https://example.com/iPad_26.6_23G71_Restore.ipsw",
+            dest_dir=tmp_path,
+        )
+
+        # The request must have included a Range header
+        request_obj = fake_urlopen.call_args[0][0]
+        assert request_obj.headers.get("Range") == "bytes=6-"
+
+    def test_uses_partial_suffix_during_download(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+
+        class FakeResp:
+            def __init__(self):
+                self._data = b"abc"
+                self.headers = {"Content-Length": "3"}
+            def read(self, n=-1):
+                chunk, self._data = self._data[:n], self._data[n:]
+                return chunk
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+
+        monkeypatch.setattr(engine, "urlopen", MagicMock(return_value=FakeResp()))
+
+        result = engine.download_ipsw(
+            "https://example.com/foo_Restore.ipsw",
+            dest_dir=tmp_path,
+        )
+        assert result.name == "foo_Restore.ipsw"
+        # Final path exists, .partial does not
+        assert result.exists()
+        assert not (tmp_path / "foo_Restore.ipsw.partial").exists()
+
+    def test_three_failures_raises_engine_error(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+        from urllib.error import URLError
+        from apple_device_cli.restore import engine
+        from apple_device_cli.restore.errors import RestoreEngineError
+
+        monkeypatch.setattr(
+            engine, "urlopen", MagicMock(side_effect=URLError("network down"))
+        )
+        with pytest.raises(RestoreEngineError, match="3"):
+            engine.download_ipsw(
+                "https://example.com/foo_Restore.ipsw",
+                dest_dir=tmp_path,
+            )

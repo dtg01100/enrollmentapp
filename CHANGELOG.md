@@ -7,6 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-08-07
+
+### Added
+- **On-demand IPSW hash verification.** New `ios-enroll device
+  verify-ipsw --ipsw PATH [--device PRODUCT_TYPE]` CLI subcommand
+  and a "Verify (ipsw.me)" button on the Restore tab. Stream-hashes
+  the local file (SHA-1 + SHA-256) and compares against ipsw.me's
+  published hashes (`api.ipsw.me/v4/device/<device>?type=ipsw`).
+  Reports MATCH/MISMATCH per field. The CLI exits 0 on full match,
+  1 on any mismatch, 0 with a warning when ipsw.me can't be reached.
+- **Cached-firmware markers.** The Restore tab's signed-versions list
+  appends `(cached)` to entries whose IPSW is already in the cache
+  directory, so the user sees at a glance whether Start will download
+  or use a local file.
+- Restore tab "Restore log" → "Activity log" relabel with a styled
+  header to match the new layout.
+
+### Fixed
+- **`idevicerestore -i` ECID format.** The engine now passes ECID
+  with the `0x` prefix (`0x00094daa01d80032`); the bare-hex form
+  was rejected with "Could not parse ECID". `_device_ecid` and
+  `recovery_device_descriptor` return the `0x`-prefixed form.
+- **GUI restore on Recovery-mode devices.** Selecting the synthetic
+  "(Recovery mode)" combo entry now enables Start, populates the
+  versions combo from locally-cached IPSW files (since a Recovery-
+  mode device can't fetch signed versions over lockdown), and routes
+  the restore by ECID — `_start_restore` no longer passes the SRNM
+  as a bogus UDID.
+- **Progress bar stuck at 0% during uploads.** The parser now
+  recognizes the actual `idevicerestore -P` output format
+  (`Uploading:   0.5` — colon + decimal fraction), not just the
+  `Uploading [====...] 49.7%` bracket-bar format.
+- **Test suite hermetic against live recovery devices.** The
+  `make_app` test fixture now defaults `detect_recovery_devices_present`
+  to False, so a real Recovery-mode iPad on the USB bus doesn't leak
+  a synthetic combo entry into tests.
+
+### Changed
+- **Restore tab layout restructured.** Device / Firmware sections are
+  now in `QGroupBox`es, the iOS Version + Refresh are on one row,
+  Browse and Verify are paired with the IPSW file label, Start Restore
+  is the visually prominent primary action (bold + taller), and the
+  Progress bar is anchored to the bottom of the tab inside a vertical
+  `QSplitter` so it never gets pushed off-screen.
+- **Enrollment tab restructured.** Two `QGroupBox`es (Organization &
+  device / WiFi optional), "Use Selected Device" paired with the UDID
+  combo, and Make Supervised is the prominent primary action.
+- **Devices and Organizations tabs** show helpful empty-state
+  placeholders ("No devices found. Connect an iOS device...", "No
+  organizations yet. Click Create Org or Refresh Orgs.") instead of
+  blank space.
+- **Shared log widget** is now capped at max 180 px / min 80 px so a
+  verbose operation can't squeeze the tab content to zero height.
+
+## [1.3.0] - 2026-08-07
+
+### Added
+- Restore tab in `ios-enroll-gui` with device picker, signed-version
+  dropdown (`ipsw --urls`), Browse for local IPSW, mode label
+  (Normal / Recovery / Restore / DFU), Enter Recovery and Exit
+  Recovery buttons, Refresh Devices, and a real `QProgressBar` driven
+  by `idevicerestore -P` events.
+- Cache hit short-circuit for IPSW downloads (no re-download if
+  the final file is already present and non-empty) and streamed
+  download progress events.
+
+### Fixed
+- **Event-loop bug in `enter_recovery_mode`.** Two `asyncio.run()`
+  calls left a `Future` attached to a different loop; consolidated
+  to a single event loop.
+- **Recovery-mode restore targeting.** `idevicerestore -u <udid>`
+  only works in Normal mode; the engine now detects mode and passes
+  `-i <ecid>` for Recovery/restore/DFU-mode devices. CLI gained
+  `--ecid` option; GUI falls back to ECID when the combo is empty.
+- **Exit Recovery from any state.** The combo-driven Exit Recovery
+  used to silently no-op when the combo was empty (because recovery
+  devices are invisible to usbmuxd). Added "Exit Recovery (any)"
+  fallback that scans the USB bus unconditionally; recovery devices
+  in the bus also get a synthetic "(Recovery mode)" combo entry.
+- **`exit_recovery_mode` now runs `irecovery --normal`.** The
+  previous `device.reset()` only rebooted iBSS, which re-entered
+  the recovery loop.
+
 ## [1.2.0] - 2026-08-07
 
 ### Added

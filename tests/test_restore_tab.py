@@ -18,7 +18,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from apple_device_cli.device.info import DeviceInfo  # noqa: E402
 from apple_device_cli.restore.engine import ProgressEvent, ProgressUpdate  # noqa: E402
@@ -514,3 +514,122 @@ class TestRestoreProgressBar:
 
         assert app.restore_progress_bar.maximum() == 0  # still indeterminate
         assert "Sending LLB" in app.restore_log_text.toPlainText()
+
+
+class TestRestoreRefreshDevices:
+    def test_restore_tab_refresh_devices_button_refreshes_combo(
+        self, make_app, sample_devices
+    ):
+        app = make_app(devices=[])
+        assert app.restore_device_combo.count() == 0
+
+        with patch("apple_device_cli.gui_qt.list_devices", return_value=sample_devices):
+            app.restore_refresh_devices_btn.click()
+
+        assert app.restore_device_combo.count() == 1
+        assert app.restore_device_combo.currentData() == sample_devices[0].udid
+
+    def test_refresh_devices_calls_populate_restore_combo(
+        self, make_app, sample_devices, monkeypatch
+    ):
+        app = make_app(devices=[])
+        called: list[str] = []
+        monkeypatch.setattr(app, "_populate_restore_device_combo", lambda: called.append(1))
+
+        with patch("apple_device_cli.gui_qt.list_devices", return_value=sample_devices):
+            app._refresh_devices()
+
+        assert called == [1]
+
+
+class TestRestoreModeLabel:
+    def test_mode_label_exists_and_shows_dash_without_device(self, make_app):
+        app = make_app(devices=[])
+        assert app.restore_device_mode_label is not None
+        assert app.restore_device_mode_label.text() == "—"
+
+    def test_mode_label_updates_after_device_refresh(
+        self, make_app, sample_devices, monkeypatch
+    ):
+        import apple_device_cli.gui_qt as gui_qt
+
+        monkeypatch.setattr(gui_qt, "detect_device_mode", lambda udid: "normal")
+        app = make_app(devices=sample_devices)
+        app._update_mode_labels()
+        assert app.restore_device_mode_label.text() == "normal"
+
+    def test_mode_label_dash_when_selection_cleared(self, make_app, sample_devices):
+        app = make_app(devices=sample_devices)
+        app.restore_device_combo.setCurrentIndex(-1)
+        assert app.restore_device_mode_label.text() == "—"
+
+
+class TestRecoveryButtons:
+    def test_recovery_buttons_exist_and_disabled_without_device(self, make_app):
+        app = make_app(devices=[])
+        assert app.restore_enter_recovery_btn is not None
+        assert app.restore_exit_recovery_btn is not None
+        assert not app.restore_enter_recovery_btn.isEnabled()
+        assert not app.restore_exit_recovery_btn.isEnabled()
+
+    def test_recovery_buttons_enabled_with_device_and_disabled_on_deselect(
+        self, make_app, sample_devices
+    ):
+        app = make_app(devices=sample_devices)
+        assert app.restore_enter_recovery_btn.isEnabled()
+        assert app.restore_exit_recovery_btn.isEnabled()
+
+        app.restore_device_combo.setCurrentIndex(-1)
+        assert not app.restore_enter_recovery_btn.isEnabled()
+        assert not app.restore_exit_recovery_btn.isEnabled()
+
+    def test_enter_recovery_requires_confirmation(
+        self, make_app, sample_devices, monkeypatch
+    ):
+        import apple_device_cli.gui_qt as gui_qt
+
+        app = make_app(devices=sample_devices)
+        monkeypatch.setattr(
+            gui_qt.QMessageBox,
+            "question",
+            lambda *a, **k: QMessageBox.StandardButton.No,
+        )
+        with patch("apple_device_cli.gui_qt.enter_recovery_mode") as mock_enter:
+            app._enter_recovery()
+        mock_enter.assert_not_called()
+        assert len(app._workers) == 0
+
+    def test_enter_recovery_confirmed_calls_engine(
+        self, make_app, sample_devices, monkeypatch
+    ):
+        import apple_device_cli.gui_qt as gui_qt
+
+        app = make_app(devices=sample_devices)
+        monkeypatch.setattr(
+            gui_qt.QMessageBox,
+            "question",
+            lambda *a, **k: QMessageBox.StandardButton.Yes,
+        )
+        with patch("apple_device_cli.gui_qt.enter_recovery_mode") as mock_enter:
+            app._enter_recovery()
+        mock_enter.assert_called_once_with(sample_devices[0].udid)
+
+    def test_exit_recovery_calls_engine(self, make_app, sample_devices, monkeypatch):
+        app = make_app(devices=sample_devices)
+        with patch("apple_device_cli.gui_qt.exit_recovery_mode") as mock_exit:
+            app._exit_recovery()
+        mock_exit.assert_called_once_with(sample_devices[0].udid)
+
+    def test_recovery_result_refreshes_device_list(
+        self, make_app, sample_devices, monkeypatch
+    ):
+        app = make_app(devices=sample_devices)
+        with patch("apple_device_cli.gui_qt.list_devices", return_value=[]):
+            app._on_recovery_mode_result(None, None)
+        assert app.restore_device_combo.count() == 0
+        assert "Recovery mode operation completed" in app.restore_log_text.toPlainText()
+
+    def test_recovery_result_error_is_logged(self, make_app, sample_devices):
+        app = make_app(devices=sample_devices)
+        app._on_recovery_mode_result(None, RuntimeError("enter recovery failed"))
+        assert "enter recovery failed" in app.restore_log_text.toPlainText()

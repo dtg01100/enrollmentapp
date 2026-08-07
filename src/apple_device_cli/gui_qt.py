@@ -36,7 +36,10 @@ from apple_device_cli.restore.cache import (
 )
 from apple_device_cli.restore.engine import (
     ProgressEvent,
+    detect_device_mode,
     download_ipsw,
+    enter_recovery_mode,
+    exit_recovery_mode,
     get_product_type_for_udid,
     list_signed_versions,
     parse_ipsw_url,
@@ -458,6 +461,9 @@ def _require_pyside6() -> None:
             self.restore_product_type_label = QLabel("<select a device>")
             form_layout.addRow("ProductType:", self.restore_product_type_label)
 
+            self.restore_device_mode_label = QLabel("—")
+            form_layout.addRow("Mode:", self.restore_device_mode_label)
+
             cache_row = QHBoxLayout()
             self.restore_cache_path_label = QLabel(str(resolve_cache_dir()))
             cache_row.addWidget(self.restore_cache_path_label, 1)
@@ -487,10 +493,25 @@ def _require_pyside6() -> None:
             layout.addLayout(form_layout)
 
             buttons_layout = QHBoxLayout()
+            self.restore_refresh_devices_btn = QPushButton("Refresh Devices")
+            self.restore_refresh_devices_btn.clicked.connect(self._refresh_devices)
+            buttons_layout.addWidget(self.restore_refresh_devices_btn)
+
             self.restore_start_btn = QPushButton("Start Restore")
             self.restore_start_btn.clicked.connect(self._start_restore)
             self.restore_start_btn.setEnabled(False)
             buttons_layout.addWidget(self.restore_start_btn)
+
+            self.restore_enter_recovery_btn = QPushButton("Enter Recovery")
+            self.restore_enter_recovery_btn.clicked.connect(self._enter_recovery)
+            self.restore_enter_recovery_btn.setEnabled(False)
+            buttons_layout.addWidget(self.restore_enter_recovery_btn)
+
+            self.restore_exit_recovery_btn = QPushButton("Exit Recovery")
+            self.restore_exit_recovery_btn.clicked.connect(self._exit_recovery)
+            self.restore_exit_recovery_btn.setEnabled(False)
+            buttons_layout.addWidget(self.restore_exit_recovery_btn)
+
             buttons_layout.addStretch()
             layout.addLayout(buttons_layout)
 
@@ -598,8 +619,12 @@ def _require_pyside6() -> None:
         def _refresh_devices(self) -> None:
             self._log("Refreshing device list...")
             token = self._next_token()
+            buttons = [self.refresh_devices_btn]
+            restore_btn = getattr(self, "restore_refresh_devices_btn", None)
+            if restore_btn is not None:
+                buttons.append(restore_btn)
             worker = WorkerThread(list_devices)
-            self._run_worker(worker, self._on_devices_refreshed, [self.refresh_devices_btn], token=token)
+            self._run_worker(worker, self._on_devices_refreshed, buttons, token=token)
 
         @Slot(object, object)
         def _on_devices_refreshed(self, result: Any, error: Exception | None, token: int) -> None:
@@ -618,6 +643,7 @@ def _require_pyside6() -> None:
                 self.devices_list.setCurrentRow(0)
             self._update_enroll_udids()
             self._populate_restore_device_combo()
+            self._update_mode_labels()
             self._log(f"Found {len(self._devices)} device(s).")
 
         def _next_token(self) -> int:
@@ -1126,17 +1152,22 @@ def _require_pyside6() -> None:
             self._on_restore_device_changed(self.restore_device_combo.currentIndex())
 
         def _on_restore_device_changed(self, index: int) -> None:
-            """Update the ProductType label and gate the version buttons."""
+            """Update the ProductType/Mode labels and gate the action buttons."""
             self.restore_versions_combo.clear()
             self.restore_start_btn.setEnabled(False)
             self.restore_refresh_versions_btn.setEnabled(False)
-            if index < 0:
+            has_device = index >= 0
+            self.restore_enter_recovery_btn.setEnabled(has_device)
+            self.restore_exit_recovery_btn.setEnabled(has_device)
+            if not has_device:
                 self.restore_product_type_label.setText("<select a device>")
+                self.restore_device_mode_label.setText("—")
                 return
             udid = self.restore_device_combo.currentData()
             device = next((d for d in self._devices if d.udid == udid), None)
             if device is None:
                 self.restore_product_type_label.setText("<unknown>")
+                self._update_mode_labels()
                 return
             product_type = getattr(device, "device_type", "") or ""
             if product_type:
@@ -1146,6 +1177,26 @@ def _require_pyside6() -> None:
             # Always enable refresh: when the device list lacks a ProductType,
             # _refresh_versions falls back to reading it from lockdown.
             self.restore_refresh_versions_btn.setEnabled(True)
+            self._update_mode_labels()
+
+        def _update_mode_labels(self) -> None:
+            """Refresh the Restore tab's device-mode label.
+
+            Detects the USB mode (normal/recovery/restore/dfu/unknown) of the
+            currently selected device. Called after every device-list refresh
+            and device-selection change so the label tracks mode changes
+            (e.g. after entering/exiting recovery).
+            """
+            udid = self.restore_device_combo.currentData()
+            if not udid:
+                self.restore_device_mode_label.setText("—")
+                return
+            try:
+                mode = detect_device_mode(udid)
+            except Exception as exc:  # noqa: BLE001
+                self._log_to_restore(f"Could not detect device mode: {exc}")
+                mode = "unknown"
+            self.restore_device_mode_label.setText(mode)
 
         def _refresh_versions(self) -> None:
             udid = self.restore_device_combo.currentData()
@@ -1376,6 +1427,49 @@ def _require_pyside6() -> None:
             else:
                 self._log_to_restore(f"Restore failed: {result.error}")
                 self._finalize_restore_progress_bar(success=False)
+
+        def _enter_recovery(self) -> None:
+            udid = self.restore_device_combo.currentData()
+            if not udid:
+                return
+            reply = QMessageBox.question(
+                self,
+                "Enter Recovery",
+                "Send this device into Recovery mode? This will interrupt the "
+                "running OS.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            self._log_to_restore(f"Entering recovery for {udid}...")
+            worker = WorkerThread(lambda: enter_recovery_mode(udid))
+            self._run_worker(
+                worker,
+                self._on_recovery_mode_result,
+                [self.restore_enter_recovery_btn, self.restore_exit_recovery_btn],
+            )
+
+        def _exit_recovery(self) -> None:
+            udid = self.restore_device_combo.currentData()
+            if not udid:
+                return
+            self._log_to_restore(f"Exiting recovery for {udid}...")
+            worker = WorkerThread(lambda: exit_recovery_mode(udid))
+            self._run_worker(
+                worker,
+                self._on_recovery_mode_result,
+                [self.restore_enter_recovery_btn, self.restore_exit_recovery_btn],
+            )
+
+        @Slot(object, object)
+        def _on_recovery_mode_result(self, result: Any, error: Exception | None) -> None:
+            if error:
+                self._log_to_restore(f"Recovery mode operation failed: {error}")
+                return
+            self._log_to_restore("Recovery mode operation completed.")
+            # Refresh so the device combo + mode label reflect the new state
+            # (the device reboots and re-enumerates with a different USB PID).
+            self._refresh_devices()
 
         def closeEvent(self, event: QEvent) -> None:
             """Refuse close while workers are still running.

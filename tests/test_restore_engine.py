@@ -118,6 +118,37 @@ class TestParseProgressLine:
         assert result.value == 6
         assert result.total == 100
 
+    def test_uploading_colon_format_parses(self):
+        """idevicerestore -P emits ``Uploading:   0.5`` (colon + decimal
+        fraction 0.0-1.0) instead of the bracket-bar form."""
+        result = parse_progress_line("Uploading:   0.5")
+        assert result is not None
+        assert result.kind == "percent"
+        assert result.value == 50
+        assert result.total == 100
+        assert result.label is None
+
+    def test_uploading_colon_format_zero(self):
+        result = parse_progress_line("Uploading:   0.0")
+        assert result is not None
+        assert result.kind == "percent"
+        assert result.value == 0
+        assert result.total == 100
+
+    def test_uploading_colon_format_one(self):
+        result = parse_progress_line("Uploading:   1.0")
+        assert result is not None
+        assert result.kind == "percent"
+        assert result.value == 100
+        assert result.total == 100
+
+    def test_uploading_colon_format_with_leading_spaces(self):
+        result = parse_progress_line("  Uploading:   0.75")
+        assert result is not None
+        assert result.kind == "percent"
+        assert result.value == 75
+        assert result.total == 100
+
     def test_non_progress_lines_return_none(self):
         assert parse_progress_line("Sending LLB (185208 bytes)...") is None
         assert parse_progress_line("Restore OK") is None

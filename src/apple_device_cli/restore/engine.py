@@ -141,6 +141,11 @@ _PLAIN_STEP_RE = re.compile(r"^STEP:\s*(.+?)\s*$", re.IGNORECASE)
 _UPLOADING_RE = re.compile(
     r"^\s*Uploading\s+\[.*\]\s*(\d+(?:\.\d+)?)\s*%\s*$", re.IGNORECASE
 )
+# idevicerestore -P emits ``Uploading:   0.5`` (colon + decimal fraction
+# 0.0-1.0), not the bracket-bar form the default format uses.
+_UPLOADING_COLON_RE = re.compile(
+    r"^\s*Uploading:\s+(\d+\.\d+)\s*$", re.IGNORECASE
+)
 
 
 def parse_progress_line(line: str) -> ProgressUpdate | None:
@@ -153,6 +158,8 @@ def parse_progress_line(line: str) -> ProgressUpdate | None:
       trailing percentage (``STEP: Restoring Baseband 45%``) is parsed as a
       percent event (value 45, total 100) with the step name kept as the
       label, so the bar moves even when ``PROGRESS:`` lines are sparse.
+      ``Uploading:   0.5`` (colon + decimal fraction 0.0-1.0) is parsed as a
+      percent event too (value 50, total 100).
     - Default: ``Uploading [====...] 49.7%``. This parser is
       stateless, so the step label from the preceding ``Sending`` /
       ``Personalizing`` header lines is NOT recovered here — the
@@ -187,6 +194,12 @@ def parse_progress_line(line: str) -> ProgressUpdate | None:
     match = _UPLOADING_RE.match(stripped)
     if match:
         value = int(round(float(match.group(1))))
+        return ProgressUpdate(kind="percent", value=value, total=100, label=None)
+
+    match = _UPLOADING_COLON_RE.match(stripped)
+    if match:
+        fraction = float(match.group(1))
+        value = int(round(fraction * 100))
         return ProgressUpdate(kind="percent", value=value, total=100, label=None)
 
     return None

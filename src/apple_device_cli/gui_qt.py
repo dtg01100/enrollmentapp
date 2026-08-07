@@ -168,8 +168,9 @@ def _require_pyside6() -> None:
     global QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout
     global QHBoxLayout
     global QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow
-    global QMessageBox, QProgressBar, QPushButton, QTabWidget, QTextEdit
+    global QMessageBox, QProgressBar, QPushButton, QSplitter, QTabWidget, QTextEdit
     global QVBoxLayout, QWidget
+    global QGroupBox
     try:
         from PySide6.QtCore import QEvent, Qt, QThread, Signal, Slot  # noqa: F401
         from PySide6.QtWidgets import (  # noqa: F401
@@ -179,6 +180,7 @@ def _require_pyside6() -> None:
             QDialogButtonBox,
             QFileDialog,
             QFormLayout,
+            QGroupBox,
             QHBoxLayout,
             QLabel,
             QLineEdit,
@@ -188,6 +190,7 @@ def _require_pyside6() -> None:
             QMessageBox,
             QProgressBar,
             QPushButton,
+            QSplitter,
             QTabWidget,
             QTextEdit,
             QVBoxLayout,
@@ -459,101 +462,178 @@ def _require_pyside6() -> None:
             return widget
 
         def _create_restore_tab(self) -> QWidget:
-            widget = QWidget()
-            layout = QVBoxLayout(widget)
+            """Build the Restore tab.
 
-            form_layout = QFormLayout()
+            Layout (top + bottom in a vertical QSplitter):
+
+              ┌── top: setup ──────────────────────────────────┐
+              │ Device groupbox:  Device / ProductType / Mode  │
+              │ Firmware groupbox: Cache / Version / IPSW / V  │
+              │ Actions row: primary Start + secondary recov  │
+              ├─────────────── splitter ────────────────────────┤
+              └── bottom: status (anchored, always visible) ──┘
+                Progress bar (fixed-height) + Activity log
+            """
+            outer = QWidget()
+            outer_layout = QVBoxLayout(outer)
+            outer_layout.setContentsMargins(8, 8, 8, 8)
+
+            splitter = QSplitter(Qt.Orientation.Vertical)
+            outer_layout.addWidget(splitter, 1)
+
+            # ---------- TOP: setup ----------
+            setup_widget = QWidget()
+            setup_layout = QVBoxLayout(setup_widget)
+            setup_layout.setContentsMargins(0, 0, 0, 0)
+            setup_layout.setSpacing(8)
+
+            # ----- Device groupbox -----
+            device_box = QGroupBox("Device")
+            device_layout = QFormLayout(device_box)
+            device_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
             self.restore_device_combo = QComboBox()
-            self.restore_device_combo.currentIndexChanged.connect(self._on_restore_device_changed)
-            form_layout.addRow("Device:", self.restore_device_combo)
+            self.restore_device_combo.currentIndexChanged.connect(
+                self._on_restore_device_changed
+            )
+            device_layout.addRow("Device:", self.restore_device_combo)
 
             self.restore_product_type_label = QLabel("<select a device>")
-            form_layout.addRow("ProductType:", self.restore_product_type_label)
+            device_layout.addRow("ProductType:", self.restore_product_type_label)
 
             self.restore_device_mode_label = QLabel("—")
-            form_layout.addRow("Mode:", self.restore_device_mode_label)
+            device_layout.addRow("Mode:", self.restore_device_mode_label)
+
+            setup_layout.addWidget(device_box)
+
+            # ----- Firmware groupbox -----
+            firmware_box = QGroupBox("Firmware")
+            firmware_layout = QFormLayout(firmware_box)
+            firmware_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
             cache_row = QHBoxLayout()
             self.restore_cache_path_label = QLabel(str(resolve_cache_dir()))
+            self.restore_cache_path_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
             cache_row.addWidget(self.restore_cache_path_label, 1)
-            cache_folder_btn = QPushButton("Cache folder...")
+            cache_folder_btn = QPushButton("Change...")
             cache_folder_btn.clicked.connect(self._pick_cache_folder)
             cache_row.addWidget(cache_folder_btn)
             show_cache_btn = QPushButton("Show cache")
             show_cache_btn.clicked.connect(self._show_cache)
             cache_row.addWidget(show_cache_btn)
-            form_layout.addRow("Cache folder:", cache_row)
+            firmware_layout.addRow("Cache:", cache_row)
 
+            version_row = QHBoxLayout()
             self.restore_versions_combo = QComboBox()
-            form_layout.addRow("iOS Version:", self.restore_versions_combo)
-
+            version_row.addWidget(self.restore_versions_combo, 1)
             self.restore_refresh_versions_btn = QPushButton("Refresh versions")
             self.restore_refresh_versions_btn.clicked.connect(self._refresh_versions)
             self.restore_refresh_versions_btn.setEnabled(False)
-            form_layout.addRow(self.restore_refresh_versions_btn)
+            version_row.addWidget(self.restore_refresh_versions_btn)
+            firmware_layout.addRow("iOS version:", version_row)
 
-            browse_ipsw_btn = QPushButton("Browse for .ipsw file...")
-            browse_ipsw_btn.clicked.connect(self._browse_ipsw)
-            form_layout.addRow(browse_ipsw_btn)
-
+            ipsw_row = QHBoxLayout()
             self.restore_ipsw_path_label = QLabel("<not selected>")
-            form_layout.addRow("IPSW file:", self.restore_ipsw_path_label)
-
-            self.restore_verify_btn = QPushButton("Verify IPSW (ipsw.me)")
+            self.restore_ipsw_path_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            ipsw_row.addWidget(self.restore_ipsw_path_label, 1)
+            browse_ipsw_btn = QPushButton("Browse...")
+            browse_ipsw_btn.clicked.connect(self._browse_ipsw)
+            ipsw_row.addWidget(browse_ipsw_btn)
+            self.restore_verify_btn = QPushButton("Verify (ipsw.me)")
             self.restore_verify_btn.clicked.connect(self._verify_ipsw)
             self.restore_verify_btn.setEnabled(False)
-            form_layout.addRow(self.restore_verify_btn)
+            ipsw_row.addWidget(self.restore_verify_btn)
+            firmware_layout.addRow("IPSW:", ipsw_row)
 
-            layout.addLayout(form_layout)
+            setup_layout.addWidget(firmware_box)
 
-            buttons_layout = QHBoxLayout()
-            self.restore_refresh_devices_btn = QPushButton("Refresh Devices")
-            self.restore_refresh_devices_btn.clicked.connect(self._refresh_devices)
-            buttons_layout.addWidget(self.restore_refresh_devices_btn)
+            # ----- Actions row (primary + secondary) -----
+            actions_row = QHBoxLayout()
+            actions_row.setSpacing(8)
 
+            # Primary action: bold + taller so it visually stands out from
+            # the secondary recovery buttons.
             self.restore_start_btn = QPushButton("Start Restore")
+            self.restore_start_btn.setObjectName("restore_start_btn")
+            f = self.restore_start_btn.font()
+            f.setBold(True)
+            self.restore_start_btn.setFont(f)
+            self.restore_start_btn.setMinimumHeight(36)
             self.restore_start_btn.clicked.connect(self._start_restore)
             self.restore_start_btn.setEnabled(False)
-            buttons_layout.addWidget(self.restore_start_btn)
+            actions_row.addWidget(self.restore_start_btn)
+
+            actions_row.addSpacing(16)
+
+            self.restore_refresh_devices_btn = QPushButton("Refresh Devices")
+            self.restore_refresh_devices_btn.clicked.connect(self._refresh_devices)
+            actions_row.addWidget(self.restore_refresh_devices_btn)
 
             self.restore_enter_recovery_btn = QPushButton("Enter Recovery")
             self.restore_enter_recovery_btn.clicked.connect(self._enter_recovery)
             self.restore_enter_recovery_btn.setEnabled(False)
-            buttons_layout.addWidget(self.restore_enter_recovery_btn)
+            actions_row.addWidget(self.restore_enter_recovery_btn)
 
             self.restore_exit_recovery_btn = QPushButton("Exit Recovery")
             self.restore_exit_recovery_btn.clicked.connect(self._exit_recovery)
             self.restore_exit_recovery_btn.setEnabled(False)
-            buttons_layout.addWidget(self.restore_exit_recovery_btn)
+            actions_row.addWidget(self.restore_exit_recovery_btn)
 
-            # Always enabled: a device in Recovery mode drops off the lockdown
-            # device list, so the selection-based Exit Recovery button above
-            # cannot reach it. This one scans the USB bus for recovery devices.
-            self.restore_exit_recovery_any_btn = QPushButton("Exit Recovery (any device)")
+            # Fallback: a recovery device on the bus but the selection box
+            # is empty (recovery devices are invisible to usbmuxd). The
+            # primary Exit Recovery needs a selected device.
+            self.restore_exit_recovery_any_btn = QPushButton("Exit Recovery (any)")
             self.restore_exit_recovery_any_btn.clicked.connect(self._exit_recovery_any)
-            buttons_layout.addWidget(self.restore_exit_recovery_any_btn)
+            actions_row.addWidget(self.restore_exit_recovery_any_btn)
 
-            buttons_layout.addStretch()
-            layout.addLayout(buttons_layout)
+            actions_row.addStretch()
+            setup_layout.addLayout(actions_row)
+
+            # ---------- BOTTOM: status (anchored) ----------
+            status_widget = QWidget()
+            status_layout = QVBoxLayout(status_widget)
+            status_layout.setContentsMargins(0, 4, 0, 0)
+            status_layout.setSpacing(4)
 
             self.restore_progress_bar = QProgressBar()
             self.restore_progress_bar.setObjectName("restore_progress_bar")
-            self.restore_progress_bar.setMinimumHeight(18)
+            self.restore_progress_bar.setFixedHeight(22)
             self.restore_progress_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            # Indeterminate + hidden until a restore starts; the bar switches
-            # to determinate on the first real progress event.
-            self.restore_progress_bar.setRange(0, 0)
-            self.restore_progress_bar.setFormat("Working...")
-            self.restore_progress_bar.setVisible(False)
-            layout.addWidget(self.restore_progress_bar)
+            self.restore_progress_bar.setTextVisible(True)
+            # Always visible so the layout doesn't reflow when a restore
+            # starts. Idle state: determinate 0% with a "Ready" label. On
+            # restore start the bar switches to indeterminate ("Working...")
+            # via _reset_restore_progress_bar, then to determinate on the
+            # first real progress event.
+            self.restore_progress_bar.setRange(0, 100)
+            self.restore_progress_bar.setValue(0)
+            self.restore_progress_bar.setFormat("Ready")
+            status_layout.addWidget(self.restore_progress_bar)
 
-            layout.addWidget(QLabel("Restore log:"))
+            log_label = QLabel("Activity log")
+            log_label.setStyleSheet("color: palette(mid); font-weight: 600;")
+            status_layout.addWidget(log_label)
+
             self.restore_log_text = QTextEdit()
             self.restore_log_text.setReadOnly(True)
-            layout.addWidget(self.restore_log_text)
+            self.restore_log_text.setObjectName("restore_log_text")
+            status_layout.addWidget(self.restore_log_text, 1)
 
-            return widget
+            splitter.addWidget(setup_widget)
+            splitter.addWidget(status_widget)
+            # ~60/40 default split; user can drag. Status never collapses
+            # below 120 px so the bar + at least a few log lines stay
+            # visible.
+            splitter.setStretchFactor(0, 3)
+            splitter.setStretchFactor(1, 2)
+            splitter.setSizes([460, 280])
+            splitter.setChildrenCollapsible(False)
+
+            return outer
 
         def _log(self, message: str) -> None:
             self.log_signal.emit(message)

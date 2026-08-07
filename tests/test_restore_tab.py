@@ -91,6 +91,12 @@ def make_app(qapp, tmp_path, monkeypatch, sync_workers):
     ``resolve_cache_dir`` don't touch the real home), mocks device and org
     enumeration to empty, and patches ``OrganizationManager`` so org
     refresh is a no-op.
+
+    Also hermetic against a live machine: ``detect_recovery_devices_present``
+    defaults to False (no Recovery-mode device on the USB bus) and
+    ``recovery_device_descriptor`` to None, so the synthetic "Recovery mode"
+    combo entry never appears unless a test explicitly opts in by overriding
+    the attribute with ``monkeypatch`` after the fixture runs.
     """
     import apple_device_cli.gui_qt as gui_qt
 
@@ -102,6 +108,8 @@ def make_app(qapp, tmp_path, monkeypatch, sync_workers):
         "ipsw_count": 0,
         "ipsw_files": [],
     })
+    monkeypatch.setattr(gui_qt, "detect_recovery_devices_present", lambda: False)
+    monkeypatch.setattr(gui_qt, "recovery_device_descriptor", lambda: None)
 
     class _FakeOrgManager:
         def list_orgs(self) -> list:

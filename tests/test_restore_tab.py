@@ -633,3 +633,27 @@ class TestRecoveryButtons:
         app = make_app(devices=sample_devices)
         app._on_recovery_mode_result(None, RuntimeError("enter recovery failed"))
         assert "enter recovery failed" in app.restore_log_text.toPlainText()
+
+
+class TestExitRecoveryAnyButton:
+    """The always-enabled 'Exit Recovery (any device)' button.
+
+    A device in Recovery mode is invisible to usbmuxd, so it never appears in
+    the Restore tab's device dropdown — the selection-based Exit Recovery
+    button cannot reach it. This button scans the USB bus directly, no UDID.
+    """
+
+    def test_exit_recovery_button_without_selection_exists(self, make_app):
+        app = make_app(devices=[])
+        assert app.restore_exit_recovery_any_btn is not None
+        # Enabled even with no device selected — the whole point of the button.
+        assert app.restore_exit_recovery_any_btn.isEnabled()
+
+    def test_exit_recovery_button_without_selection_invokes_engine_with_no_udid(
+        self, make_app, monkeypatch
+    ):
+        app = make_app(devices=[])
+        with patch("apple_device_cli.gui_qt.exit_recovery_mode") as mock_exit:
+            with patch("apple_device_cli.gui_qt.list_devices", return_value=[]):
+                app.restore_exit_recovery_any_btn.click()
+        mock_exit.assert_called_once_with(udid=None)

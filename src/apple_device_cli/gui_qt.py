@@ -512,6 +512,13 @@ def _require_pyside6() -> None:
             self.restore_exit_recovery_btn.setEnabled(False)
             buttons_layout.addWidget(self.restore_exit_recovery_btn)
 
+            # Always enabled: a device in Recovery mode drops off the lockdown
+            # device list, so the selection-based Exit Recovery button above
+            # cannot reach it. This one scans the USB bus for recovery devices.
+            self.restore_exit_recovery_any_btn = QPushButton("Exit Recovery (any device)")
+            self.restore_exit_recovery_any_btn.clicked.connect(self._exit_recovery_any)
+            buttons_layout.addWidget(self.restore_exit_recovery_any_btn)
+
             buttons_layout.addStretch()
             layout.addLayout(buttons_layout)
 
@@ -1460,6 +1467,34 @@ def _require_pyside6() -> None:
                 self._on_recovery_mode_result,
                 [self.restore_enter_recovery_btn, self.restore_exit_recovery_btn],
             )
+
+        def _exit_recovery_any(self) -> None:
+            """Reset any recovery-mode device(s) on the USB bus.
+
+            Works without a device selection because a device in Recovery mode
+            is invisible to usbmuxd (lockdown isn't running) and therefore
+            missing from the Restore tab's device dropdown.
+            """
+            self._log_to_restore("Scanning USB bus for recovery-mode devices...")
+            worker = WorkerThread(lambda: exit_recovery_mode(udid=None))
+            self._run_worker(
+                worker,
+                self._on_exit_recovery_any_result,
+                [self.restore_exit_recovery_any_btn],
+            )
+
+        @Slot(object, object)
+        def _on_exit_recovery_any_result(self, result: Any, error: Exception | None) -> None:
+            if error:
+                self._log_to_restore(f"Exit Recovery failed: {error}")
+            else:
+                reset = result or []
+                self._log_to_restore(
+                    f"Reset {len(reset)} device(s) out of recovery mode."
+                )
+            # Refresh so the device combo + mode label reflect the new state
+            # (the device reboots and re-enumerates with a different USB PID).
+            self._refresh_devices()
 
         @Slot(object, object)
         def _on_recovery_mode_result(self, result: Any, error: Exception | None) -> None:

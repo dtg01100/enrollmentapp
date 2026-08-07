@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `~/.cache/ios-enroll/firmware/`. The default is NOT `/tmp` (tmpfs
   quota on this host is ~12.5 GB; OOM risk on large IPSW downloads).
 - Resume-on-partial support for IPSW downloads via HTTP `Range:`.
+- Restore tab refresh button (was already in spec but wiring verified) and a device mode label (Normal / Recovery / Restore / DFU) that updates when the device list refreshes. "Enter Recovery" and "Exit Recovery" buttons on the Restore tab. The Exit Recovery button works even when no device is selected in the dropdown (since a device in Recovery mode doesn't show up in the lockdown list).
 
 ### Notes
 - The restore subprocess has no timeout — older iPads can run 45-60+

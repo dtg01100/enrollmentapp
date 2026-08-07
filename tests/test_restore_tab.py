@@ -22,6 +22,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from apple_device_cli.device.info import DeviceInfo  # noqa: E402
 from apple_device_cli.restore.engine import ProgressEvent, ProgressUpdate  # noqa: E402
+from apple_device_cli.restore.engine import VerifyResult  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -959,3 +960,107 @@ class TestRecoveryRestoreFlow:
         self._select_recovery(app, monkeypatch)
 
         assert app.restore_device_mode_label.text() == "Recovery"
+
+
+class TestCachedVersionMarker:
+    def test_versions_list_marks_cached(self, make_app, sample_devices, tmp_path):
+
+        # A cached IPSW whose basename matches a signed-version URL.
+        cached = tmp_path / "iPad13,4_26.6_23G71_Restore.ipsw"
+        cached.write_bytes(b"x")
+        version = SimpleNamespace(
+            display_label="iOS 26.6 (23G71)",
+            url="https://cdn.example/iPad13,4_26.6_23G71_Restore.ipsw",
+        )
+        monkeypatch = None  # noqa: F841 — fixture unused; resolve_cache_dir is mocked by make_app
+        app = make_app(devices=sample_devices)
+        app._load_versions("iPad13,4")
+        # Simulate the refresh callback with the cached file present.
+        app._on_versions_refreshed([version], None)
+        assert app.restore_versions_combo.count() == 1
+        assert "(cached)" in app.restore_versions_combo.itemText(0)
+
+    def test_versions_list_not_cached(self, make_app, sample_devices):
+        app = make_app(devices=sample_devices)
+        version = SimpleNamespace(
+            display_label="iOS 26.5.2 (23F84)",
+            url="https://cdn.example/iPad13,4_26.5.2_23F84_Restore.ipsw",
+        )
+        app._on_versions_refreshed([version], None)
+        assert app.restore_versions_combo.count() == 1
+        assert "(cached)" not in app.restore_versions_combo.itemText(0)
+
+
+class TestVerifyIpswButton:
+    def test_verify_button_disabled_without_ipsw(self, make_app, sample_devices):
+        app = make_app(devices=sample_devices)
+        assert not app.restore_verify_btn.isEnabled()
+
+    def test_verify_button_enabled_after_browse(self, make_app, sample_devices, tmp_path):
+        app = make_app(devices=sample_devices)
+        f = tmp_path / "iPad13,4_26.6_23G71_Restore.ipsw"
+        f.write_bytes(b"fake")
+        app._restore_ipsw_path = f
+        app._update_restore_verify_enabled()
+        assert app.restore_verify_btn.isEnabled()
+
+    def test_verify_button_enabled_with_cached_url(self, make_app, sample_devices, tmp_path):
+        cached = tmp_path / "iPad13,4_26.6_23G71_Restore.ipsw"
+        cached.write_bytes(b"x")
+        app = make_app(devices=sample_devices)
+        version = SimpleNamespace(
+            display_label="iOS 26.6 (23G71)",
+            url="https://cdn.example/iPad13,4_26.6_23G71_Restore.ipsw",
+        )
+        app._on_versions_refreshed([version], None)
+        assert app.restore_verify_btn.isEnabled()
+
+    def test_verify_runs_on_demand(self, make_app, sample_devices, tmp_path, monkeypatch):
+        import apple_device_cli.gui_qt as gui_qt
+
+        app = make_app(devices=sample_devices)
+        f = tmp_path / "iPad13,4_26.6_23G71_Restore.ipsw"
+        f.write_bytes(b"fake")
+        app._restore_ipsw_path = f
+        app._update_restore_verify_enabled()
+
+        called: list[Path] = []
+        expected = VerifyResult(
+            path=f,
+            local_sha1="a" * 40,
+            local_sha256="b" * 64,
+            local_size=4,
+            expected=None,
+            sha1_match=None,
+            sha256_match=None,
+            size_match=None,
+        )
+
+        def fake_verify(path, device=None, build=None, version=None):
+            called.append(Path(path))
+            return expected
+
+        monkeypatch.setattr(gui_qt, "verify_ipsw", fake_verify)
+        monkeypatch.setattr(gui_qt.QMessageBox, "information", lambda *a, **k: None)
+        monkeypatch.setattr(gui_qt.QMessageBox, "warning", lambda *a, **k: None)
+
+        app._verify_ipsw()
+        assert len(called) == 1
+        assert called[0] == f
+
+    def test_verify_refuses_uncached_url(self, make_app, sample_devices, tmp_path, monkeypatch):
+        import apple_device_cli.gui_qt as gui_qt
+
+        app = make_app(devices=sample_devices)
+        version = SimpleNamespace(
+            display_label="iOS 26.5.2 (23F84)",
+            url="https://cdn.example/iPad13,4_26.5.2_23F84_Restore.ipsw",
+        )
+        app._on_versions_refreshed([version], None)
+        assert not app.restore_verify_btn.isEnabled()
+
+        called: list = []
+        monkeypatch.setattr(gui_qt, "verify_ipsw", lambda **kw: called.append(kw))
+        monkeypatch.setattr(gui_qt.QMessageBox, "warning", lambda *a, **k: None)
+        app._verify_ipsw()
+        assert called == []

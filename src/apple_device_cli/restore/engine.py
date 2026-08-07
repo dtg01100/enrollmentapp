@@ -284,6 +284,254 @@ def _filename_from_url(url: str) -> str:
     return tail if tail else "ipsw.partial"
 
 
+# Apple CDN IPSW filename pattern: <Device>_<Version>_<Build>_Restore.ipsw
+# e.g. iPad15,7_26.6_23G71_Restore.ipsw
+_FILENAME_RE = re.compile(
+    r"^(?P<device>[^_]+)_(?P<version>\d+(?:\.\d+){1,2})_"
+    r"(?P<build>[A-Za-z0-9]+)_Restore\.ipsw$"
+)
+
+
+def parse_ipsw_filename(name: str) -> tuple[str, str, str] | None:
+    """Parse ``iPad15,7_26.6_23G71_Restore.ipsw`` → (device, version, build).
+
+    Returns None when the name doesn't match the Apple CDN pattern.
+    """
+    m = _FILENAME_RE.match(name.strip())
+    if m is None:
+        return None
+    return m.group("device"), m.group("version"), m.group("build")
+
+
+def cached_ipsw_path(
+    url_or_name: str, cache_dir: Path | None = None
+) -> Path | None:
+    """Return the Path of a cached IPSW matching ``url_or_name``'s basename,
+    or None when absent or zero-size. Does not verify integrity.
+
+    ``url_or_name`` may be a full Apple CDN URL or a bare filename.
+    """
+    from apple_device_cli.restore.cache import resolve_cache_dir
+
+    cache = cache_dir or resolve_cache_dir()
+    if not cache or not cache.is_dir():
+        return None
+    name = _filename_from_url(url_or_name)
+    candidate = cache / name
+    if candidate.is_file() and candidate.stat().st_size > 0:
+        return candidate
+    return None
+
+
+_HASH_CHUNK = 1024 * 1024
+
+
+def hash_ipsw(path: Path, algorithm: str = "sha1") -> str:
+    """Stream-hash ``path`` (``sha1`` / ``sha256`` / ``md5``).
+
+    Returns lowercase hex. Chunked 1 MiB reads so a ~10 GB IPSW doesn't
+    blow memory. Raises FileNotFoundError / OSError on I/O problems.
+    """
+    import hashlib
+
+    h = hashlib.new(algorithm)
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(_HASH_CHUNK)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+@dataclass(frozen=True)
+class FirmwareIdentity:
+    """Expected identity of one firmware as published by ipsw.me."""
+
+    version: str
+    build: str
+    device: str          # ProductType, e.g. "iPad15,7"
+    url: str
+    sha1sum: str         # lowercase hex or ""
+    sha256sum: str       # lowercase hex or ""
+    md5sum: str          # lowercase hex or ""
+    filesize: int | None
+
+
+_IPSW_ME_TIMEOUT = 10
+
+
+def lookup_ipsw_me(
+    device: str,
+    build: str | None = None,
+    version: str | None = None,
+) -> FirmwareIdentity | None:
+    """Look up a firmware's published hashes on ipsw.me (on demand).
+
+    GETs ``https://api.ipsw.me/v4/device/{device}?type=ipsw`` and returns
+    the matching firmware — preferred match by ``buildid``, falling back
+    to ``version`` when ``build`` is None. Returns None when the device
+    isn't listed, no entry matches, or the network call fails. Never
+    raises: callers report a failed lookup via ``expected=None``.
+    """
+    import json
+    from urllib.request import Request as _Request
+
+    url = f"https://api.ipsw.me/v4/device/{device}?type=ipsw"
+    try:
+        req = _Request(url, headers={"User-Agent": "ios-enroll/1.3"})
+        with urlopen(req, timeout=_IPSW_ME_TIMEOUT) as resp:
+            payload = json.load(resp)
+    except Exception:  # noqa: BLE001 — network/lookup failures are non-fatal
+        return None
+    firmwares = payload.get("firmwares") if isinstance(payload, dict) else None
+    if not isinstance(firmwares, list):
+        return None
+
+    def _to_identity(fw: dict) -> FirmwareIdentity | None:
+        try:
+            size = fw.get("filesize")
+            return FirmwareIdentity(
+                version=str(fw.get("version", "")),
+                build=str(fw.get("buildid", "")),
+                device=device,
+                url=str(fw.get("url", "")),
+                sha1sum=str(fw.get("sha1sum", "") or "").lower(),
+                sha256sum=str(fw.get("sha256sum", "") or "").lower(),
+                md5sum=str(fw.get("md5sum", "") or "").lower(),
+                filesize=int(size) if size is not None else None,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+    if build:
+        for fw in firmwares:
+            if str(fw.get("buildid", "")) == build:
+                ident = _to_identity(fw)
+                if ident is not None:
+                    return ident
+        return None  # build given but not found — no fallback
+    if version:
+        for fw in firmwares:
+            if str(fw.get("version", "")) == version:
+                ident = _to_identity(fw)
+                if ident is not None:
+                    return ident
+        return None  # version given but not found — no fallback
+    # No build/version given: return the first entry.
+    for fw in firmwares:
+        ident = _to_identity(fw)
+        if ident is not None:
+            return ident
+    return None
+
+
+@dataclass(frozen=True)
+class VerifyResult:
+    """Outcome of an on-demand IPSW hash verification."""
+
+    path: Path
+    local_sha1: str
+    local_sha256: str
+    local_size: int
+    expected: FirmwareIdentity | None   # None = couldn't look up
+    sha1_match: bool | None             # None = no expected hash
+    sha256_match: bool | None
+    size_match: bool | None
+
+    @property
+    def summary(self) -> str:
+        """Human one-liner for logs / CLI output."""
+        name = self.path.name
+        if self.expected is None:
+            return (
+                f"{name}: could not look up expected hashes on ipsw.me; "
+                f"local sha1={self.local_sha1[:12]}… "
+                f"sha256={self.local_sha256[:12]}… size={self.local_size:,}"
+            )
+        ok = self.sha1_match and self.sha256_match and self.size_match
+        if ok:
+            return f"{name}: VERIFIED (sha1/sha256/size all match ipsw.me)"
+        parts = []
+        if self.sha1_match is False:
+            parts.append("sha1 MISMATCH")
+        if self.sha256_match is False:
+            parts.append("sha256 MISMATCH")
+        if self.size_match is False:
+            parts.append(f"size MISMATCH (local {self.local_size:,} vs "
+                         f"expected {self.expected.filesize or '?'})")
+        return f"{name}: " + ("; ".join(parts) if parts else "no expected hashes to compare")
+
+
+def verify_ipsw(
+    path: Path,
+    device: str | None = None,
+    build: str | None = None,
+    version: str | None = None,
+) -> VerifyResult:
+    """Hash ``path`` locally, look up expected hashes on ipsw.me, compare.
+
+    Identity resolution order:
+      1. Explicit ``device`` / ``build`` / ``version`` args.
+      2. Parsed from the filename via ``parse_ipsw_filename``.
+      3. Still unknown → ``expected=None`` (summary notes the lookup was
+         skipped); local hashes are still computed and returned.
+
+    Always computes local sha1 + sha256 + size. The ipsw.me lookup is
+    cheap and never raises. Never raises for network/lookup failures —
+    they surface as ``expected=None`` / ``match=None``.
+    """
+    path = Path(path)
+    local_sha1 = hash_ipsw(path, "sha1")
+    local_sha256 = hash_ipsw(path, "sha256")
+    local_size = path.stat().st_size
+
+    if device is None:
+        parsed = parse_ipsw_filename(path.name)
+        if parsed is not None:
+            device, version, build = parsed
+
+    if not device:
+        return VerifyResult(
+            path=path,
+            local_sha1=local_sha1,
+            local_sha256=local_sha256,
+            local_size=local_size,
+            expected=None,
+            sha1_match=None,
+            sha256_match=None,
+            size_match=None,
+        )
+
+    expected = lookup_ipsw_me(device, build=build, version=version)
+    if expected is None:
+        return VerifyResult(
+            path=path,
+            local_sha1=local_sha1,
+            local_sha256=local_sha256,
+            local_size=local_size,
+            expected=None,
+            sha1_match=None,
+            sha256_match=None,
+            size_match=None,
+        )
+
+    sha1_match = (expected.sha1sum == local_sha1) if expected.sha1sum else None
+    sha256_match = (expected.sha256sum == local_sha256) if expected.sha256sum else None
+    size_match = (expected.filesize == local_size) if expected.filesize is not None else None
+    return VerifyResult(
+        path=path,
+        local_sha1=local_sha1,
+        local_sha256=local_sha256,
+        local_size=local_size,
+        expected=expected,
+        sha1_match=sha1_match,
+        sha256_match=sha256_match,
+        size_match=size_match,
+    )
+
+
+
 def download_ipsw(
     url: str,
     dest_dir: Path,

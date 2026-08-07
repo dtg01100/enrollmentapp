@@ -907,6 +907,58 @@ def device_restore(
     raise typer.Exit(1)
 
 
+@device_app.command("verify-ipsw")
+def device_verify_ipsw(
+    ipsw: str = typer.Option(
+        ..., "--ipsw",
+        help="Path to a local .ipsw file to verify.",
+    ),
+    device: str = typer.Option(
+        None, "--device",
+        help="ProductType (e.g. iPad15,7). Defaults to parsing the filename.",
+    ),
+):
+    """Verify an IPSW against ipsw.me's published hashes (on demand).
+
+    Stream-hashes the file (SHA-1 + SHA-256), looks up the expected hashes
+    for the matching firmware on ipsw.me, and reports MATCH/MISMATCH per
+    field. The device is parsed from the filename (``<Device>_<Version>_<Build>_Restore.ipsw``)
+    unless ``--device`` is given. Exit 0 on full match (or when expected
+    hashes are unavailable but local hashes were printed); exit 1 on any
+    mismatch.
+    """
+    from apple_device_cli.restore.engine import verify_ipsw
+
+    path = Path(ipsw)
+    if not path.is_file():
+        typer.secho(f"IPSW file not found: {path}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"Verifying {path.name} ({path.stat().st_size:,} bytes)...")
+    result = verify_ipsw(path, device=device)
+
+    typer.echo(f"  local  sha1   {result.local_sha1}")
+    typer.echo(f"  local  sha256 {result.local_sha256}")
+    typer.echo(f"  local  size   {result.local_size:,}")
+    if result.expected is None:
+        typer.secho(
+            "  could not look up expected hashes on ipsw.me "
+            "(unknown device/build or network failure).",
+            fg=typer.colors.YELLOW,
+        )
+        raise typer.Exit(0)
+    typer.echo(f"  ipsw.me sha1   {result.expected.sha1sum or '(n/a)'}")
+    typer.echo(f"  ipsw.me sha256 {result.expected.sha256sum or '(n/a)'}")
+    typer.echo(f"  ipsw.me size   {result.expected.filesize or '(n/a)'}")
+
+    ok = result.sha1_match and result.sha256_match and result.size_match
+    if ok:
+        typer.secho("VERIFIED: hashes match ipsw.me.", fg=typer.colors.GREEN, bold=True)
+        raise typer.Exit(0)
+    typer.secho(result.summary, fg=typer.colors.RED, err=True)
+    raise typer.Exit(1)
+
+
 @org_app.command("list")
 def org_list(
     verbose: bool = typer.Option(False, "--verbose", help="Show MDM URL and certificate status"),

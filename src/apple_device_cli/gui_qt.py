@@ -36,8 +36,10 @@ from apple_device_cli.restore.cache import (
 )
 from apple_device_cli.restore.engine import (
     ProgressEvent,
+    VerifyResult,
     _device_ecid,
     _filename_from_url,
+    cached_ipsw_path,
     detect_device_mode,
     detect_recovery_devices_present,
     download_ipsw,
@@ -45,9 +47,11 @@ from apple_device_cli.restore.engine import (
     exit_recovery_mode,
     get_product_type_for_udid,
     list_signed_versions,
+    parse_ipsw_filename,
     parse_ipsw_url,
     recovery_device_descriptor,
     restore_device as engine_restore_device,
+    verify_ipsw,
 )
 
 
@@ -495,6 +499,11 @@ def _require_pyside6() -> None:
 
             self.restore_ipsw_path_label = QLabel("<not selected>")
             form_layout.addRow("IPSW file:", self.restore_ipsw_path_label)
+
+            self.restore_verify_btn = QPushButton("Verify IPSW (ipsw.me)")
+            self.restore_verify_btn.clicked.connect(self._verify_ipsw)
+            self.restore_verify_btn.setEnabled(False)
+            form_layout.addRow(self.restore_verify_btn)
 
             layout.addLayout(form_layout)
 
@@ -1333,16 +1342,19 @@ def _require_pyside6() -> None:
                 self._log_to_restore(f"Failed to list signed versions: {error}")
                 return
             versions = result or []
+            cache_dir = resolve_cache_dir()
             self.restore_versions_combo.clear()
             for version in versions:
-                self.restore_versions_combo.addItem(
-                    version.display_label, userData=version.url
-                )
+                label = version.display_label
+                if cached_ipsw_path(version.url, cache_dir) is not None:
+                    label = f"{label}  (cached)"
+                self.restore_versions_combo.addItem(label, userData=version.url)
             self._log_to_restore(f"Found {len(versions)} signed version(s).")
             if versions:
                 self.restore_versions_combo.setCurrentIndex(0)
                 if not self._restore_ipsw_path:
                     self.restore_start_btn.setEnabled(True)
+                self._update_restore_verify_enabled()
 
         def _browse_ipsw(self) -> None:
             filename, _ = QFileDialog.getOpenFileName(
@@ -1354,7 +1366,118 @@ def _require_pyside6() -> None:
             self.restore_ipsw_path_label.setText(filename)
             self.restore_versions_combo.setEnabled(False)
             self.restore_start_btn.setEnabled(True)
+            self._update_restore_verify_enabled()
             self._log_to_restore(f"Using local IPSW: {filename}")
+
+        def _update_restore_verify_enabled(self) -> None:
+            """Enable Verify when an IPSW can be resolved (local or cached)."""
+            path = self._resolve_verify_ipsw_path()
+            self.restore_verify_btn.setEnabled(path is not None)
+
+        def _resolve_verify_ipsw_path(self) -> Path | None:
+            """Resolve the IPSW path Verify should hash, or None.
+
+            Order: explicit ``_restore_ipsw_path`` (Browse / recovery-cache
+            pick) → versions-combo userData that is an existing local file →
+            versions-combo userData that is a URL with a cache hit.
+            """
+            if self._restore_ipsw_path is not None and self._restore_ipsw_path.is_file():
+                return self._restore_ipsw_path
+            combo_data = self.restore_versions_combo.currentData()
+            if not combo_data:
+                return None
+            candidate = Path(combo_data)
+            if candidate.suffix == ".ipsw" and candidate.is_file():
+                return candidate
+            return cached_ipsw_path(combo_data, resolve_cache_dir())
+
+        def _verify_ipsw(self) -> None:
+            """On-demand hash verification against ipsw.me (worker thread)."""
+            path = self._resolve_verify_ipsw_path()
+            if path is None:
+                combo_data = self.restore_versions_combo.currentData()
+                if combo_data and not cached_ipsw_path(combo_data, resolve_cache_dir()):
+                    QMessageBox.warning(
+                        self,
+                        "IPSW not cached",
+                        "This version isn't downloaded yet — Start Restore to "
+                        "download it, then Verify again.",
+                    )
+                else:
+                    QMessageBox.warning(
+                        self, "Nothing to verify", "Select an IPSW first."
+                    )
+                return
+
+            parsed = parse_ipsw_filename(path.name)
+            device = None
+            build = None
+            version = None
+            if parsed is not None:
+                device, version, build = parsed
+            self._log_to_restore(
+                f"Verifying {path.name} (sha1+sha256 of {path.stat().st_size:,} bytes) "
+                f"against ipsw.me — this can take a minute on large IPSWs..."
+            )
+            self.restore_verify_btn.setEnabled(False)
+
+            def work() -> Any:
+                return verify_ipsw(path, device=device, build=build, version=version)
+
+            worker = WorkerThread(work)
+            self._run_worker(
+                worker,
+                self._on_verify_finished,
+                [self.restore_verify_btn],
+            )
+
+        @Slot(object, object)
+        def _on_verify_finished(self, result: Any, error: Exception | None) -> None:
+            if error:
+                self._log_to_restore(f"Verification failed: {error}")
+                QMessageBox.warning(self, "Verify failed", str(error))
+                return
+            v: VerifyResult = result
+            self._log_to_restore(v.summary)
+            if v.expected is not None:
+                self._log_to_restore(
+                    f"  local  sha1   {v.local_sha1}"
+                )
+                self._log_to_restore(
+                    f"  local  sha256 {v.local_sha256}"
+                )
+                self._log_to_restore(
+                    f"  local  size   {v.local_size:,}"
+                )
+                self._log_to_restore(
+                    f"  ipsw.me sha1   {v.expected.sha1sum or '(n/a)'}"
+                )
+                self._log_to_restore(
+                    f"  ipsw.me sha256 {v.expected.sha256sum or '(n/a)'}"
+                )
+                self._log_to_restore(
+                    f"  ipsw.me size   {v.expected.filesize or '(n/a)'}"
+                )
+            ok = v.sha1_match and v.sha256_match and v.size_match
+            if ok:
+                QMessageBox.information(
+                    self, "IPSW verified",
+                    f"{v.path.name}\n\nSHA-1, SHA-256, and size all match "
+                    "the hashes published by ipsw.me.",
+                )
+            elif v.expected is None:
+                QMessageBox.information(
+                    self, "Could not verify",
+                    f"{v.path.name}\n\nCould not look up expected hashes on "
+                    "ipsw.me (device/build unknown or network failure). "
+                    "Local hashes were logged.",
+                )
+            else:
+                QMessageBox.warning(
+                    self, "IPSW mismatch",
+                    f"{v.path.name}\n\n{v.summary}",
+                )
+            self._update_restore_verify_enabled()
 
         def _pick_cache_folder(self) -> None:
             folder = QFileDialog.getExistingDirectory(

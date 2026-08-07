@@ -498,6 +498,8 @@ class TestRestoreCacheUi:
             gui_qt.QFileDialog, "getExistingDirectory",
             staticmethod(lambda *a, **kw: "/var/mnt/Disk2/cache"),
         )
+        # This test mocks write_cache_config to isolate the label-update behavior.
+        # Real persistence is covered by test_pick_cache_folder_persists_to_config_json.
         monkeypatch.setattr(
             gui_qt, "write_cache_config", lambda cache_dir: None
         )
@@ -507,6 +509,43 @@ class TestRestoreCacheUi:
 
         assert app.restore_cache_path_label.text() == "/var/mnt/Disk2/cache"
         assert "Cache folder set to /var/mnt/Disk2/cache" in app.restore_log_text.toPlainText()
+
+    def test_pick_cache_folder_persists_to_config_json(self, make_app, monkeypatch, tmp_path):
+        """Regression: picker must actually write config.json, not just update the label."""
+        import json
+        from pathlib import Path
+
+        import apple_device_cli.gui_qt as gui_qt
+        from apple_device_cli.restore import cache as cache_mod
+
+        # Redirect Path.home() so the write lands in tmp_path, not real ~/.config
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("XDG_CACHE_HOME", str(fake_home / ".cache"))
+        monkeypatch.delenv("IOS_ENROLL_CACHE_DIR", raising=False)
+        # Force Path.home() to re-resolve (it's cached in some pathlib versions)
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+        chosen_folder = "/var/mnt/Disk2/iosfirmwares"
+        monkeypatch.setattr(
+            gui_qt.QFileDialog, "getExistingDirectory",
+            staticmethod(lambda *a, **kw: chosen_folder),
+        )
+
+        app = make_app()
+        # make_app no-ops write_cache_config; restore the real one so the
+        # write actually happens — that's the whole point of this test.
+        monkeypatch.setattr(gui_qt, "write_cache_config", cache_mod.write_cache_config)
+        app._pick_cache_folder()
+
+        config_file = fake_home / ".config" / "ios-enroll" / "config.json"
+        assert config_file.exists(), f"config.json not written at {config_file}"
+        data = json.loads(config_file.read_text())
+        assert data["cache_dir"] == chosen_folder
+
+        # Round-trip: resolve_cache_dir() must return the chosen folder
+        assert cache_mod.resolve_cache_dir() == Path(chosen_folder)
 
     def test_browse_ipsw_selects_local_file(self, make_app, monkeypatch):
         import apple_device_cli.gui_qt as gui_qt

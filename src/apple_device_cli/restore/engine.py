@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 from urllib.error import URLError
@@ -274,3 +275,129 @@ async def get_product_type_for_udid(udid: str) -> str:
             f"`ideviceinfo -u {udid}`."
         )
     return str(product_type)
+
+
+def _stream_subprocess_to_callback(proc, progress_callback) -> str:
+    """Read lines from ``proc.stdout`` until EOF. Returns the full
+    output as one string. Each line is also passed to
+    ``progress_callback`` for streaming.
+
+    Runs synchronously in the caller's thread; safe to use from a
+    QThread worker (which is what the GUI does).
+    """
+    output_lines: list[str] = []
+    if proc.stdout is None:
+        return ""
+    for line in proc.stdout:
+        stripped = line.rstrip("\n")
+        output_lines.append(line)
+        progress_callback(stripped)
+    return "".join(output_lines)
+
+
+def restore_device(
+    udid: str,
+    ipsw_path: Path,
+    cache_dir: Path,
+    progress_callback: Callable[[str], None],
+) -> RestoreResult:
+    """Run ``idevicerestore -e -u <udid> -y -C <cache_dir>
+    --logfile=<cache_dir>/logs/restore_<udid>_<ts>.log <ipsw_path>``
+    and stream stdout/stderr to ``progress_callback``.
+
+    No timeout. ``stdin=DEVNULL`` so ``idevicerestore`` cannot prompt
+    on a TTY. SIGINT (Ctrl-C) reaches the child via the parent's
+    signal disposition — ``subprocess.Popen`` inherits it by default.
+
+    Falls back to ``restore_device_via_pymd3`` if ``idevicerestore``
+    is not on PATH.
+    """
+    if not shutil.which("idevicerestore"):
+        progress_callback(
+            "idevicerestore not found, falling back to pymobiledevice3 "
+            "(slower, fewer features; known broken on iOS 26)."
+        )
+        return restore_device_via_pymd3(udid, ipsw_path, cache_dir, progress_callback)
+
+    logs_dir = cache_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    log_path = logs_dir / f"restore_{udid}_{ts}.log"
+
+    cmd = [
+        "idevicerestore",
+        "-e",
+        "-u", udid,
+        "-y",
+        "-C", str(cache_dir),
+        "--logfile", str(log_path),
+        str(ipsw_path),
+    ]
+    proc = _popen_capture(cmd)
+    output = _stream_subprocess_to_callback(proc, progress_callback)
+    proc.wait()
+
+    if proc.returncode == 0:
+        return RestoreResult(
+            success=True,
+            udid=udid,
+            ipsw_path=ipsw_path,
+            log_excerpt="\n".join(output.splitlines()[-50:]),
+        )
+
+    # Failure: include the log file path so the user can read the
+    # full output (often 50-200 MB for a full restore).
+    last_lines = "\n".join(output.splitlines()[-50:])
+    return RestoreResult(
+        success=False,
+        udid=udid,
+        ipsw_path=ipsw_path,
+        error=(
+            f"idevicerestore exited with code {proc.returncode}. "
+            f"Full log: {log_path}\n--- last 50 lines ---\n{last_lines}"
+        ),
+        log_excerpt=last_lines,
+    )
+
+
+def restore_device_via_pymd3(
+    udid: str,
+    ipsw_path: Path,
+    cache_dir: Path,
+    progress_callback: Callable[[str], None],
+) -> RestoreResult:
+    """Pure-Python fallback using pymobiledevice3.restore.restore.Restore.
+
+    KNOWN-BRITTLE on iOS 26 — the upstream Restore API throws
+    "Could not create Reverse Proxy" against modern devices. This
+    function exists so the engine has a fallback if idevicerestore
+    is missing, but the user should expect it to fail on iOS 26
+    with that error.
+
+    Implementation note: this is a thin async wrapper around
+    ``pymobiledevice3.restore.restore.Restore.update()``. The
+    actual call is wrapped in a try/except so any failure becomes
+    a clean ``RestoreResult(success=False, ...)``.
+
+    In this iteration we surface a clear "not implemented" error so
+    the engine stays importable on hosts without idevicerestore.
+    A real pymd3 implementation can land in a follow-up.
+    """
+    progress_callback(
+        "pymobiledevice3 restore path is the fallback. It is known "
+        "to fail on iOS 26 — if the restore fails here, install "
+        "libimobiledevice (brew install libimobiledevice) and try again "
+        "with the idevicerestore path."
+    )
+    return RestoreResult(
+        success=False,
+        udid=udid,
+        ipsw_path=ipsw_path,
+        error=(
+            "pymobiledevice3 restore path is not implemented in this "
+            "iteration. Install idevicerestore (brew install "
+            "libimobiledevice) and use the primary restore path. "
+            "This fallback exists only to keep the engine importable "
+            "on hosts without idevicerestore."
+        ),
+    )

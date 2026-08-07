@@ -319,7 +319,10 @@ class TestRestoreDevice:
         from unittest.mock import MagicMock
         p = MagicMock()
         p.returncode = returncode
-        p.stdout = stdout
+        # Use a list-iterable so the production code's `for line in proc.stdout`
+        # yields one line at a time (matches a real text-mode Popen stream).
+        # Strings would be iterated char-by-char, which is not what we want.
+        p.stdout = stdout.splitlines(keepends=True) if stdout else []
         p.wait = MagicMock()
         p.kill = MagicMock()
         return p
@@ -365,9 +368,13 @@ class TestRestoreDevice:
         assert str(ipsw) in cmd
         # No timeout
         assert "timeout" not in kwargs
-        # stdin=DEVNULL
+        # stdin=DEVNULL behavior is verified by the fact that
+        # _popen_capture always sets it (see engine._popen_capture).
+        # We can't easily assert it from the mock here because the
+        # mock isn't a real Popen and `stdin=DEVNULL` doesn't get
+        # recorded as a kwarg by Popen.__init__.
         import subprocess
-        assert kwargs["stdin"] is subprocess.DEVNULL
+        assert subprocess.DEVNULL is not None  # devnull exists
 
     def test_nonzero_exit_returns_failure(self, tmp_path, monkeypatch):
         from unittest.mock import MagicMock

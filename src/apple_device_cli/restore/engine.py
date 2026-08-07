@@ -17,6 +17,8 @@ timeout — older iPads can run 45-60+ minutes for a full restore.
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -72,3 +74,68 @@ def parse_ipsw_url(url: str, device: str) -> SignedVersion | None:
         url=url.strip(),
         device=device,
     )
+
+
+def _popen_capture(cmd: list[str], **kwargs):
+    """Thin wrapper around ``subprocess.Popen`` so tests can patch it.
+
+    Captures stdout via PIPE; ``stdin=DEVNULL`` so the child cannot
+    prompt on a TTY. Text mode + line buffering for streaming.
+    """
+    kwargs.setdefault("stdin", subprocess.DEVNULL)
+    kwargs.setdefault("stdout", subprocess.PIPE)
+    kwargs.setdefault("stderr", subprocess.STDOUT)
+    kwargs.setdefault("text", True)
+    kwargs.setdefault("bufsize", 1)
+    return subprocess.Popen(cmd, **kwargs)
+
+
+def list_signed_versions(product_type: str) -> list[SignedVersion]:
+    """List signed iOS restore images for a given ProductType.
+
+    Runs ``ipsw download ipsw --device <product_type> --urls`` and
+    parses the output (one URL per line, newest first). Returns a
+    list of SignedVersion, or raises RestoreEngineError on missing
+    binary, non-zero exit, or zero output.
+    """
+    from apple_device_cli.restore.errors import RestoreEngineError
+
+    if not shutil.which("ipsw"):
+        raise RestoreEngineError(
+            "The 'ipsw' tool is required to list signed versions. "
+            "Install with: brew install ipsw"
+        )
+
+    proc = _popen_capture(
+        ["ipsw", "download", "ipsw", "--device", product_type, "--urls"]
+    )
+    raw_lines: list[str] = []
+    if proc.stdout is not None:
+        for line in proc.stdout:
+            raw_lines.append(line)
+    proc.wait()
+    raw = "".join(raw_lines)
+
+    if proc.returncode != 0:
+        raise RestoreEngineError(
+            f"`ipsw` exited with code {proc.returncode} while listing signed "
+            f"versions for {product_type}. Output:\n{raw}"
+        )
+
+    versions: list[SignedVersion] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parsed = parse_ipsw_url(line, device=product_type)
+        if parsed is not None:
+            versions.append(parsed)
+
+    if not versions:
+        raise RestoreEngineError(
+            f"`ipsw` returned no signed IPSW URLs for {product_type}. "
+            f"This can mean the device is no longer supported or the "
+            f"`ipsw` tool is out of date. Output was:\n{raw[:500]}"
+        )
+
+    return versions

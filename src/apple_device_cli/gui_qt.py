@@ -29,6 +29,18 @@ from apple_device_cli.enrollment.supervised import (
 )
 from apple_device_cli.orgs.identity import generate_org_identity
 from apple_device_cli.orgs.manager import Organization, OrganizationManager
+from apple_device_cli.restore.cache import (
+    cache_state,
+    resolve_cache_dir,
+    write_cache_config,
+)
+from apple_device_cli.restore.engine import (
+    download_ipsw,
+    get_product_type_for_udid,
+    list_signed_versions,
+    parse_ipsw_url,
+    restore_device as engine_restore_device,
+)
 
 
 # PySide6 is an optional dependency (``[gui]`` extra). It is imported lazily
@@ -37,12 +49,13 @@ from apple_device_cli.orgs.manager import Organization, OrganizationManager
 # apple_device_cli.gui_qt`` surface a friendly install hint via the
 # ``RuntimeError`` they raise — instead of a top-level ImportError traceback.
 if TYPE_CHECKING:
-    from PySide6.QtCore import QEvent, QThread, Signal, Slot
-    from PySide6.QtWidgets import (
+    from PySide6.QtCore import QEvent, QThread, Signal, Slot  # noqa: F401
+    from PySide6.QtWidgets import (  # noqa: F401
         QApplication,
         QComboBox,
         QDialog,
         QDialogButtonBox,
+        QFileDialog,
         QFormLayout,
         QHBoxLayout,
         QLabel,
@@ -139,7 +152,8 @@ def _require_pyside6() -> None:
     global WorkerThread, StreamingWorkerThread, EnrollmentApp
     global QEvent, QThread, Signal, Slot
     global QApplication
-    global QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout
+    global QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout
+    global QHBoxLayout
     global QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow
     global QMessageBox, QPushButton, QTabWidget, QTextEdit, QVBoxLayout, QWidget
     try:
@@ -149,6 +163,7 @@ def _require_pyside6() -> None:
             QComboBox,
             QDialog,
             QDialogButtonBox,
+            QFileDialog,
             QFormLayout,
             QHBoxLayout,
             QLabel,
@@ -258,6 +273,7 @@ def _require_pyside6() -> None:
         """Main PySide6 application window."""
 
         log_signal = Signal(str)
+        restore_log_signal = Signal(str)
 
         def __init__(self) -> None:
             super().__init__()
@@ -268,9 +284,11 @@ def _require_pyside6() -> None:
             self._orgs: list[Organization] = []
             self._workers: list[QThread] = []
             self._request_token: int = 0
+            self._restore_ipsw_path: Path | None = None
 
             self._setup_ui()
             self.log_signal.connect(self._append_log)
+            self.restore_log_signal.connect(self._append_restore_log)
             self.enroll_org_combo.currentIndexChanged.connect(self._on_enroll_org_changed)
             self._log("GUI initialized. Connect an iOS device to begin.")
             self._load_initial_state()
@@ -290,10 +308,12 @@ def _require_pyside6() -> None:
             self.devices_tab = self._create_devices_tab()
             self.orgs_tab = self._create_orgs_tab()
             self.enroll_tab = self._create_enroll_tab()
+            self.restore_tab = self._create_restore_tab()
 
             self.tabs.addTab(self.devices_tab, "Devices")
             self.tabs.addTab(self.orgs_tab, "Organizations")
             self.tabs.addTab(self.enroll_tab, "Enrollment")
+            self.tabs.addTab(self.restore_tab, "Restore")
 
             log_group = QWidget()
             log_layout = QVBoxLayout(log_group)
@@ -418,11 +438,79 @@ def _require_pyside6() -> None:
 
             return widget
 
+        def _create_restore_tab(self) -> QWidget:
+            widget = QWidget()
+            layout = QVBoxLayout(widget)
+
+            form_layout = QFormLayout()
+
+            self.restore_device_combo = QComboBox()
+            self.restore_device_combo.currentIndexChanged.connect(self._on_restore_device_changed)
+            form_layout.addRow("Device:", self.restore_device_combo)
+
+            self.restore_product_type_label = QLabel("<select a device>")
+            form_layout.addRow("ProductType:", self.restore_product_type_label)
+
+            cache_row = QHBoxLayout()
+            self.restore_cache_path_label = QLabel(str(resolve_cache_dir()))
+            cache_row.addWidget(self.restore_cache_path_label, 1)
+            cache_folder_btn = QPushButton("Cache folder...")
+            cache_folder_btn.clicked.connect(self._pick_cache_folder)
+            cache_row.addWidget(cache_folder_btn)
+            show_cache_btn = QPushButton("Show cache")
+            show_cache_btn.clicked.connect(self._show_cache)
+            cache_row.addWidget(show_cache_btn)
+            form_layout.addRow("Cache folder:", cache_row)
+
+            self.restore_versions_combo = QComboBox()
+            form_layout.addRow("iOS Version:", self.restore_versions_combo)
+
+            self.restore_refresh_versions_btn = QPushButton("Refresh versions")
+            self.restore_refresh_versions_btn.clicked.connect(self._refresh_versions)
+            self.restore_refresh_versions_btn.setEnabled(False)
+            form_layout.addRow(self.restore_refresh_versions_btn)
+
+            browse_ipsw_btn = QPushButton("Browse for .ipsw file...")
+            browse_ipsw_btn.clicked.connect(self._browse_ipsw)
+            form_layout.addRow(browse_ipsw_btn)
+
+            self.restore_ipsw_path_label = QLabel("<not selected>")
+            form_layout.addRow("IPSW file:", self.restore_ipsw_path_label)
+
+            layout.addLayout(form_layout)
+
+            buttons_layout = QHBoxLayout()
+            self.restore_start_btn = QPushButton("Start Restore")
+            self.restore_start_btn.clicked.connect(self._start_restore)
+            self.restore_start_btn.setEnabled(False)
+            buttons_layout.addWidget(self.restore_start_btn)
+            buttons_layout.addStretch()
+            layout.addLayout(buttons_layout)
+
+            layout.addWidget(QLabel("Restore log:"))
+            self.restore_log_text = QTextEdit()
+            self.restore_log_text.setReadOnly(True)
+            layout.addWidget(self.restore_log_text)
+
+            return widget
+
         def _log(self, message: str) -> None:
             self.log_signal.emit(message)
 
         def _append_log(self, message: str) -> None:
             self.log_text.append(message)
+
+        def _log_to_restore(self, message: str) -> None:
+            """Append ``message`` to the Restore tab's log panel.
+
+            Emits a signal (like ``_log``) so calls from a worker thread are
+            delivered on the GUI thread — direct ``QTextEdit`` access from a
+            QThread is unsafe.
+            """
+            self.restore_log_signal.emit(message)
+
+        def _append_restore_log(self, message: str) -> None:
+            self.restore_log_text.append(message)
 
         def _load_initial_state(self) -> None:
             self._refresh_devices()
@@ -511,6 +599,7 @@ def _require_pyside6() -> None:
             if self._devices:
                 self.devices_list.setCurrentRow(0)
             self._update_enroll_udids()
+            self._populate_restore_device_combo()
             self._log(f"Found {len(self._devices)} device(s).")
 
         def _next_token(self) -> int:
@@ -999,6 +1088,195 @@ def _require_pyside6() -> None:
                 self._log(f"Re-enrollment preparation failed: {error}")
             else:
                 self._log("Device cloud config erased. Ready for fresh enrollment.")
+
+        def _populate_restore_device_combo(self) -> None:
+            """Fill the Restore tab's device dropdown from ``self._devices``.
+
+            Stores the UDID as the item's userData so the selected item
+            resolves to a device without re-parsing display text.
+            """
+            self.restore_device_combo.blockSignals(True)
+            try:
+                self.restore_device_combo.clear()
+                for device in self._devices:
+                    self.restore_device_combo.addItem(
+                        f"{device.device_name}  ({device.udid})",
+                        userData=device.udid,
+                    )
+            finally:
+                self.restore_device_combo.blockSignals(False)
+            self._on_restore_device_changed(self.restore_device_combo.currentIndex())
+
+        def _on_restore_device_changed(self, index: int) -> None:
+            """Update the ProductType label and gate the version buttons."""
+            self.restore_versions_combo.clear()
+            self.restore_start_btn.setEnabled(False)
+            self.restore_refresh_versions_btn.setEnabled(False)
+            if index < 0:
+                self.restore_product_type_label.setText("<select a device>")
+                return
+            udid = self.restore_device_combo.currentData()
+            device = next((d for d in self._devices if d.udid == udid), None)
+            if device is None:
+                self.restore_product_type_label.setText("<unknown>")
+                return
+            product_type = getattr(device, "device_type", "") or ""
+            if product_type:
+                self.restore_product_type_label.setText(product_type)
+            else:
+                self.restore_product_type_label.setText("<unknown>")
+            # Always enable refresh: when the device list lacks a ProductType,
+            # _refresh_versions falls back to reading it from lockdown.
+            self.restore_refresh_versions_btn.setEnabled(True)
+
+        def _refresh_versions(self) -> None:
+            udid = self.restore_device_combo.currentData()
+            if not udid:
+                QMessageBox.warning(self, "No device", "Select a device first.")
+                return
+            device = next((d for d in self._devices if d.udid == udid), None)
+            product_type = device.device_type if device and device.device_type else ""
+            if not product_type:
+                # The device list didn't carry a ProductType — ask lockdown directly.
+                self._log_to_restore(f"Reading ProductType from {udid}...")
+                worker = WorkerThread(lambda: get_product_type_for_udid(udid))
+                self._run_worker(
+                    worker,
+                    self._on_product_type_resolved,
+                    [self.restore_refresh_versions_btn],
+                )
+                return
+            self._load_versions(product_type)
+
+        @Slot(object, object)
+        def _on_product_type_resolved(self, result: Any, error: Exception | None) -> None:
+            if error:
+                self._log_to_restore(f"Could not read ProductType: {error}")
+                return
+            self._load_versions(str(result))
+
+        def _load_versions(self, product_type: str) -> None:
+            self.restore_product_type_label.setText(product_type)
+            self._log_to_restore(f"Fetching signed versions for {product_type}...")
+            worker = WorkerThread(lambda: list_signed_versions(product_type))
+            self._run_worker(
+                worker,
+                self._on_versions_refreshed,
+                [self.restore_refresh_versions_btn],
+            )
+
+        @Slot(object, object)
+        def _on_versions_refreshed(self, result: Any, error: Exception | None) -> None:
+            if error:
+                self._log_to_restore(f"Failed to list signed versions: {error}")
+                return
+            versions = result or []
+            self.restore_versions_combo.clear()
+            for version in versions:
+                self.restore_versions_combo.addItem(
+                    version.display_label, userData=version.url
+                )
+            self._log_to_restore(f"Found {len(versions)} signed version(s).")
+            if versions:
+                self.restore_versions_combo.setCurrentIndex(0)
+                if not self._restore_ipsw_path:
+                    self.restore_start_btn.setEnabled(True)
+
+        def _browse_ipsw(self) -> None:
+            filename, _ = QFileDialog.getOpenFileName(
+                self, "Choose IPSW file", "", "iOS IPSW (*.ipsw);;All Files (*)"
+            )
+            if not filename:
+                return
+            self._restore_ipsw_path = Path(filename)
+            self.restore_ipsw_path_label.setText(filename)
+            self.restore_versions_combo.setEnabled(False)
+            self.restore_start_btn.setEnabled(True)
+            self._log_to_restore(f"Using local IPSW: {filename}")
+
+        def _pick_cache_folder(self) -> None:
+            folder = QFileDialog.getExistingDirectory(
+                self, "Choose firmware cache folder", str(resolve_cache_dir())
+            )
+            if not folder:
+                return
+            try:
+                write_cache_config(Path(folder))
+            except Exception as exc:  # noqa: BLE001
+                self._log_to_restore(f"Failed to save cache folder: {exc}")
+                return
+            self.restore_cache_path_label.setText(folder)
+            self._log_to_restore(f"Cache folder set to {folder}")
+
+        def _show_cache(self) -> None:
+            state = cache_state(resolve_cache_dir())
+            self._log_to_restore(f"Cache: {state['path']}")
+            self._log_to_restore(f"  size: {state['size_bytes']:,} bytes")
+            self._log_to_restore(f"  IPSW count: {state['ipsw_count']}")
+            for name in state["ipsw_files"]:
+                self._log_to_restore(f"    - {name}")
+
+        def _start_restore(self) -> None:
+            udid = self.restore_device_combo.currentData()
+            if not udid:
+                QMessageBox.warning(self, "No device", "Select a device UDID.")
+                return
+
+            local_path = self._restore_ipsw_path
+            version_url = self.restore_versions_combo.currentData()
+            if local_path is not None:
+                if not local_path.is_file():
+                    QMessageBox.warning(
+                        self, "IPSW missing", f"IPSW file not found: {local_path}"
+                    )
+                    return
+                ipsw_path: Path | None = local_path
+            elif version_url:
+                parsed = parse_ipsw_url(version_url, device="")
+                if parsed is not None:
+                    self._log_to_restore(f"Restoring {parsed.display_label} ...")
+                ipsw_path = None
+            else:
+                QMessageBox.warning(
+                    self,
+                    "No IPSW",
+                    "Pick a signed version (Refresh versions) or a local .ipsw file.",
+                )
+                return
+
+            cache_dir = resolve_cache_dir()
+            if ipsw_path is None:
+                self._log_to_restore(f"Downloading {version_url} to {cache_dir} ...")
+
+            def work() -> Any:
+                target = (
+                    ipsw_path
+                    if ipsw_path is not None
+                    else download_ipsw(version_url, cache_dir)
+                )
+                return engine_restore_device(
+                    udid=udid,
+                    ipsw_path=target,
+                    cache_dir=cache_dir,
+                    progress_callback=lambda line: self._log_to_restore(f"  {line}"),
+                )
+
+            self._log_to_restore(f"Restore starting for {udid} (cache: {cache_dir}).")
+            worker = WorkerThread(work)
+            self._run_worker(worker, self._on_restore_finished, [self.restore_start_btn])
+
+        @Slot(object, object)
+        def _on_restore_finished(self, result: Any, error: Exception | None) -> None:
+            if error:
+                self._log_to_restore(f"Restore failed: {error}")
+                return
+            if result is None:
+                self._log_to_restore("Restore finished with no result.")
+                return
+            if result.success:
+                self._log_to_restore("Restore completed successfully.")
+            else:
+                self._log_to_restore(f"Restore failed: {result.error}")
 
         def closeEvent(self, event: QEvent) -> None:
             """Refuse close while workers are still running.

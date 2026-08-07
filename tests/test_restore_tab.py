@@ -631,9 +631,14 @@ class TestRestoreProgressBar:
         app = make_app()
         assert app.restore_progress_bar is not None
         assert app.restore_progress_bar.objectName() == "restore_progress_bar"
-        # Hidden + indeterminate until a restore actually starts.
-        assert app.restore_progress_bar.isHidden()
-        assert app.restore_progress_bar.maximum() == 0
+        # Always visible (anchored to the bottom of the tab) so the
+        # layout doesn't reflow when a restore starts. Idle state shows
+        # "Ready" at 0%; restore start switches to indeterminate
+        # "Working..." via _reset_restore_progress_bar.
+        assert not app.restore_progress_bar.isHidden()
+        assert app.restore_progress_bar.maximum() == 100  # determinate
+        assert app.restore_progress_bar.value() == 0
+        assert app.restore_progress_bar.format() == "Ready"
 
     def test_plain_progress_events_drive_value_and_format(self, make_app):
         app = make_app()

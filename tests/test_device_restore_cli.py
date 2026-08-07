@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 from apple_device_cli.cli import app
 
 
-runner = CliRunner(mix_stderr=False)
+runner = CliRunner()
 
 
 class TestDeviceRestoreCLI:

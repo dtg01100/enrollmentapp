@@ -310,3 +310,142 @@ class TestGetProductTypeForUdid:
 
         with pytest.raises(RestoreEngineError, match="ProductType"):
             asyncio.run(engine.get_product_type_for_udid("UDID-C"))
+
+
+class TestRestoreDevice:
+    """Subprocess wrapper around ``idevicerestore -e -u <udid> -y ...``."""
+
+    def _fake_proc(self, returncode: int = 0, stdout: str = ""):
+        from unittest.mock import MagicMock
+        p = MagicMock()
+        p.returncode = returncode
+        p.stdout = stdout
+        p.wait = MagicMock()
+        p.kill = MagicMock()
+        return p
+
+    def test_success_returns_restore_result(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+        from pathlib import Path
+
+        ipsw = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
+        ipsw.write_bytes(b"fake-ipsw")
+        cache = tmp_path / "cache"
+        cache.mkdir()
+
+        fake_proc = self._fake_proc(returncode=0, stdout="Restore OK\n")
+        fake_popen = MagicMock(return_value=fake_proc)
+        monkeypatch.setattr(engine, "_popen_capture", fake_popen)
+
+        result = engine.restore_device(
+            udid="UDID-A",
+            ipsw_path=ipsw,
+            cache_dir=cache,
+            progress_callback=lambda line: None,
+        )
+
+        assert result.success is True
+        assert result.udid == "UDID-A"
+        assert result.ipsw_path == ipsw
+        assert result.error is None
+
+        # Verify the constructed command line
+        args, kwargs = fake_popen.call_args
+        cmd = args[0]
+        # The binary name comes first; the rest of the args are flags + path
+        assert Path(cmd[0]).name == "idevicerestore"
+        assert "-e" in cmd
+        assert "-u" in cmd
+        assert "UDID-A" in cmd
+        assert "-y" in cmd
+        assert "-C" in cmd
+        assert str(cache) in cmd
+        assert "--logfile" in " ".join(cmd)
+        assert str(ipsw) in cmd
+        # No timeout
+        assert "timeout" not in kwargs
+        # stdin=DEVNULL
+        import subprocess
+        assert kwargs["stdin"] is subprocess.DEVNULL
+
+    def test_nonzero_exit_returns_failure(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+
+        ipsw = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
+        ipsw.write_bytes(b"fake")
+        cache = tmp_path / "cache"
+        cache.mkdir()
+
+        fake_proc = self._fake_proc(returncode=1, stdout="ERROR: bad IPSW\n")
+        monkeypatch.setattr(engine, "_popen_capture", MagicMock(return_value=fake_proc))
+
+        result = engine.restore_device(
+            udid="UDID-B",
+            ipsw_path=ipsw,
+            cache_dir=cache,
+            progress_callback=lambda line: None,
+        )
+
+        assert result.success is False
+        assert result.error is not None
+        assert "bad IPSW" in result.error
+        # Log file path is included so the user knows where to look
+        assert "log" in result.error.lower()
+
+    def test_missing_idevicerestore_falls_back_to_pymd3(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+
+        ipsw = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
+        ipsw.write_bytes(b"fake")
+        cache = tmp_path / "cache"
+        cache.mkdir()
+
+        monkeypatch.setattr(
+            "shutil.which", lambda name: None if name == "idevicerestore" else "/usr/bin/x"
+        )
+        # pymd3 path is xfail-stubbed — assert the engine DOES try it
+        # and surfaces whatever it returns. The pymd3 path is xfailed
+        # in the production code because the upstream Restore API is
+        # brittle on iOS 26.
+        fake_pmd3 = MagicMock(return_value=engine.RestoreResult(
+            success=False, error="xfail: pymd3 Restore API is brittle"
+        ))
+        monkeypatch.setattr(engine, "restore_device_via_pymd3", fake_pmd3)
+
+        result = engine.restore_device(
+            udid="UDID-C",
+            ipsw_path=ipsw,
+            cache_dir=cache,
+            progress_callback=lambda line: None,
+        )
+        # The pymd3 fallback was called and its result is returned
+        assert result.success is False
+        assert "xfail" in (result.error or "")
+
+    def test_progress_callback_receives_stdout_lines(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+
+        ipsw = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
+        ipsw.write_bytes(b"fake")
+        cache = tmp_path / "cache"
+        cache.mkdir()
+
+        # The streaming reader thread will see this output
+        fake_proc = self._fake_proc(returncode=0, stdout="line1\nline2\nline3\n")
+        monkeypatch.setattr(engine, "_popen_capture", MagicMock(return_value=fake_proc))
+
+        received: list[str] = []
+        engine.restore_device(
+            udid="UDID-D",
+            ipsw_path=ipsw,
+            cache_dir=cache,
+            progress_callback=received.append,
+        )
+        # The callback was called with the lines
+        assert "line1" in received
+        assert "line2" in received
+        assert "line3" in received

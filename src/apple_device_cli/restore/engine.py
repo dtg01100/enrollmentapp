@@ -15,8 +15,9 @@ Public surface (see ios-enroll-restore-tab spec):
   - ``detect_recovery_devices_present()``: True if any iBoot-mode USB device is on the bus
   - ``enter_recovery_mode(udid)``: lockdownd EnterRecovery request
   - ``exit_recovery_mode(udid=None)``: USB reset out of recovery (no UDID needed)
-  - ``restore_device(...)``: idevicerestore wrapper
-  - ``restore_device_via_pymd3(...)``: pymobiledevice3 fallback
+   - ``restore_device(...)``: idevicerestore wrapper (mode-aware: ``-u`` in
+     Normal mode, ``-i <ecid>`` for Recovery/restore/DFU-mode devices)
+   - ``restore_device_via_pymd3(...)``: pymobiledevice3 fallback
 
 All subprocess calls use ``Popen`` with ``stdin=DEVNULL`` and no
 timeout — older iPads can run 45-60+ minutes for a full restore.
@@ -389,28 +390,41 @@ def _stream_subprocess_to_callback(proc, progress_callback) -> str:
 
 
 def restore_device(
-    udid: str,
     ipsw_path: Path,
     cache_dir: Path,
     progress_callback: Callable[[ProgressEvent], None],
+    udid: str | None = None,
+    ecid: str | None = None,
 ) -> RestoreResult:
-    """Run ``idevicerestore -e -u <udid> -y -P -C <cache_dir>
-    --logfile=<cache_dir>/logs/restore_<udid>_<ts>.log <ipsw_path>``
-    and stream stdout/stderr to ``progress_callback`` as
-    ``ProgressEvent`` objects (see ``parse_progress_line`` for the
-    two supported progress formats).
+    """Run ``idevicerestore -e -P -C <cache_dir> --logfile=<log>`` on
+    ``ipsw_path`` and stream stdout/stderr to ``progress_callback`` as
+    ``ProgressEvent`` objects (see ``parse_progress_line`` for the two
+    supported progress formats).
+
+    Device targeting is mode-aware:
+
+      - ``ecid`` (``idevicerestore -i``): used verbatim when given. ``-i``
+        works in normal, recovery, and DFU modes, so callers restoring a
+        recovery-mode device (invisible to usbmuxd, so no UDID available)
+        pass the ECID here.
+      - Normal mode: ``-u <udid>`` (the only mode ``-u`` supports).
+      - Recovery/restore/DFU mode (detected via USB product ID): the ECID
+        is resolved from the device and ``-i <ecid>`` is used instead —
+        ``-u`` would fail with "Unable to discover device mode".
+      - Unknown mode: ``-u <udid>`` first; on that failure signature the
+        command is retried once with ``-i <ecid>`` (resolved the same way).
 
     ``-P`` (plain progress) is passed so the engine gets clean
-    ``PROGRESS: x/y`` / ``STEP: ...`` lines to drive a progress bar;
-    the default-format parser is the fallback if ``idevicerestore``
-    ever drops the flag.
+    ``PROGRESS: x/y`` / ``STEP: ...`` lines to drive a progress bar; the
+    default-format parser is the fallback if ``idevicerestore`` ever drops
+    the flag.
 
-    No timeout. ``stdin=DEVNULL`` so ``idevicerestore`` cannot prompt
-    on a TTY. SIGINT (Ctrl-C) reaches the child via the parent's
-    signal disposition — ``subprocess.Popen`` inherits it by default.
+    No timeout. ``stdin=DEVNULL`` so ``idevicerestore`` cannot prompt on a
+    TTY. SIGINT (Ctrl-C) reaches the child via the parent's signal
+    disposition — ``subprocess.Popen`` inherits it by default.
 
-    Falls back to ``restore_device_via_pymd3`` if ``idevicerestore``
-    is not on PATH.
+    Falls back to ``restore_device_via_pymd3`` if ``idevicerestore`` is not
+    on PATH.
     """
     if not shutil.which("idevicerestore"):
         progress_callback(
@@ -424,19 +438,47 @@ def restore_device(
     logs_dir = cache_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    log_path = logs_dir / f"restore_{udid}_{ts}.log"
+    slug = udid or ecid or "unknown"
+    log_path = logs_dir / f"restore_{slug}_{ts}.log"
 
-    cmd = [
+    base = [
         "idevicerestore",
         "-e",
-        "-u", udid,
         "-y",
         "-P",
         "-C", str(cache_dir),
         "--logfile", str(log_path),
-        str(ipsw_path),
     ]
-    proc = _popen_capture(cmd)
+
+    if ecid:
+        target_args = ["-i", _strip_ecid_prefix(ecid)]
+    elif udid:
+        mode = detect_device_mode(udid)
+        if mode in ("recovery", "restore", "dfu"):
+            resolved = _device_ecid(udid)
+            if not resolved:
+                from apple_device_cli.restore.errors import RestoreEngineError
+
+                raise RestoreEngineError(
+                    f"Device appears to be in {mode} mode; could not determine "
+                    "its ECID to target it. Run `irecovery -q` to see the ECID "
+                    "and pass it via --ecid."
+                )
+            target_args = ["-i", resolved]
+        else:
+            # Normal mode (or an un-detectable one) — `-u` is the only thing
+            # that works there. Unknown-mode failures are retried with `-i`
+            # below.
+            target_args = ["-u", udid]
+    else:
+        from apple_device_cli.restore.errors import RestoreEngineError
+
+        raise RestoreEngineError(
+            "restore_device requires a UDID (Normal mode) or an ECID "
+            "(recovery/restore/DFU mode) to target the device."
+        )
+
+    proc = _popen_capture(base + target_args + [str(ipsw_path)])
     output = _stream_subprocess_to_callback(proc, progress_callback)
     proc.wait()
 
@@ -448,8 +490,46 @@ def restore_device(
             log_excerpt="\n".join(output.splitlines()[-50:]),
         )
 
-    # Failure: include the log file path so the user can read the
-    # full output (often 50-200 MB for a full restore).
+    # Unknown-mode retry: `-u` against a Recovery-mode device fails with
+    # "Unable to discover device mode". Resolve the ECID and retry once.
+    if (
+        ecid is None
+        and udid is not None
+        and target_args[:1] == ["-u"]
+        and _failed_to_discover_mode(output)
+    ):
+        resolved = _device_ecid(udid)
+        if resolved:
+            progress_callback(
+                ProgressEvent(
+                    text="Mode discovery failed; retrying once with ECID "
+                    f"{resolved}."
+                )
+            )
+            retry = _popen_capture(base + ["-i", resolved] + [str(ipsw_path)])
+            retry_output = _stream_subprocess_to_callback(retry, progress_callback)
+            retry.wait()
+            if retry.returncode == 0:
+                return RestoreResult(
+                    success=True,
+                    udid=udid,
+                    ipsw_path=ipsw_path,
+                    log_excerpt="\n".join(retry_output.splitlines()[-50:]),
+                )
+            last_lines = "\n".join(retry_output.splitlines()[-50:])
+            return RestoreResult(
+                success=False,
+                udid=udid,
+                ipsw_path=ipsw_path,
+                error=(
+                    f"idevicerestore exited with code {retry.returncode}. "
+                    f"Full log: {log_path}\n--- last 50 lines ---\n{last_lines}"
+                ),
+                log_excerpt=last_lines,
+            )
+
+    # Failure: include the log file path so the user can read the full
+    # output (often 50-200 MB for a full restore).
     last_lines = "\n".join(output.splitlines()[-50:])
     return RestoreResult(
         success=False,
@@ -569,6 +649,83 @@ def _iter_apple_usb_devices():
         except Exception:
             continue
         yield serial, pid, bus, device
+
+
+def _strip_ecid_prefix(value: str) -> str:
+    """Normalize an ECID to lowercase hex without the ``0x`` prefix.
+
+    ``idevicerestore`` accepts ``0x...`` hex and bare decimal; the engine
+    emits the bare-hex form so ``-i`` args and log output stay consistent.
+    """
+    stripped = value.strip().lower()
+    if stripped.startswith("0x"):
+        return stripped[2:]
+    return stripped
+
+
+def _failed_to_discover_mode(output: str) -> bool:
+    """True if ``output`` shows ``idevicerestore`` could not discover the
+    device's mode — the failure signature when ``-u <udid>`` is used against
+    a device in Recovery mode."""
+    return "unable to discover device mode" in output.lower()
+
+
+_IRECOVERY_QUERY_TIMEOUT = 10
+
+
+def _query_recovery_ecid() -> str | None:
+    """Query ``irecovery -q`` for the connected recovery device's ECID.
+
+    ``irecovery`` (libimobiledevice's recovery utility) talks to the first
+    Recovery/DFU-mode device on the USB bus. Returns the ECID hex string
+    without the ``0x`` prefix, or None when ``irecovery`` is not installed,
+    the query times out, or the ECID cannot be parsed.
+    """
+    try:
+        proc = subprocess.run(
+            ["irecovery", "-q"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=_IRECOVERY_QUERY_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    for line in proc.stdout.splitlines():
+        text = line.strip()
+        if text.lower().startswith("ecid:"):
+            return _strip_ecid_prefix(text.split(":", 1)[1])
+    return None
+
+
+def _device_ecid(udid: str | None = None) -> str | None:
+    """Resolve a device to its ECID (hex, no ``0x`` prefix), or None.
+
+    Recovery/restore/DFU-mode devices are invisible to usbmuxd, so
+    ``idevicerestore`` cannot target them with ``-u <udid>`` — only by ECID
+    (``-i``). This helper resolves the ECID:
+
+    1. Match ``udid`` against each Apple USB device's serial number. In
+       Normal mode the USB serial equals the UDID; in Recovery mode the
+       serial is the SRNM (e.g. ``JXMWM7422V``), which also matches if the
+       caller passes that instead.
+    2. No serial match (or no ``udid``): when any Recovery/DFU-mode device
+       is present, query it directly with ``irecovery -q``.
+
+    Returns None when the device is not on the bus or the ECID cannot be
+    determined (``irecovery`` missing, etc.).
+    """
+    target = _normalize_serial(udid) if udid else ""
+    recovery_present = False
+    for serial, pid, _bus, _device in _iter_apple_usb_devices():
+        if target and _normalize_serial(serial) == target:
+            return _query_recovery_ecid()
+        if pid in _RECOVERY_PIDS or pid == _DFU_PID:
+            recovery_present = True
+    if recovery_present:
+        return _query_recovery_ecid()
+    return None
 
 
 def detect_device_mode(udid: str) -> str:

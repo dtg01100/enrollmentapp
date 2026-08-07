@@ -540,6 +540,196 @@ class TestRestoreDevice:
         assert received[1].progress.kind == "step"
         assert received[1].progress.label == "Restoring Baseband"
 
+    def test_restore_device_normal_mode_uses_udid(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+
+        ipsw = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
+        ipsw.write_bytes(b"fake")
+        cache = tmp_path / "cache"
+        cache.mkdir()
+
+        monkeypatch.setattr(engine, "detect_device_mode", lambda udid: "normal")
+        fake_proc = self._fake_proc(returncode=0, stdout="Restore OK\n")
+        fake_popen = MagicMock(return_value=fake_proc)
+        monkeypatch.setattr(engine, "_popen_capture", fake_popen)
+
+        engine.restore_device(
+            udid="UDID-A",
+            ipsw_path=ipsw,
+            cache_dir=cache,
+            progress_callback=lambda event: None,
+        )
+
+        cmd = fake_popen.call_args.args[0]
+        assert "-u" in cmd
+        assert "UDID-A" in cmd
+        assert "-i" not in cmd
+
+    def test_restore_device_recovery_mode_uses_ecid(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+
+        ipsw = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
+        ipsw.write_bytes(b"fake")
+        cache = tmp_path / "cache"
+        cache.mkdir()
+
+        monkeypatch.setattr(engine, "detect_device_mode", lambda udid: "recovery")
+        monkeypatch.setattr(
+            engine, "_device_ecid", lambda udid=None: "00094daa01d80032"
+        )
+        fake_proc = self._fake_proc(returncode=0, stdout="Restore OK\n")
+        fake_popen = MagicMock(return_value=fake_proc)
+        monkeypatch.setattr(engine, "_popen_capture", fake_popen)
+
+        engine.restore_device(
+            udid="UDID-A",
+            ipsw_path=ipsw,
+            cache_dir=cache,
+            progress_callback=lambda event: None,
+        )
+
+        cmd = fake_popen.call_args.args[0]
+        assert "-i" in cmd
+        assert "00094daa01d80032" in cmd
+        assert "-u" not in cmd
+
+    def test_restore_device_recovery_mode_ecid_unresolved_raises(self, tmp_path, monkeypatch):
+        from apple_device_cli.restore import engine
+        from apple_device_cli.restore.errors import RestoreEngineError
+
+        ipsw = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
+        ipsw.write_bytes(b"fake")
+        cache = tmp_path / "cache"
+        cache.mkdir()
+
+        monkeypatch.setattr(engine, "detect_device_mode", lambda udid: "recovery")
+        monkeypatch.setattr(engine, "_device_ecid", lambda udid=None: None)
+
+        with pytest.raises(RestoreEngineError, match="ECID"):
+            engine.restore_device(
+                udid="UDID-A",
+                ipsw_path=ipsw,
+                cache_dir=cache,
+                progress_callback=lambda event: None,
+            )
+
+    def test_restore_device_unknown_mode_retries_with_ecid(self, tmp_path, monkeypatch):
+        from apple_device_cli.restore import engine
+
+        ipsw = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
+        ipsw.write_bytes(b"fake")
+        cache = tmp_path / "cache"
+        cache.mkdir()
+
+        monkeypatch.setattr(engine, "detect_device_mode", lambda udid: "unknown")
+        monkeypatch.setattr(engine, "_device_ecid", lambda udid=None: "abc")
+
+        first = self._fake_proc(
+            returncode=1, stdout="ERROR: Unable to discover device mode\n"
+        )
+        second = self._fake_proc(returncode=0, stdout="Restore OK\n")
+        popen_calls: list = []
+
+        def fake_popen(cmd, **kwargs):
+            popen_calls.append(cmd)
+            return first if len(popen_calls) == 1 else second
+
+        monkeypatch.setattr(engine, "_popen_capture", fake_popen)
+
+        result = engine.restore_device(
+            udid="UDID-A",
+            ipsw_path=ipsw,
+            cache_dir=cache,
+            progress_callback=lambda event: None,
+        )
+
+        assert result.success is True
+        assert len(popen_calls) == 2
+        assert "-u" in popen_calls[0]
+        assert "UDID-A" in popen_calls[0]
+        assert "-i" in popen_calls[1]
+        assert "abc" in popen_calls[1]
+        assert "-u" not in popen_calls[1]
+
+    def test_restore_device_unknown_mode_normal_first_attempt_succeeds(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+
+        ipsw = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
+        ipsw.write_bytes(b"fake")
+        cache = tmp_path / "cache"
+        cache.mkdir()
+
+        monkeypatch.setattr(engine, "detect_device_mode", lambda udid: "unknown")
+        fake_proc = self._fake_proc(returncode=0, stdout="Restore OK\n")
+        fake_popen = MagicMock(return_value=fake_proc)
+        monkeypatch.setattr(engine, "_popen_capture", fake_popen)
+
+        result = engine.restore_device(
+            udid="UDID-A",
+            ipsw_path=ipsw,
+            cache_dir=cache,
+            progress_callback=lambda event: None,
+        )
+
+        assert result.success is True
+        assert fake_popen.call_count == 1
+        cmd = fake_popen.call_args.args[0]
+        assert "-u" in cmd
+        assert "UDID-A" in cmd
+
+
+class TestDeviceEcidHelper:
+    """Resolves a device's ECID for ``idevicerestore -i`` targeting."""
+
+    def test_device_ecid_helper_finds_by_serial(self, monkeypatch):
+        from apple_device_cli.restore import engine
+
+        # A normal-mode device whose USB serial equals the UDID.
+        monkeypatch.setattr(
+            engine,
+            "_iter_apple_usb_devices",
+            lambda: iter([("UDID-A", 0x12a8, 1, SimpleNamespace())]),
+        )
+        monkeypatch.setattr(
+            engine, "_query_recovery_ecid", lambda: "00094daa01d80032"
+        )
+
+        assert engine._device_ecid("UDID-A") == "00094daa01d80032"
+
+    def test_device_ecid_helper_parses_irecovery_output(self, monkeypatch):
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+
+        # A recovery-mode device whose SRNM differs from the UDID — the
+        # serial match fails, so the helper falls back to `irecovery -q`.
+        monkeypatch.setattr(
+            engine,
+            "_iter_apple_usb_devices",
+            lambda: iter([("JXMWM7422V", 0x1281, 1, SimpleNamespace())]),
+        )
+        fake_proc = MagicMock()
+        fake_proc.stdout = (
+            "CPID: 0x8010\n"
+            "ECID: 0x00094daa01d80032\n"
+            "SRNM: JXMWM7422V\n"
+        )
+        monkeypatch.setattr(engine.subprocess, "run", MagicMock(return_value=fake_proc))
+
+        assert engine._device_ecid("UDID-A") == "00094daa01d80032"
+
+    def test_device_ecid_helper_returns_none_when_no_device(self, monkeypatch):
+        from apple_device_cli.restore import engine
+
+        monkeypatch.setattr(engine, "_iter_apple_usb_devices", lambda: iter(()))
+        monkeypatch.setattr(
+            engine, "_query_recovery_ecid", lambda: "should-not-run"
+        )
+
+        assert engine._device_ecid("UDID-A") is None
+
 
 class TestDetectDeviceMode:
     """USB product-ID based mode detection (normal/recovery/restore/dfu).

@@ -710,6 +710,10 @@ def device_info(
 @device_app.command("restore")
 def device_restore(
     udid: str = typer.Option(None, "--udid", help="Target device UDID"),
+    ecid: str = typer.Option(
+        None, "--ecid",
+        help="Target device by ECID (hex or decimal). Use for recovery/DFU mode devices where --udid doesn't work.",
+    ),
     ipsw: str = typer.Option(
         None, "--ipsw",
         help="Path to a local .ipsw file (skips the version dropdown).",
@@ -737,11 +741,13 @@ def device_restore(
 ):
     """Restore a device to a signed iOS version (or a local .ipsw file).
 
-    The device must be in Normal mode and trusted by the host. Older
-    iPads may take 45-60+ minutes for a full restore. To survive the
-    agent's foreground terminal timeout, run this command via
-    background=true + notify_on_complete=true, or in a tmux/screen
-    window.
+    The device must be in Normal mode and trusted by the host, unless
+    ``--ecid`` is used: a device in Recovery/restore/DFU mode is invisible
+    to usbmuxd, so pass its ECID (see ``irecovery -q``) with ``--ecid`` to
+    target it directly. Older iPads may take 45-60+ minutes for a full
+    restore. To survive the agent's foreground terminal timeout, run this
+    command via background=true + notify_on_complete=true, or in a
+    tmux/screen window.
     """
 
     # --- Cache resolution and --show-cache / --clear-cache short-circuits ---
@@ -778,16 +784,24 @@ def device_restore(
         typer.echo(f"Removed {state['ipsw_count']} IPSW files.")
         raise typer.Exit(0)
 
-    if not udid and not ipsw:
+    # --- Mutual exclusion + requirement checks ---
+    if udid and ecid:
         typer.secho(
-            "Either --udid or --ipsw is required.",
+            "--udid and --ecid are mutually exclusive.",
+            fg=typer.colors.RED, err=True,
+        )
+        raise typer.Exit(1)
+
+    if not udid and not ecid and not ipsw:
+        typer.secho(
+            "Either --udid or --ecid is required (plus --ipsw for a restore).",
             fg=typer.colors.RED, err=True,
         )
         raise typer.Exit(1)
 
     # --- Resolve product_type from the device (only if we need it) ---
     product_type: str | None = None
-    if not ipsw:
+    if not ipsw and udid:
         try:
             product_type = get_product_type_for_udid(udid)
         except RestoreEngineError as exc:
@@ -813,13 +827,7 @@ def device_restore(
         raise typer.Exit(0)
 
     # --- Resolve the IPSW to use ---
-    ipsw_path: Path
-    if ipsw:
-        ipsw_path = Path(ipsw).expanduser()
-        if not ipsw_path.exists():
-            typer.secho(f"IPSW not found: {ipsw_path}", fg=typer.colors.RED, err=True)
-            raise typer.Exit(1)
-    else:
+    if not ipsw:
         # CLI doesn't have an interactive version picker. The user
         # must use --ipsw (or the GUI) to actually pick a version.
         typer.secho(
@@ -830,15 +838,23 @@ def device_restore(
             fg=typer.colors.YELLOW, err=True,
         )
         raise typer.Exit(1)
+    ipsw_path = Path(ipsw).expanduser()
+    if not ipsw_path.exists():
+        typer.secho(f"IPSW not found: {ipsw_path}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
 
-    if not udid:
-        typer.secho("--udid is required when --ipsw is used.", fg=typer.colors.RED, err=True)
+    if not udid and not ecid:
+        typer.secho(
+            "--udid or --ecid is required when --ipsw is used.",
+            fg=typer.colors.RED, err=True,
+        )
         raise typer.Exit(1)
 
     # --- Confirmation gate (engine itself passes -y to idevicerestore) ---
+    target_label = udid or ecid or "<unknown>"
     if not yes and sys.stdin.isatty():
         typer.secho(
-            f"\nAbout to ERASE and RESTORE {udid} to {ipsw_path.name}.",
+            f"\nAbout to ERASE and RESTORE {target_label} to {ipsw_path.name}.",
             fg=typer.colors.YELLOW, bold=True,
         )
         typer.secho(
@@ -881,6 +897,7 @@ def device_restore(
         ipsw_path=ipsw_path,
         cache_dir=resolved_cache,
         progress_callback=_progress,
+        ecid=ecid,
     )
 
     if result.success:

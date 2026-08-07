@@ -36,7 +36,9 @@ from apple_device_cli.restore.cache import (
 )
 from apple_device_cli.restore.engine import (
     ProgressEvent,
+    _device_ecid,
     detect_device_mode,
+    detect_recovery_devices_present,
     download_ipsw,
     enter_recovery_mode,
     exit_recovery_mode,
@@ -1168,7 +1170,7 @@ def _require_pyside6() -> None:
             self.restore_exit_recovery_btn.setEnabled(has_device)
             if not has_device:
                 self.restore_product_type_label.setText("<select a device>")
-                self.restore_device_mode_label.setText("—")
+                self._update_mode_labels()
                 return
             udid = self.restore_device_combo.currentData()
             device = next((d for d in self._devices if d.udid == udid), None)
@@ -1192,11 +1194,14 @@ def _require_pyside6() -> None:
             Detects the USB mode (normal/recovery/restore/dfu/unknown) of the
             currently selected device. Called after every device-list refresh
             and device-selection change so the label tracks mode changes
-            (e.g. after entering/exiting recovery).
+            (e.g. after entering/exiting recovery). With no device selected,
+            also re-evaluates whether a recovery-mode device on the USB bus
+            makes the Start button usable.
             """
             udid = self.restore_device_combo.currentData()
             if not udid:
                 self.restore_device_mode_label.setText("—")
+                self._update_restore_start_for_recovery()
                 return
             try:
                 mode = detect_device_mode(udid)
@@ -1204,6 +1209,22 @@ def _require_pyside6() -> None:
                 self._log_to_restore(f"Could not detect device mode: {exc}")
                 mode = "unknown"
             self.restore_device_mode_label.setText(mode)
+
+        def _update_restore_start_for_recovery(self) -> None:
+            """Enable Start when a Recovery-mode device is on the USB bus.
+
+            Such a device is invisible to usbmuxd (lockdown isn't running),
+            so it never lands in ``restore_device_combo``. When one is
+            present, the Start button must still work — ``_start_restore``
+            resolves the device's ECID and restores via ``-i``.
+            """
+            if self.restore_device_combo.currentData() is not None:
+                return
+            try:
+                if detect_recovery_devices_present():
+                    self.restore_start_btn.setEnabled(True)
+            except Exception:  # noqa: BLE001
+                pass
 
         def _refresh_versions(self) -> None:
             udid = self.restore_device_combo.currentData()
@@ -1294,9 +1315,29 @@ def _require_pyside6() -> None:
 
         def _start_restore(self) -> None:
             udid = self.restore_device_combo.currentData()
+            ecid: str | None = None
             if not udid:
-                QMessageBox.warning(self, "No device", "Select a device UDID.")
-                return
+                # A device in Recovery mode drops off the lockdown device
+                # list (invisible to usbmuxd), so it never appears in the
+                # combo. Fall back to targeting it by ECID when one is on
+                # the USB bus.
+                if detect_recovery_devices_present():
+                    ecid = _device_ecid()
+                    if not ecid:
+                        QMessageBox.warning(
+                            self,
+                            "Recovery device",
+                            "A device is in Recovery mode but its ECID could "
+                            "not be determined. Run `irecovery -q` on the "
+                            "device and retry.",
+                        )
+                        return
+                    self._log_to_restore(
+                        f"Device in Recovery mode detected — restoring via ECID {ecid}."
+                    )
+                else:
+                    QMessageBox.warning(self, "No device", "Select a device UDID.")
+                    return
 
             local_path = self._restore_ipsw_path
             version_url = self.restore_versions_combo.currentData()
@@ -1340,10 +1381,14 @@ def _require_pyside6() -> None:
                     ipsw_path=target,
                     cache_dir=cache_dir,
                     progress_callback=on_progress,
+                    ecid=ecid,
                 )
 
+            target_label = udid or (f"ECID {ecid}" if ecid else "<unknown>")
             self._reset_restore_progress_bar()
-            self._log_to_restore(f"Restore starting for {udid} (cache: {cache_dir}).")
+            self._log_to_restore(
+                f"Restore starting for {target_label} (cache: {cache_dir})."
+            )
             worker = WorkerThread(work)
             self._run_worker(worker, self._on_restore_finished, [self.restore_start_btn])
 

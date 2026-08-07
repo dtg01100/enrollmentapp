@@ -60,3 +60,43 @@ class TestDeviceRestoreCLI:
         assert result.exit_code == 0
         assert "1,000,000,000" in result.output or "1000000000" in result.output
         assert "a.ipsw" in result.output
+
+    @patch("apple_device_cli.cli.restore_device")
+    @patch("apple_device_cli.cli.shutil.which")
+    def test_restore_cli_accepts_ecid_option(
+        self, mock_which, mock_restore, tmp_path
+    ):
+        from types import SimpleNamespace
+
+        mock_which.return_value = "/usr/bin/idevicerestore"
+        ipsw = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
+        ipsw.write_bytes(b"fake")
+        mock_restore.return_value = SimpleNamespace(success=True, error=None, udid=None)
+
+        result = runner.invoke(
+            app,
+            [
+                "device", "restore",
+                "--ecid", "0x00094daa01d80032",
+                "--ipsw", str(ipsw),
+            ],
+        )
+
+        assert result.exit_code == 0
+        mock_restore.assert_called_once()
+        kwargs = mock_restore.call_args.kwargs
+        assert kwargs.get("ecid") == "0x00094daa01d80032"
+        assert kwargs.get("udid") is None
+
+    def test_restore_cli_rejects_ecid_and_udid_together(self):
+        result = runner.invoke(
+            app,
+            [
+                "device", "restore",
+                "--ecid", "0x00094daa01d80032",
+                "--udid", "UDID-1",
+                "--ipsw", "x.ipsw",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output

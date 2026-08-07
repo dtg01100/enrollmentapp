@@ -251,6 +251,7 @@ class TestRestoreStart:
     def test_no_device_warns_and_no_worker(self, make_app, monkeypatch):
         import apple_device_cli.gui_qt as gui_qt
 
+        monkeypatch.setattr(gui_qt, "detect_recovery_devices_present", lambda: False)
         with patch.object(gui_qt.QMessageBox, "warning") as mock_warn:
             app = make_app(devices=[])
             app._start_restore()
@@ -284,7 +285,7 @@ class TestRestoreStart:
         captured: dict = {}
         fake_result = SimpleNamespace(success=True, error=None, udid="x", ipsw_path=ipsw_path)
 
-        def fake_restore(udid, ipsw_path, cache_dir, progress_callback):
+        def fake_restore(udid, ipsw_path, cache_dir, progress_callback, ecid=None):
             captured["udid"] = udid
             captured["ipsw_path"] = ipsw_path
             captured["cache_dir"] = cache_dir
@@ -313,7 +314,7 @@ class TestRestoreStart:
         captured: dict = {}
         fake_result = SimpleNamespace(success=True, error=None, udid="x", ipsw_path=local)
 
-        def fake_restore(udid, ipsw_path, cache_dir, progress_callback):
+        def fake_restore(udid, ipsw_path, cache_dir, progress_callback, ecid=None):
             captured["ipsw_path"] = ipsw_path
             return fake_result
 
@@ -354,7 +355,7 @@ class TestRestoreStart:
 
         captured: dict = {}
 
-        def fake_restore(udid, ipsw_path, cache_dir, progress_callback):
+        def fake_restore(udid, ipsw_path, cache_dir, progress_callback, ecid=None):
             captured["progress_callback"] = progress_callback
             return SimpleNamespace(success=True, error=None, udid="x", ipsw_path=local)
 
@@ -386,6 +387,50 @@ class TestRestoreStart:
         app._start_restore()
 
         assert "idevicerestore exited with code 1" in app.restore_log_text.toPlainText()
+
+    def test_start_restore_with_recovery_device_uses_ecid(
+        self, make_app, tmp_path, monkeypatch
+    ):
+        import apple_device_cli.gui_qt as gui_qt
+
+        local = tmp_path / "Local_26.6_23G71_Restore.ipsw"
+        local.write_bytes(b"fake")
+
+        app = make_app(devices=[])
+        app._restore_ipsw_path = local
+        app.restore_ipsw_path_label.setText(str(local))
+
+        monkeypatch.setattr(gui_qt, "detect_recovery_devices_present", lambda: True)
+        monkeypatch.setattr(gui_qt, "_device_ecid", lambda: "abc")
+
+        captured: dict = {}
+        fake_result = SimpleNamespace(success=True, error=None, udid=None, ipsw_path=local)
+
+        def fake_restore(udid, ipsw_path, cache_dir, progress_callback, ecid=None):
+            captured["udid"] = udid
+            captured["ecid"] = ecid
+            return fake_result
+
+        monkeypatch.setattr(gui_qt, "engine_restore_device", fake_restore)
+
+        app._start_restore()
+
+        assert captured["udid"] is None
+        assert captured["ecid"] == "abc"
+        assert "restoring via ECID abc" in app.restore_log_text.toPlainText()
+
+    def test_start_restore_with_no_device_and_no_recovery_warns(
+        self, make_app, monkeypatch
+    ):
+        import apple_device_cli.gui_qt as gui_qt
+
+        monkeypatch.setattr(gui_qt, "detect_recovery_devices_present", lambda: False)
+
+        with patch.object(gui_qt.QMessageBox, "warning") as mock_warn:
+            app = make_app(devices=[])
+            app._start_restore()
+        mock_warn.assert_called_once()
+        assert len(app._workers) == 0
 
 
 class TestRestoreCacheUi:

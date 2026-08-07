@@ -11,7 +11,6 @@ import subprocess
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
 from pymobiledevice3.exceptions import ConnectionFailedToUsbmuxdError
 from pymobiledevice3.usbmux import MuxDevice
 

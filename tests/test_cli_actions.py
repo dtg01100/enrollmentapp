@@ -12,8 +12,6 @@ All class-shaped mocks are spec'd against the real class (AGENTS.md rule).
 from __future__ import annotations
 
 import plistlib
-import shutil
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest

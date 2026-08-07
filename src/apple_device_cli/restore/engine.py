@@ -688,19 +688,25 @@ def enter_recovery_mode(udid: str) -> None:
     helper) and issues the ``EnterRecovery`` lockdown operation, which makes
     the device reboot into iBSS/iBEC (recovery mode). Raises
     ``RestoreEngineError`` on connection or request failure.
+
+    Both the lockdown connect and the ``enter_recovery()`` request run in a
+    single event loop. pymobiledevice3 binds futures to the loop that created
+    the lockdown client, so two ``asyncio.run()`` calls (one per operation)
+    would raise "got Future attached to a different loop".
     """
     from apple_device_cli.restore.errors import RestoreEngineError
 
+    async def _do() -> None:
+        lockdown = await _create_using_usbmux_with_pair_retry(udid)
+        await lockdown.enter_recovery()
+
     try:
-        lockdown = asyncio.run(_create_using_usbmux_with_pair_retry(udid))
+        asyncio.run(_do())
     except ConnectionError as exc:
         raise RestoreEngineError(
             f"Could not connect to device {udid} to enter recovery mode. "
             f"Underlying error: {exc}"
         ) from exc
-
-    try:
-        asyncio.run(lockdown.enter_recovery())
     except Exception as exc:
         raise RestoreEngineError(
             f"Failed to enter recovery mode on {udid}: {exc}"

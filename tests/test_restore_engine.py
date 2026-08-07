@@ -1,6 +1,7 @@
 """Tests for restore/engine.py."""
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -615,24 +616,82 @@ class TestDetectDeviceMode:
 class TestEnterRecoveryMode:
     """EnterRecovery via lockdown's enter_recovery() request."""
 
-    def test_enter_recovery_mode_calls_lockdown(self, monkeypatch):
+    def test_enter_recovery_mode_uses_single_event_loop(self, tmp_path, monkeypatch):
+        """Regression: enter_recovery_mode must use ONE asyncio.run, not two.
+
+        Previously the code did:
+            lockdown = asyncio.run(_create_using_usbmux_with_pair_retry(udid))  # loop A
+            asyncio.run(lockdown.enter_recovery())                                  # loop B — different loop!
+
+        This caused "got Future attached to a different loop" when called from
+        the GUI's WorkerThread. The fix wraps both calls in a single inner
+        coroutine and uses ONE asyncio.run.
+        """
+        from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
 
-        entered: list[str] = []
+        # Track how many times asyncio.run is called inside enter_recovery_mode
+        run_calls: list = []
+        real_asyncio_run = asyncio.run
 
-        class FakeLockdown:
-            async def enter_recovery(self):
-                entered.append("EnterRecovery")
-                return {}
+        def tracking_run(coro, *args, **kwargs):
+            run_calls.append(coro)
+            return real_asyncio_run(coro, *args, **kwargs)
 
-        async def fake_connect(serial):
-            return FakeLockdown()
+        fake_lockdown = MagicMock()
+        fake_lockdown.enter_recovery = MagicMock(
+            return_value=_async_return(None)
+        )
 
-        monkeypatch.setattr(engine, "_create_using_usbmux_with_pair_retry", fake_connect)
+        async def fake_create(serial):
+            return fake_lockdown
 
-        engine.enter_recovery_mode("UDID-A")
+        monkeypatch.setattr(engine, "_create_using_usbmux_with_pair_retry", fake_create)
+        monkeypatch.setattr(asyncio, "run", tracking_run)
 
-        assert entered == ["EnterRecovery"]
+        engine.enter_recovery_mode("UDID-X")
+
+        # The regression: before the fix, this was 2 (one per asyncio.run).
+        # After the fix, it's exactly 1.
+        assert len(run_calls) == 1, (
+            f"enter_recovery_mode called asyncio.run {len(run_calls)} times; "
+            f"expected exactly 1. Multiple event loops cause pymobiledevice3 "
+            f"to raise 'got Future attached to a different loop'."
+        )
+
+    def test_enter_recovery_mode_works_when_called_from_worker_thread(self, monkeypatch):
+        """Regression: GUI's WorkerThread runs asyncio.run in its own loop.
+
+        The fix must produce a working enter_recovery call when invoked
+        through the same async pattern the GUI uses, not just when called
+        from the test's main thread.
+        """
+        import threading
+        from unittest.mock import MagicMock
+        from apple_device_cli.restore import engine
+
+        fake_lockdown = MagicMock()
+        fake_lockdown.enter_recovery = MagicMock(return_value=_async_return(None))
+
+        async def fake_create(serial):
+            return fake_lockdown
+
+        monkeypatch.setattr(engine, "_create_using_usbmux_with_pair_retry", fake_create)
+
+        errors: list = []
+
+        def worker():
+            try:
+                engine.enter_recovery_mode("UDID-Y")
+            except Exception as e:
+                errors.append(e)
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join(timeout=5)
+
+        # The "different loop" error is what would happen if the bug came back.
+        assert not errors, f"Worker-thread call raised: {errors!r}"
 
     def test_enter_recovery_mode_raises_engine_error_on_failure(self, monkeypatch):
         from apple_device_cli.restore import engine
@@ -829,3 +888,12 @@ class TestDetectRecoveryDevicesPresent:
 
         monkeypatch.setattr(engine, "_iter_apple_usb_devices", boom)
         assert engine.detect_recovery_devices_present() is False
+
+
+def _async_return(value):
+    """Return a coroutine that resolves to ``value`` (synchronous helper)."""
+
+    async def _co():
+        return value
+
+    return _co()

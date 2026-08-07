@@ -665,6 +665,41 @@ class TestRecoveryButtons:
             app._exit_recovery()
         mock_exit.assert_called_once_with(sample_devices[0].udid)
 
+    def test_exit_recovery_with_empty_combo_falls_back_to_any(
+        self, make_app, monkeypatch
+    ):
+        import apple_device_cli.gui_qt as gui_qt
+
+        app = make_app(devices=[])
+        monkeypatch.setattr(gui_qt, "detect_recovery_devices_present", lambda: True)
+        with patch("apple_device_cli.gui_qt.exit_recovery_mode") as mock_exit:
+            with patch("apple_device_cli.gui_qt.list_devices", return_value=[]):
+                app._exit_recovery()
+        mock_exit.assert_called_once_with(udid=None)
+
+    def test_exit_recovery_with_selected_device_uses_udid(
+        self, make_app, sample_devices, monkeypatch
+    ):
+        import apple_device_cli.gui_qt as gui_qt
+
+        app = make_app(devices=sample_devices)
+        monkeypatch.setattr(gui_qt, "detect_recovery_devices_present", lambda: True)
+        with patch("apple_device_cli.gui_qt.exit_recovery_mode") as mock_exit:
+            app._exit_recovery()
+        mock_exit.assert_called_once_with(sample_devices[0].udid)
+
+    def test_exit_recovery_with_empty_combo_and_no_recovery_does_nothing(
+        self, make_app, monkeypatch
+    ):
+        import apple_device_cli.gui_qt as gui_qt
+
+        app = make_app(devices=[])
+        monkeypatch.setattr(gui_qt, "detect_recovery_devices_present", lambda: False)
+        with patch("apple_device_cli.gui_qt.exit_recovery_mode") as mock_exit:
+            app._exit_recovery()
+        mock_exit.assert_not_called()
+        assert len(app._workers) == 0
+
     def test_recovery_result_refreshes_device_list(
         self, make_app, sample_devices, monkeypatch
     ):

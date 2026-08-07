@@ -1504,6 +1504,18 @@ def _require_pyside6() -> None:
         def _exit_recovery(self) -> None:
             udid = self.restore_device_combo.currentData()
             if not udid:
+                # A device in Recovery mode drops off the lockdown device
+                # list (invisible to usbmuxd), so it never appears in the
+                # combo. Fall back to the any-device reset when one is on
+                # the USB bus.
+                if detect_recovery_devices_present():
+                    self._log_to_restore(
+                        "No device selected — resetting recovery device(s) "
+                        "on the USB bus..."
+                    )
+                    self._exit_recovery_any()
+                else:
+                    self._log_to_restore("No recovery device found.")
                 return
             self._log_to_restore(f"Exiting recovery for {udid}...")
             worker = WorkerThread(lambda: exit_recovery_mode(udid))

@@ -856,6 +856,70 @@ class TestStatusBarAndGeometry:
         assert callable(getattr(app, "_restore_geometry", None))
 
 
+class TestCertExpiryBadge:
+    def test_cert_expiry_returns_none_for_missing_file(self):
+        """Missing cert path → None."""
+        from apple_device_cli.gui_qt import _cert_expiry
+        assert _cert_expiry("/nonexistent/file.der") is None
+
+    def test_cert_expiry_returns_none_for_unparseable(self, tmp_path):
+        """Non-DER garbage → None (don't crash the list render)."""
+        from apple_device_cli.gui_qt import _cert_expiry
+        bogus = tmp_path / "fake.der"
+        bogus.write_bytes(b"not a real cert")
+        assert _cert_expiry(str(bogus)) is None
+
+    def test_cert_expiry_returns_datetime_for_real_cert(self, tmp_path):
+        """A real DER cert → datetime return value."""
+        from datetime import datetime, timedelta, timezone
+        from apple_device_cli.gui_qt import _cert_expiry
+
+        # Generate a self-signed cert using the same library the project uses.
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        subject = issuer = x509.Name(
+            [x509.NameAttribute(NameOID.COMMON_NAME, "test")]
+        )
+        now = datetime.now(timezone.utc)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(issuer)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(days=1))
+            .not_valid_after(now + timedelta(days=365))
+            .sign(key, hashes.SHA256())
+        )
+        cert_path = tmp_path / "test.der"
+        cert_path.write_bytes(cert.public_bytes(serialization.Encoding.DER))
+        expiry = _cert_expiry(str(cert_path))
+        assert isinstance(expiry, datetime)
+        assert expiry > now
+
+    def test_format_cert_expiry_badge_classifies(self):
+        """_format_cert_expiry_badge returns colored indicator strings."""
+        from datetime import datetime, timedelta, timezone
+        from apple_device_cli.gui_qt import _format_cert_expiry_badge
+
+        now = datetime.now(timezone.utc)
+        # No expiry → grey dot
+        assert _format_cert_expiry_badge(None) == " ⚪"
+        # Expired → red
+        expired = now - timedelta(days=10)
+        assert "expired" in _format_cert_expiry_badge(expired).lower()
+        # ≤30 days → yellow
+        soon = now + timedelta(days=15)
+        assert "30d" in _format_cert_expiry_badge(soon) or "�" in _format_cert_expiry_badge(soon)
+        # >30 days → green
+        far = now + timedelta(days=365)
+        assert "🟢" in _format_cert_expiry_badge(far)
+
+
 class TestClearCache:
     def test_clear_cache_button_exists(self, make_app):
         app = make_app()

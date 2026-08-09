@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable
 
@@ -153,6 +154,50 @@ def _redact_in_text(text: str, secret: str | None) -> str:
     if not secret or not text:
         return text
     return text.replace(secret, "***")
+
+
+def _cert_expiry(cert_path: str | None) -> datetime | None:
+    """Return the cert's ``not_valid_after_utc``, or None if unreadable.
+
+    Returns None for missing files, unparseable bytes, or any error —
+    never raises. The Orgs list render path uses this to color-code
+    upcoming expiry, and crashing the list because one cert is corrupt
+    would be worse than showing "unknown".
+    """
+    if not cert_path:
+        return None
+    try:
+        path = Path(cert_path)
+        if not path.is_file():
+            return None
+        from cryptography.x509 import load_der_x509_certificate
+
+        with open(path, "rb") as f:
+            cert = load_der_x509_certificate(f.read())
+        # cryptography >= 42 has not_valid_after_utc; fall back for older.
+        return getattr(cert, "not_valid_after_utc", None) or cert.not_valid_after
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _format_cert_expiry_badge(expiry: datetime | None) -> str:
+    """Render a small color-indicator suffix for the org list.
+
+    Returns one of: grey dot (no cert), red "expired", yellow " <30d",
+    or green dot (healthy). Returns empty string for healthy so the
+    list stays uncluttered — color only when something needs attention.
+    """
+    if expiry is None:
+        return " ⚪"
+    # Treat naive datetimes as UTC (older cryptography returns naive).
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    if expiry < now:
+        return " 🔴 expired"
+    if expiry < now + timedelta(days=30):
+        return " 🟡 <30d"
+    return " 🟢"
 
 
 def _require_pyside6() -> None:
@@ -1005,8 +1050,16 @@ def _require_pyside6() -> None:
             self._orgs = list(orgs)
             self.orgs_list.clear()
             for org in self._orgs:
-                has_identity = "yes" if org.cert_path and org.key_path else "no"
-                display = f"{org.name}  (MDM: {org.mdm_url or 'none'}, identity: {has_identity})"
+                has_identity = bool(org.cert_path and org.key_path)
+                badge = (
+                    _format_cert_expiry_badge(_cert_expiry(org.cert_path))
+                    if has_identity
+                    else ""
+                )
+                display = (
+                    f"{org.name}  (MDM: {org.mdm_url or 'none'}, "
+                    f"identity: {'yes' if has_identity else 'no'}{badge})"
+                )
                 QListWidgetItem(display, self.orgs_list)
             self.orgs_empty_label.setVisible(self.orgs_list.count() == 0)
             if self._orgs:

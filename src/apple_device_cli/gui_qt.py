@@ -304,6 +304,7 @@ def _require_pyside6() -> None:
             self._workers: list[QThread] = []
             self._request_token: int = 0
             self._restore_ipsw_path: Path | None = None
+            self._restore_selected_udid: str | None = None
             self._restore_step_label: str | None = None
             self._restore_last_percent: int = 0
             self._restore_is_recovery: bool = False
@@ -350,9 +351,9 @@ def _require_pyside6() -> None:
             self.log_text = QTextEdit()
             self.log_text.setReadOnly(True)
             self.log_text.setObjectName("log_text")
-            # Cap the log at ~25% of the window so a verbose operation
-            # can't squeeze the tab content to zero height. Min keeps at
-            # least 4 lines visible.
+            # Cap the log at a fixed height so a verbose operation can't
+            # squeeze the tab content to zero height. Min keeps at least
+            # 4 lines visible.
             self.log_text.setMaximumHeight(180)
             self.log_text.setMinimumHeight(80)
             log_layout.addWidget(self.log_text)
@@ -1357,9 +1358,21 @@ def _require_pyside6() -> None:
             self.restore_exit_recovery_btn.setEnabled(has_device)
             if not has_device:
                 self.restore_product_type_label.setText("<select a device>")
+                # The previous selection's firmware pick (browsed IPSW, verify
+                # state, disabled versions combo) no longer applies.
+                self._restore_selected_udid = None
+                self._reset_restore_firmware_selection()
                 self._update_mode_labels()
                 return
             udid = self.restore_device_combo.currentData()
+            # A locally-browsed IPSW (and the disabled version combo it
+            # causes) belongs to the previously selected device — drop it
+            # when the target changes so Start/Verify can't act on a stale
+            # path. Kept on same-device refreshes (re-enumeration after
+            # recovery exit) so a picked file survives a refresh.
+            if udid != self._restore_selected_udid:
+                self._reset_restore_firmware_selection()
+            self._restore_selected_udid = udid
             device = next((d for d in self._devices if d.udid == udid), None)
             if device is None:
                 # Could be the synthetic "(Recovery mode)" entry (SRNM/ECID as
@@ -1392,6 +1405,19 @@ def _require_pyside6() -> None:
             self.restore_refresh_versions_btn.setEnabled(True)
             self._update_mode_labels()
 
+        def _reset_restore_firmware_selection(self) -> None:
+            """Clear a locally-picked IPSW when the restore target changes.
+
+            A browsed file (or the disabled version combo that comes with it)
+            describes the previously selected device. Resetting keeps Start
+            Restore and Verify from acting on a stale path, and re-enables the
+            versions combo so the new device can use the signed-version flow.
+            """
+            self._restore_ipsw_path = None
+            self.restore_ipsw_path_label.setText("<not selected>")
+            self.restore_versions_combo.setEnabled(True)
+            self._update_restore_verify_enabled()
+
         def _load_cached_ipsw_for_recovery(self) -> None:
             """Populate the versions combo with cached .ipsw files (Recovery mode).
 
@@ -1409,6 +1435,8 @@ def _require_pyside6() -> None:
                 self._restore_ipsw_path = ipsws[0]
                 self.restore_ipsw_path_label.setText(str(ipsws[0]))
                 self.restore_start_btn.setEnabled(True)
+                # The cached file can be hashed against ipsw.me too.
+                self._update_restore_verify_enabled()
                 self._log_to_restore(f"Found {len(ipsws)} cached IPSW(s) in {cache_dir}.")
             else:
                 self._restore_ipsw_path = None
@@ -1658,6 +1686,36 @@ def _require_pyside6() -> None:
             for name in state["ipsw_files"]:
                 self._log_to_restore(f"    - {name}")
 
+        def _confirm_restore(
+            self,
+            target: str,
+            ipsw_path: Path | None,
+            version_url: str | None,
+        ) -> bool:
+            """Ask the user to confirm a destructive restore.
+
+            Returns True when the user confirms. The message names the exact
+            device and IPSW so there is no ambiguity about what gets erased.
+            """
+            if ipsw_path is not None:
+                source = ipsw_path.name
+            elif version_url:
+                parsed = parse_ipsw_url(version_url, device="")
+                source = parsed.display_label if parsed else version_url
+            else:
+                source = "<unknown>"
+            reply = QMessageBox.question(
+                self,
+                "Confirm Restore",
+                (
+                    f"Restore will erase {target} and install:\n\n  {source}\n\n"
+                    "All data on the device will be lost. This cannot be undone.\n"
+                    "Continue?"
+                ),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            return reply == QMessageBox.StandardButton.Yes
+
         def _start_restore(self) -> None:
             udid = self.restore_device_combo.currentData()
             ecid: str | None = None
@@ -1752,12 +1810,33 @@ def _require_pyside6() -> None:
                 )
 
             target_label = udid or (f"ECID {ecid}" if ecid else "<unknown>")
+            # A restore wipes the device — confirm first, matching the CLI's
+            # ``typer.confirm("Erase and restore device now?")`` and the other
+            # destructive GUI actions (delete org, prepare re-enrollment,
+            # enter recovery) which all ask before acting.
+            if not self._confirm_restore(target_label, ipsw_path, version_url):
+                self._log_to_restore("Restore cancelled.")
+                return
             self._reset_restore_progress_bar()
             self._log_to_restore(
                 f"Restore starting for {target_label} (cache: {cache_dir})."
             )
             worker = WorkerThread(work)
-            self._run_worker(worker, self._on_restore_finished, [self.restore_start_btn])
+            # Gate every action that would race the restore's USB access:
+            # a second restore, recovery-mode transitions, refreshing
+            # versions, and hashing the IPSW all talk to the same device.
+            self._run_worker(
+                worker,
+                self._on_restore_finished,
+                [
+                    self.restore_start_btn,
+                    self.restore_enter_recovery_btn,
+                    self.restore_exit_recovery_btn,
+                    self.restore_exit_recovery_any_btn,
+                    self.restore_refresh_versions_btn,
+                    self.restore_verify_btn,
+                ],
+            )
 
         def _reset_restore_progress_bar(self) -> None:
             """Put the Restore bar into its indeterminate 'working' state."""

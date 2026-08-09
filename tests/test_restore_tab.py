@@ -126,6 +126,18 @@ def make_app(qapp, tmp_path, monkeypatch, sync_workers):
 
 
 @pytest.fixture
+def confirm_restore(monkeypatch):
+    """Auto-confirm the destructive restore dialog (QMessageBox.question -> Yes)."""
+    import apple_device_cli.gui_qt as gui_qt
+
+    monkeypatch.setattr(
+        gui_qt.QMessageBox,
+        "question",
+        lambda *a, **k: QMessageBox.StandardButton.Yes,
+    )
+
+
+@pytest.fixture
 def sample_devices() -> list[DeviceInfo]:
     return [
         DeviceInfo(
@@ -177,6 +189,84 @@ class TestRestoreDeviceCombo:
         assert app.restore_product_type_label.text() == "iPad13,4"
         assert app.restore_refresh_versions_btn.isEnabled()
         assert not app.restore_start_btn.isEnabled()
+
+    def test_switching_device_resets_browsed_ipsw(
+        self, make_app, sample_devices, tmp_path, monkeypatch
+    ):
+        """A browsed IPSW (and its disabled version combo) is cleared on device switch.
+
+        Regression: the pick used to survive the switch, so Start/Verify could
+        act on the previous device's file, and the versions combo stayed
+        disabled forever once a local file had been browsed.
+        """
+        import apple_device_cli.gui_qt as gui_qt
+
+        devices = list(sample_devices)
+        devices.append(
+            DeviceInfo(
+                udid="00008101-9988776655443322",
+                device_name="Test iPhone",
+                device_type="iPhone15,2",
+                firmware_version="26.6",
+                build_version="23G71",
+                ecid="0x5678",
+            )
+        )
+        app = make_app(devices=devices)
+
+        # Browse a local file for the first device (real code path — it's
+        # what disables the versions combo).
+        local = tmp_path / "Manual_26.6_23G71_Restore.ipsw"
+        local.write_bytes(b"fake")
+        monkeypatch.setattr(
+            gui_qt.QFileDialog, "getOpenFileName",
+            staticmethod(lambda *a, **kw: (str(local), "iOS IPSW (*.ipsw)")),
+        )
+        app._browse_ipsw()
+        assert app._restore_ipsw_path == local
+        assert not app.restore_versions_combo.isEnabled()
+
+        # Switch to the second device.
+        app.restore_device_combo.setCurrentIndex(1)
+
+        assert app._restore_ipsw_path is None
+        assert app.restore_ipsw_path_label.text() == "<not selected>"
+        assert app.restore_versions_combo.isEnabled()
+        assert not app.restore_verify_btn.isEnabled()
+
+    def test_switching_device_clears_versions_and_verify(
+        self, make_app, sample_devices, tmp_path, monkeypatch
+    ):
+        """The signed-version list and Verify state belong to the old device."""
+        import apple_device_cli.gui_qt as gui_qt
+
+        devices = list(sample_devices)
+        devices.append(
+            DeviceInfo(
+                udid="00008101-9988776655443322",
+                device_name="Test iPhone",
+                device_type="iPhone15,2",
+                firmware_version="26.6",
+                build_version="23G71",
+                ecid="0x5678",
+            )
+        )
+        app = make_app(devices=devices)
+
+        cached = tmp_path / "iPad13,4_26.6_23G71_Restore.ipsw"
+        cached.write_bytes(b"x")
+        version = SimpleNamespace(
+            display_label="iOS 26.6 (23G71)",
+            url="https://cdn.example/iPad13,4_26.6_23G71_Restore.ipsw",
+        )
+        app._on_versions_refreshed([version], None)
+        assert app.restore_versions_combo.count() == 1
+        assert app.restore_verify_btn.isEnabled()
+
+        app.restore_device_combo.setCurrentIndex(1)
+
+        assert app.restore_versions_combo.count() == 0
+        assert not app.restore_verify_btn.isEnabled()
 
     def test_empty_device_list_resets_combo_and_label(self, make_app):
         app = make_app(devices=[])
@@ -318,7 +408,7 @@ class TestRestoreStart:
         assert len(app._workers) == 0
 
     def test_downloads_and_restores_from_selected_version(
-        self, make_app, sample_devices, monkeypatch
+        self, make_app, sample_devices, monkeypatch, confirm_restore
     ):
         import apple_device_cli.gui_qt as gui_qt
 
@@ -351,7 +441,7 @@ class TestRestoreStart:
         assert "Restore completed successfully" in app.restore_log_text.toPlainText()
 
     def test_local_ipsw_is_used_directly(
-        self, make_app, sample_devices, tmp_path, monkeypatch
+        self, make_app, sample_devices, tmp_path, monkeypatch, confirm_restore
     ):
         import apple_device_cli.gui_qt as gui_qt
 
@@ -393,7 +483,7 @@ class TestRestoreStart:
         assert len(app._workers) == 0
 
     def test_progress_callback_logs_to_restore_panel(
-        self, make_app, sample_devices, tmp_path, monkeypatch
+        self, make_app, sample_devices, tmp_path, monkeypatch, confirm_restore
     ):
         import apple_device_cli.gui_qt as gui_qt
 
@@ -417,7 +507,9 @@ class TestRestoreStart:
 
         assert "Sending NAND image..." in app.restore_log_text.toPlainText()
 
-    def test_failed_restore_logs_error(self, make_app, sample_devices, monkeypatch):
+    def test_failed_restore_logs_error(
+        self, make_app, sample_devices, monkeypatch, confirm_restore
+    ):
         import apple_device_cli.gui_qt as gui_qt
 
         app = make_app(devices=sample_devices)
@@ -440,7 +532,7 @@ class TestRestoreStart:
         assert "idevicerestore exited with code 1" in app.restore_log_text.toPlainText()
 
     def test_download_phase_drives_progress_bar(
-        self, make_app, sample_devices, tmp_path, monkeypatch
+        self, make_app, sample_devices, tmp_path, monkeypatch, confirm_restore
     ):
         """Download progress must move the bar before the restore starts.
 
@@ -489,7 +581,7 @@ class TestRestoreStart:
         assert app.restore_progress_bar.value() == 42
 
     def test_start_restore_with_recovery_device_uses_ecid(
-        self, make_app, tmp_path, monkeypatch
+        self, make_app, tmp_path, monkeypatch, confirm_restore
     ):
         import apple_device_cli.gui_qt as gui_qt
 
@@ -531,6 +623,68 @@ class TestRestoreStart:
             app._start_restore()
         mock_warn.assert_called_once()
         assert len(app._workers) == 0
+
+    def test_start_restore_declined_confirmation_does_not_run(
+        self, make_app, sample_devices, tmp_path, monkeypatch
+    ):
+        """User clicks No on the confirm dialog → no worker is started."""
+        import apple_device_cli.gui_qt as gui_qt
+
+        local = tmp_path / "Local_26.6_23G71_Restore.ipsw"
+        local.write_bytes(b"fake")
+
+        app = make_app(devices=sample_devices)
+        app._restore_ipsw_path = local
+        app.restore_ipsw_path_label.setText(str(local))
+
+        monkeypatch.setattr(
+            gui_qt.QMessageBox,
+            "question",
+            lambda *a, **k: QMessageBox.StandardButton.No,
+        )
+        monkeypatch.setattr(
+            gui_qt,
+            "engine_restore_device",
+            lambda **kw: (_ for _ in ()).throw(AssertionError("must not restore")),
+        )
+
+        app._start_restore()
+
+        assert len(app._workers) == 0
+        assert "Restore cancelled" in app.restore_log_text.toPlainText()
+
+    def test_confirm_message_names_device_and_ipsw(
+        self, make_app, sample_devices, tmp_path, monkeypatch
+    ):
+        """The confirm dialog names the device and the exact IPSW."""
+        import apple_device_cli.gui_qt as gui_qt
+
+        local = tmp_path / "Local_26.6_23G71_Restore.ipsw"
+        local.write_bytes(b"fake")
+
+        app = make_app(devices=sample_devices)
+        app._restore_ipsw_path = local
+        app.restore_ipsw_path_label.setText(str(local))
+
+        captured: dict = {}
+
+        def fake_question(parent, title, text, *args, **kwargs):
+            captured["title"] = title
+            captured["text"] = text
+            return QMessageBox.StandardButton.Yes
+
+        monkeypatch.setattr(gui_qt.QMessageBox, "question", fake_question)
+        monkeypatch.setattr(
+            gui_qt,
+            "engine_restore_device",
+            lambda **kw: SimpleNamespace(success=True, error=None, udid="x"),
+        )
+
+        app._start_restore()
+
+        assert captured["title"] == "Confirm Restore"
+        assert sample_devices[0].udid in captured["text"]
+        assert local.name in captured["text"]
 
 
 class TestRestoreCacheUi:
@@ -936,7 +1090,9 @@ class TestRecoveryRestoreFlow:
         assert app._restore_ipsw_path is None
         assert "No cached IPSW" in app.restore_log_text.toPlainText()
 
-    def test_recovery_start_routes_to_ecid(self, make_app, tmp_path, monkeypatch):
+    def test_recovery_start_routes_to_ecid(
+        self, make_app, tmp_path, monkeypatch, confirm_restore
+    ):
         import apple_device_cli.gui_qt as gui_qt
 
         cached = tmp_path / "iPad_Pro_26.6_23G71_Restore.ipsw"
@@ -968,6 +1124,16 @@ class TestRecoveryRestoreFlow:
         self._select_recovery(app, monkeypatch)
 
         assert app.restore_device_mode_label.text() == "Recovery"
+
+    def test_recovery_cached_ipsw_enables_verify(self, make_app, tmp_path, monkeypatch):
+        """A cached IPSW picked in Recovery mode can be verified on demand."""
+        cached = tmp_path / "iPad_Pro_26.6_23G71_Restore.ipsw"
+        cached.write_bytes(b"fake")
+
+        app = make_app(devices=[])
+        self._select_recovery(app, monkeypatch)
+
+        assert app.restore_verify_btn.isEnabled()
 
 
 class TestCachedVersionMarker:

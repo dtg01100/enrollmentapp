@@ -818,6 +818,48 @@ class TestAttachWifi:
         assert called["wifi"] is False
 
 
+class TestClearCache:
+    def test_clear_cache_button_exists(self, make_app):
+        app = make_app()
+        assert app.restore_clear_cache_btn is not None
+        assert app.restore_clear_cache_btn.text() == "Clear cache"
+
+    def test_clear_cache_requires_confirm(
+        self, make_app, monkeypatch, tmp_path
+    ):
+        """User clicks No → rmtree NOT called."""
+        app = make_app()
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.resolve_cache_dir", lambda: tmp_path
+        )
+        monkeypatch.setattr(
+            QMessageBox, "question",
+            lambda *a, **kw: QMessageBox.StandardButton.No,
+        )
+        with patch("apple_device_cli.gui_qt.shutil.rmtree") as mock_rm:
+            app._clear_restore_cache()
+        mock_rm.assert_not_called()
+
+    def test_clear_cache_wipes_dir_on_confirm(
+        self, make_app, monkeypatch, tmp_path
+    ):
+        """User clicks Yes → cache dir removed and recreated empty."""
+        app = make_app()
+        (tmp_path / "fake.ipsw").write_bytes(b"x")
+        (tmp_path / "another.ipsw").write_bytes(b"y")
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.resolve_cache_dir", lambda: tmp_path
+        )
+        monkeypatch.setattr(
+            QMessageBox, "question",
+            lambda *a, **kw: QMessageBox.StandardButton.Yes,
+        )
+        app._clear_restore_cache()
+        assert not (tmp_path / "fake.ipsw").exists()
+        assert not (tmp_path / "another.ipsw").exists()
+        assert tmp_path.is_dir()  # recreated
+
+
 class TestReenrollConfirmation:
     def test_confirm_message_includes_device(self, make_app, sample_devices, monkeypatch):
         app = make_app()

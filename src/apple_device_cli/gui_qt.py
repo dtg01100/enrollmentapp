@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -635,6 +636,9 @@ def _require_pyside6() -> None:
             show_cache_btn = QPushButton("Show cache")
             show_cache_btn.clicked.connect(self._show_cache)
             cache_row.addWidget(show_cache_btn)
+            self.restore_clear_cache_btn = QPushButton("Clear cache")
+            self.restore_clear_cache_btn.clicked.connect(self._clear_restore_cache)
+            cache_row.addWidget(self.restore_clear_cache_btn)
             firmware_layout.addRow("Cache:", cache_row)
 
             version_row = QHBoxLayout()
@@ -2020,6 +2024,43 @@ def _require_pyside6() -> None:
             self._log_to_restore(f"  IPSW count: {state['ipsw_count']}")
             for name in state["ipsw_files"]:
                 self._log_to_restore(f"    - {name}")
+
+        def _clear_restore_cache(self) -> None:
+            """Wipe the firmware cache after a confirmation prompt.
+
+            Removes the entire cache directory (all IPSW files + manifest)
+            and recreates it empty. Matches the CLI's
+            ``device restore --clear-cache`` flow.
+            """
+            cache_dir = resolve_cache_dir()
+            state = cache_state(cache_dir)
+            if state["ipsw_count"] == 0:
+                QMessageBox.information(
+                    self, "Cache empty", "No IPSW files to clear."
+                )
+                return
+            reply = QMessageBox.question(
+                self,
+                "Clear firmware cache?",
+                (
+                    f"Delete all {state['ipsw_count']} IPSW file(s) in {cache_dir}?\n\n"
+                    f"Total size: {state['size_bytes']:,} bytes.\n"
+                    "This cannot be undone."
+                ),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                shutil.rmtree(cache_dir)
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                self._log_to_restore(
+                    f"Cleared firmware cache: {state['ipsw_count']} file(s), "
+                    f"{state['size_bytes']:,} bytes freed."
+                )
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.warning(self, "Clear failed", str(exc))
+                self._log_to_restore(f"Clear cache failed: {exc}")
 
         def _confirm_restore(
             self,

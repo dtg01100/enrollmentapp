@@ -425,6 +425,10 @@ def _require_pyside6() -> None:
             self.generate_id_btn.clicked.connect(self._generate_identity_dialog)
             toolbar.addWidget(self.generate_id_btn)
 
+            self.edit_org_btn = QPushButton("Edit Org")
+            self.edit_org_btn.clicked.connect(self._edit_org)
+            toolbar.addWidget(self.edit_org_btn)
+
             self.delete_org_btn = QPushButton("Delete Org")
             self.delete_org_btn.clicked.connect(self._delete_org)
             toolbar.addWidget(self.delete_org_btn)
@@ -1147,6 +1151,130 @@ def _require_pyside6() -> None:
             except Exception as exc:  # noqa: BLE001
                 QMessageBox.warning(self, "Delete failed", f"Failed to delete organization: {exc}")
                 self._log(f"Failed to delete organization: {exc}")
+
+        def _edit_org(self) -> None:
+            """Entry point for the 'Edit Org' button.
+
+            Opens a dialog pre-filled with the selected org's editable fields
+            (org_id, mdm_url, checkin_url, mdm_topic, cert_path). The key is
+            intentionally not editable here — use 'Generate Identity' to
+            regenerate both cert and key together (security-sensitive).
+            """
+            org = self._selected_org()
+            if not org:
+                QMessageBox.warning(self, "No organization", "Select an organization first.")
+                return
+            dialog, fields = self._build_edit_org_form(org)
+            button_box = dialog.findChild(QDialogButtonBox)
+            assert button_box is not None  # we just added it
+
+            def save() -> None:
+                self._apply_edit_org(org, fields, dialog)
+
+            button_box.accepted.connect(save)
+            button_box.rejected.connect(dialog.reject)
+            dialog.exec()
+
+        def _build_edit_org_form(self, org: Organization) -> tuple[QDialog, dict[str, QLineEdit]]:
+            """Construct the Edit Org dialog with QLineEdit fields pre-filled.
+
+            Returns (dialog, fields) where fields maps field names to their
+            QLineEdit widgets. Tests use this to verify pre-fill behavior
+            without spinning up the dialog's event loop.
+
+            Cert path is editable via a 'Browse...' button (QFileDialog). The
+            key is intentionally not exposed — use 'Generate Identity'.
+            """
+            dialog = QDialog(self)
+            dialog.setWindowTitle(f"Edit Organization — {org.name}")
+            dialog.setModal(True)
+            layout = QFormLayout(dialog)
+
+            org_id_edit = QLineEdit(org.org_id or "")
+            mdm_url_edit = QLineEdit(org.mdm_url or "")
+            checkin_url_edit = QLineEdit(org.checkin_url or "")
+            mdm_topic_edit = QLineEdit(org.mdm_topic or "")
+            cert_path_edit = QLineEdit(org.cert_path or "")
+
+            cert_browse = QPushButton("Browse…")
+            cert_row = QHBoxLayout()
+            cert_row.addWidget(cert_path_edit, 1)
+            cert_row.addWidget(cert_browse)
+
+            def pick_cert() -> None:
+                path, _ = QFileDialog.getOpenFileName(
+                    dialog,
+                    "Choose certificate (DER)",
+                    "",
+                    "DER (*.der);;All Files (*)",
+                )
+                if path:
+                    cert_path_edit.setText(path)
+
+            cert_browse.clicked.connect(pick_cert)
+
+            layout.addRow("Org ID:", org_id_edit)
+            layout.addRow("MDM URL:", mdm_url_edit)
+            layout.addRow("Check-in URL:", checkin_url_edit)
+            layout.addRow("MDM Topic:", mdm_topic_edit)
+            layout.addRow("Certificate:", cert_row)
+
+            button_box = QDialogButtonBox(
+                QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+            )
+            layout.addRow(button_box)
+
+            fields = {
+                "org_id": org_id_edit,
+                "mdm_url": mdm_url_edit,
+                "checkin_url": checkin_url_edit,
+                "mdm_topic": mdm_topic_edit,
+                "cert_path": cert_path_edit,
+            }
+            return dialog, fields
+
+        def _apply_edit_org(
+            self,
+            org: Organization,
+            fields: dict[str, QLineEdit],
+            dialog: QDialog,
+        ) -> None:
+            """Validate form, build a fresh Organization, and save it.
+
+            Split from ``_edit_org`` so tests can drive it directly without
+            needing to mock QDialog.exec. On invalid input: shows a warning
+            and returns without saving. On save success: closes the dialog
+            and refreshes the org list.
+            """
+            name = org.name  # immutable from this dialog
+            mdm_url = fields["mdm_url"].text().strip() or None
+            checkin_url = fields["checkin_url"].text().strip() or None
+            mdm_topic = fields["mdm_topic"].text().strip() or None
+            try:
+                validate_org_fields(name, mdm_url, checkin_url, mdm_topic)
+            except OrgValidationError as exc:
+                QMessageBox.warning(dialog, "Invalid input", str(exc))
+                return
+
+            new_cert_path = fields["cert_path"].text().strip() or org.cert_path
+            updated = Organization(
+                name=name,
+                org_id=fields["org_id"].text().strip() or None,
+                mdm_url=mdm_url,
+                checkin_url=checkin_url,
+                mdm_topic=mdm_topic,
+                cert_path=new_cert_path,
+                key_path=org.key_path,  # not editable here
+                wifi_config_path=org.wifi_config_path,  # preserved
+            )
+            try:
+                OrganizationManager().save_org(updated, overwrite=True)
+                self._log(f"Updated organization: {name}")
+                dialog.accept()
+                self._refresh_orgs()
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.warning(dialog, "Save failed", f"Failed to update: {exc}")
+                self._log(f"Failed to update organization: {exc}")
 
         def _resolve_enroll_org(self) -> Organization | None:
             name = self.enroll_org_combo.currentText().strip()

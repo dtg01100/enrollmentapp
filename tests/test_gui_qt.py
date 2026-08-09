@@ -444,6 +444,123 @@ class TestDeleteOrg:
 # ---------------------------------------------------------------------------
 
 
+class TestEditOrg:
+    def test_edit_org_requires_selection_warns_and_returns(self, make_app, monkeypatch):
+        """No org selected → 'No organization' warning, no exception."""
+        app = make_app()
+        warnings = []
+        monkeypatch.setattr(
+            QMessageBox,
+            "warning",
+            lambda parent, title, text, *a, **kw: warnings.append((title, text))
+            or QMessageBox.StandardButton.Ok,
+        )
+        app._edit_org()
+        assert warnings, "Should warn when no org selected"
+        assert warnings[0][0] == "No organization"
+        # No worker started
+        assert app._workers == []
+
+    def test_edit_org_button_exists_and_is_wired(self, make_app, sample_org):
+        """The Edit Org button must exist on the Orgs toolbar."""
+        app = make_app(orgs=[sample_org])
+        assert app.edit_org_btn is not None
+        assert app.edit_org_btn.text() == "Edit Org"
+
+    def test_build_edit_org_form_returns_initial_values(
+        self, make_app, sample_org, monkeypatch
+    ):
+        """_build_edit_org_form returns a QDialog with fields pre-filled from the org."""
+        from PySide6.QtWidgets import QDialog
+
+        app = make_app(orgs=[sample_org])
+        # Stub dialog.exec so it doesn't block
+        monkeypatch.setattr(QDialog, "exec", lambda self: 0)
+        dialog, fields = app._build_edit_org_form(sample_org)
+        assert isinstance(dialog, QDialog)
+        assert fields["org_id"].text() == (sample_org.org_id or "")
+        assert fields["mdm_url"].text() == (sample_org.mdm_url or "")
+        assert fields["checkin_url"].text() == (sample_org.checkin_url or "")
+        assert fields["mdm_topic"].text() == (sample_org.mdm_topic or "")
+        assert fields["cert_path"].text() == (sample_org.cert_path or "")
+
+    def test_apply_edit_org_saves_modified_fields(
+        self, make_app, sample_org, monkeypatch
+    ):
+        """_apply_edit_org writes a fresh Organization via save_org(overwrite=True)."""
+        # sample_org fixture uses "Capital Candy" (with space) for display;
+        # the GUI validator rejects spaces. Override to a name that validates.
+        sample_org.name = "CapitalCandy"
+        sample_org.org_id = "com.capitalcandy"
+
+        app = make_app(orgs=[sample_org])
+        captured: dict = {}
+
+        def fake_save_org(self, org, overwrite=False):
+            captured["name"] = org.name
+            captured["mdm_url"] = org.mdm_url
+            captured["checkin_url"] = org.checkin_url
+            captured["mdm_topic"] = org.mdm_topic
+            captured["cert_path"] = org.cert_path
+            captured["key_path"] = org.key_path
+            captured["overwrite"] = overwrite
+
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.save_org",
+            fake_save_org,
+        )
+
+        # Build dialog (without exec), mutate fields, apply.
+        from PySide6.QtWidgets import QDialog
+
+        monkeypatch.setattr(QDialog, "exec", lambda self: 0)
+        dialog, fields = app._build_edit_org_form(sample_org)
+        fields["mdm_url"].setText("https://new-mdm.example.com/mdm")
+        fields["checkin_url"].setText("https://new-mdm.example.com/checkin")
+        fields["mdm_topic"].setText("com.example.new-topic")
+
+        app._apply_edit_org(sample_org, fields, dialog)
+
+        assert captured["name"] == "CapitalCandy"
+        assert captured["mdm_url"] == "https://new-mdm.example.com/mdm"
+        assert captured["checkin_url"] == "https://new-mdm.example.com/checkin"
+        assert captured["mdm_topic"] == "com.example.new-topic"
+        # key_path preserved (not editable in this dialog)
+        assert captured["key_path"] == sample_org.key_path
+        assert captured["overwrite"] is True
+
+    def test_apply_edit_org_validates_inputs(self, make_app, sample_org, monkeypatch):
+        """Invalid MDM URL → save_org NOT called, warning shown."""
+        sample_org.name = "CapitalCandy"  # validator-acceptable name
+        from PySide6.QtWidgets import QDialog
+
+        app = make_app(orgs=[sample_org])
+        called = {"save": False}
+
+        def fake_save_org(self, org, overwrite=False):
+            called["save"] = True
+
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.save_org", fake_save_org
+        )
+
+        monkeypatch.setattr(QDialog, "exec", lambda self: 0)
+        dialog, fields = app._build_edit_org_form(sample_org)
+        fields["mdm_url"].setText("not-a-url")
+
+        warnings = []
+        monkeypatch.setattr(
+            QMessageBox,
+            "warning",
+            lambda parent, title, text, *a, **kw: warnings.append((title, text))
+            or QMessageBox.StandardButton.Ok,
+        )
+
+        app._apply_edit_org(sample_org, fields, dialog)
+        assert called["save"] is False, "save_org must not be called for invalid input"
+        assert any(title == "Invalid input" for title, _ in warnings), warnings
+
+
 class TestReenrollConfirmation:
     def test_confirm_message_includes_device(self, make_app, sample_devices, monkeypatch):
         app = make_app()

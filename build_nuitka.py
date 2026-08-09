@@ -2,8 +2,9 @@
 """Build script for ios-enroll using Nuitka.
 
 Nuitka compiles Python to C and then to a native standalone executable.
-Windows executables can be produced on Linux by installing a MinGW cross
-compiler and passing --mingw64 to Nuitka.
+Windows targets use MSVC (``--msvc=latest``) on native Windows hosts and
+MinGW (``--mingw64``) when cross-compiling from Linux/macOS on a Python
+3.12-or-older host -- see ``_windows_compiler_args``.
 """
 from __future__ import annotations
 
@@ -101,14 +102,38 @@ def build_gui() -> int:
     return run_nuitka(args)
 
 
+def _windows_compiler_args() -> list[str]:
+    """Return the Nuitka compiler flags for Windows targets.
+
+    Native Windows builds (``sys.platform == "win32"``) use MSVC via
+    ``--msvc=latest``: Nuitka rejects ``--mingw64`` on Python 3.13 or
+    higher, and CPython 3.13+ for Windows is built with MSVC.
+
+    Cross-compiles from Linux/macOS use MinGW (``--mingw64``), which
+    Nuitka only supports on hosts older than Python 3.13. On 3.13+ hosts
+    Nuitka aborts with a FATAL, so fail fast here with a fix hint instead.
+    """
+    if sys.platform == "win32":
+        return ["--msvc=latest"]
+    if sys.version_info >= (3, 13):
+        sys.stderr.write(
+            "build_nuitka.py: cannot cross-compile Windows targets on "
+            "Python 3.13 or higher (Nuitka drops --mingw64 support there).\n"
+            "  Build on a native Windows host with Python 3.13+ (uses MSVC), "
+            "or use a Python 3.12-or-older host for MinGW cross-compiles.\n"
+        )
+        raise SystemExit(1)
+    return ["--mingw64"]
+
+
 def build_windows_cli() -> int:
-    """Build Windows CLI executable from Linux using MinGW."""
+    """Build Windows CLI executable (MSVC on Windows, MinGW elsewhere)."""
     print("Building Windows CLI executable...")
     args = base_args()
     args.extend([
         "--onefile",
         "--output-filename=ios-enroll.exe",
-        "--mingw64",
+        *_windows_compiler_args(),
         str(ROOT / "src" / "apple_device_cli" / "cli.py"),
     ])
     icon = ROOT / "assets" / "ios-enroll.ico"
@@ -118,7 +143,7 @@ def build_windows_cli() -> int:
 
 
 def build_windows_gui() -> int:
-    """Build Windows GUI executable from Linux using MinGW."""
+    """Build Windows GUI executable (MSVC on Windows, MinGW elsewhere)."""
     print("Building Windows GUI executable...")
     require_pyside6()
     args = base_args()
@@ -128,7 +153,7 @@ def build_windows_gui() -> int:
         "--include-package=PySide6",
         "--enable-plugin=pyside6",
         "--windows-console-mode=disable",
-        "--mingw64",
+        *_windows_compiler_args(),
         str(ROOT / "src" / "apple_device_cli" / "gui_qt.py"),
     ])
     icon = ROOT / "assets" / "ios-enroll.ico"

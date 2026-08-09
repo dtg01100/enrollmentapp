@@ -588,7 +588,10 @@ class TestRestoreCacheUi:
         # Force Path.home() to re-resolve (it's cached in some pathlib versions)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
 
-        chosen_folder = "/var/mnt/Disk2/iosfirmwares"
+        # Use a writable tmp path — resolve_cache_dir() mkdirs the chosen
+        # folder, and a hardcoded /var/mnt path fails on hosts where it's
+        # not writable.
+        chosen_folder = str(tmp_path / "iosfirmwares")
         monkeypatch.setattr(
             gui_qt.QFileDialog, "getExistingDirectory",
             staticmethod(lambda *a, **kw: chosen_folder),

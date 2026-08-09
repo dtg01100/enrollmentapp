@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +12,27 @@ from apple_device_cli.restore.engine import (
     parse_ipsw_url,
     parse_progress_line,
 )
+
+
+def _make_binary_available(monkeypatch: pytest.MonkeyPatch, *names: str) -> None:
+    """Make ``shutil.which`` report the named tools as installed.
+
+    ``exit_recovery_mode`` / ``list_signed_versions`` / ``restore_device``
+    fail fast with ``RestoreEngineError`` when ``irecovery`` / ``ipsw`` /
+    ``idevicerestore`` is missing from the host PATH. Tests that mock the
+    subprocess layer must also stub ``shutil.which`` so they stay hermetic
+    on machines without those binaries installed. Tests that exercise the
+    missing-binary error path set their own ``shutil.which`` override.
+    """
+    real_which = shutil.which
+    installed = set(names)
+
+    def fake_which(name: str, *args, **kwargs):
+        if name in installed:
+            return f"/usr/bin/{name}"
+        return real_which(name, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "which", fake_which)
 
 
 class TestParseIpswUrl:
@@ -161,6 +183,7 @@ class TestListSignedVersions:
     """Subprocess wrapper around ``ipsw download ipsw --device X --urls``."""
 
     def test_parses_ipsw_urls_output(self, monkeypatch):
+        _make_binary_available(monkeypatch, "ipsw")
         from unittest.mock import MagicMock
 
         from apple_device_cli.restore import engine
@@ -195,6 +218,7 @@ class TestListSignedVersions:
         assert "--urls" in cmd
 
     def test_skips_lines_that_dont_match_url_pattern(self, monkeypatch):
+        _make_binary_available(monkeypatch, "ipsw")
         from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
 
@@ -567,9 +591,13 @@ class TestRestoreDevice:
         return p
 
     def test_success_returns_restore_result(self, tmp_path, monkeypatch):
+        _make_binary_available(monkeypatch, "idevicerestore")
         from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
         from pathlib import Path
+
+        # Hermetic: don't scan the real USB bus for mode detection.
+        monkeypatch.setattr(engine, "detect_device_mode", lambda udid: "normal")
 
         ipsw = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
         ipsw.write_bytes(b"fake-ipsw")
@@ -617,9 +645,12 @@ class TestRestoreDevice:
         assert subprocess.DEVNULL is not None  # devnull exists
 
     def test_nonzero_exit_returns_failure(self, tmp_path, monkeypatch):
+        _make_binary_available(monkeypatch, "idevicerestore")
         from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
 
+        # Hermetic: don't scan the real USB bus for mode detection.
+        monkeypatch.setattr(engine, "detect_device_mode", lambda udid: "normal")
         ipsw = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
         ipsw.write_bytes(b"fake")
         cache = tmp_path / "cache"
@@ -673,9 +704,12 @@ class TestRestoreDevice:
         assert "xfail" in (result.error or "")
 
     def test_progress_callback_receives_stdout_lines(self, tmp_path, monkeypatch):
+        _make_binary_available(monkeypatch, "idevicerestore")
         from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
 
+        # Hermetic: don't scan the real USB bus for mode detection.
+        monkeypatch.setattr(engine, "detect_device_mode", lambda udid: "normal")
         ipsw = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
         ipsw.write_bytes(b"fake")
         cache = tmp_path / "cache"
@@ -699,9 +733,12 @@ class TestRestoreDevice:
 
     def test_progress_callback_receives_progress_events(self, tmp_path, monkeypatch):
         """Lines that match a progress format arrive as events with progress set."""
+        _make_binary_available(monkeypatch, "idevicerestore")
         from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
 
+        # Hermetic: don't scan the real USB bus for mode detection.
+        monkeypatch.setattr(engine, "detect_device_mode", lambda udid: "normal")
         ipsw = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
         ipsw.write_bytes(b"fake")
         cache = tmp_path / "cache"
@@ -731,6 +768,7 @@ class TestRestoreDevice:
         assert received[1].progress.label == "Restoring Baseband"
 
     def test_restore_device_normal_mode_uses_udid(self, tmp_path, monkeypatch):
+        _make_binary_available(monkeypatch, "idevicerestore")
         from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
 
@@ -757,6 +795,7 @@ class TestRestoreDevice:
         assert "-i" not in cmd
 
     def test_restore_device_recovery_mode_uses_ecid(self, tmp_path, monkeypatch):
+        _make_binary_available(monkeypatch, "idevicerestore")
         from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
 
@@ -788,6 +827,7 @@ class TestRestoreDevice:
     def test_restore_device_recovery_builds_0x_ecid_arg(self, tmp_path, monkeypatch):
         """``idevicerestore -i`` rejects bare hex ("Could not parse ECID") —
         an explicit ECID must be emitted with the ``0x`` prefix."""
+        _make_binary_available(monkeypatch, "idevicerestore")
         from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
 
@@ -813,6 +853,7 @@ class TestRestoreDevice:
         assert "-u" not in cmd
 
     def test_restore_device_recovery_mode_ecid_unresolved_raises(self, tmp_path, monkeypatch):
+        _make_binary_available(monkeypatch, "idevicerestore")
         from apple_device_cli.restore import engine
         from apple_device_cli.restore.errors import RestoreEngineError
 
@@ -833,6 +874,7 @@ class TestRestoreDevice:
             )
 
     def test_restore_device_unknown_mode_retries_with_ecid(self, tmp_path, monkeypatch):
+        _make_binary_available(monkeypatch, "idevicerestore")
         from apple_device_cli.restore import engine
 
         ipsw = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
@@ -871,6 +913,7 @@ class TestRestoreDevice:
         assert "-u" not in popen_calls[1]
 
     def test_restore_device_unknown_mode_normal_first_attempt_succeeds(self, tmp_path, monkeypatch):
+        _make_binary_available(monkeypatch, "idevicerestore")
         from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
 
@@ -1215,6 +1258,7 @@ class TestExitRecoveryMode:
         return proc
 
     def test_exit_recovery_mode_runs_irecovery_normal(self, monkeypatch):
+        _make_binary_available(monkeypatch, "irecovery")
         from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
 
@@ -1235,6 +1279,7 @@ class TestExitRecoveryMode:
         assert cmd == ["irecovery", "--normal"]
 
     def test_exit_recovery_mode_no_device_raises(self, monkeypatch):
+        _make_binary_available(monkeypatch, "irecovery")
         from apple_device_cli.restore import engine
         from apple_device_cli.restore.errors import RestoreEngineError
 
@@ -1243,6 +1288,7 @@ class TestExitRecoveryMode:
             engine.exit_recovery_mode()
 
     def test_exit_recovery_mode_dfu_only_raises(self, monkeypatch):
+        _make_binary_available(monkeypatch, "irecovery")
         from apple_device_cli.restore import engine
         from apple_device_cli.restore.errors import RestoreEngineError
 
@@ -1275,6 +1321,7 @@ class TestExitRecoveryMode:
             engine.exit_recovery_mode()
 
     def test_exit_recovery_mode_irecovery_failure_raises(self, monkeypatch):
+        _make_binary_available(monkeypatch, "irecovery")
         from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
         from apple_device_cli.restore.errors import RestoreEngineError
@@ -1295,6 +1342,7 @@ class TestExitRecoveryMode:
             engine.exit_recovery_mode()
 
     def test_exit_recovery_mode_by_udid_matches_srnm(self, monkeypatch):
+        _make_binary_available(monkeypatch, "irecovery")
         from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
 
@@ -1319,6 +1367,7 @@ class TestExitRecoveryMode:
         assert cmd == ["irecovery", "--normal"]
 
     def test_exit_recovery_mode_by_udid_matches_ecid(self, monkeypatch):
+        _make_binary_available(monkeypatch, "irecovery")
         from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
 
@@ -1342,6 +1391,7 @@ class TestExitRecoveryMode:
         assert engine.subprocess.run.call_count == 1
 
     def test_exit_recovery_mode_by_udid_no_match_raises(self, monkeypatch):
+        _make_binary_available(monkeypatch, "irecovery")
         from apple_device_cli.restore import engine
         from apple_device_cli.restore.errors import RestoreEngineError
 
@@ -1362,6 +1412,7 @@ class TestExitRecoveryMode:
             engine.exit_recovery_mode("00008120-00094DAA01D80032")
 
     def test_exit_recovery_mode_without_udid_resets_any_recovery_device(self, monkeypatch):
+        _make_binary_available(monkeypatch, "irecovery")
         from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
 
@@ -1382,6 +1433,7 @@ class TestExitRecoveryMode:
         assert cmd == ["irecovery", "--normal"]
 
     def test_exit_recovery_mode_without_udid_no_recovery_device_raises(self, monkeypatch):
+        _make_binary_available(monkeypatch, "irecovery")
         from apple_device_cli.restore import engine
         from apple_device_cli.restore.errors import RestoreEngineError
 
@@ -1390,6 +1442,7 @@ class TestExitRecoveryMode:
             engine.exit_recovery_mode()
 
     def test_exit_recovery_mode_without_udid_dfu_only_raises(self, monkeypatch):
+        _make_binary_available(monkeypatch, "irecovery")
         from apple_device_cli.restore import engine
         from apple_device_cli.restore.errors import RestoreEngineError
 
@@ -1404,6 +1457,7 @@ class TestExitRecoveryMode:
             engine.exit_recovery_mode()
 
     def test_exit_recovery_mode_without_udid_multiple_recovery_devices(self, monkeypatch):
+        _make_binary_available(monkeypatch, "irecovery")
         from unittest.mock import MagicMock
         from apple_device_cli.restore import engine
 

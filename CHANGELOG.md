@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Testing
+- **Restore tests are hermetic again.** `test_restore_engine.py` no longer
+  requires `irecovery` / `ipsw` / `idevicerestore` on the host PATH — the
+  subprocess-layer tests stub `shutil.which` so they run on any machine
+  (23 tests previously failed with "`irecovery` is required to exit
+  recovery mode" etc. on hosts without those tools).
+  `test_restore_tab.py`'s cache-picker test now uses a `tmp_path` folder
+  instead of the hardcoded `/var/mnt/Disk2/iosfirmwares`, which is
+  unwritable on many hosts.
+
+### Fixed
+- **CI: Windows Nuitka build green again.** `build_nuitka.py windows*`
+  targets now pick MSVC (`--msvc=latest`) on native Windows hosts instead
+  of unconditionally passing `--mingw64`, which Nuitka rejects on Python
+  3.13+ — the Build Executables workflow's Windows job was dying
+  immediately with `cannot use '--mingw64' on Python version 3.13 or
+  higher`. MinGW cross-compiles from Linux/macOS still work on Python
+  ≤ 3.12 hosts, and newer hosts get a clear hint instead of a Nuitka
+  FATAL.
+- **CI: release creation no longer 403s.** `build.yml` now declares
+  `permissions: contents: write`, so the workflow token can create GitHub
+  releases on tag pushes. The repo's default workflow permission is
+  read-only, which made `softprops/action-gh-release` fail with
+  `GitHub release failed with status: 403` → `Too many retries`.
+
 ## [1.3.1] - 2026-08-07
 
 ### Added

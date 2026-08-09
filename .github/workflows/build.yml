@@ -28,7 +28,7 @@ jobs:
   # here) but skip the expensive builds.
   test:
     runs-on: ubuntu-latest
-    name: Test suite (pytest)
+    name: Test suite (pytest, Linux)
     steps:
       - uses: actions/checkout@v4
 
@@ -54,6 +54,38 @@ jobs:
           pip install pytest
 
       - name: Run tests
+        run: python -m pytest tests/ -q
+
+  # --- Windows test gate --------------------------------------------------
+  # Same pytest suite as the Linux ``test`` job, but under windows-latest.
+  # ``pymobiledevice3`` officially supports Windows and PySide6 ships its
+  # offscreen Qt platform plugin on Windows, so the GUI tests run with
+  # QT_QPA_PLATFORM=offscreen just like on Linux. The Windows Nuitka builds
+  # below depend on this job so a broken Windows-specific path is caught
+  # before the 1-2 hour build burns.
+  test-windows:
+    runs-on: windows-latest
+    name: Test suite (pytest, Windows)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[gui]'
+          pip install pytest
+
+      - name: Run tests
+        env:
+          # PySide6 ships the offscreen platform plugin on Windows; setting
+          # it explicitly keeps Qt from probing for a real display.
+          QT_QPA_PLATFORM: offscreen
         run: python -m pytest tests/ -q
 
   # --- Change detection: skip builds for docs-only pushes ----------------
@@ -90,7 +122,7 @@ jobs:
   # ~250 MB PySide6 wheels) and restores a content-hashed Nuitka cache,
   # so unchanged third-party modules are not recompiled between runs.
   build:
-    needs: [ changes, test ]
+    needs: [ changes, test, test-windows ]
     if: ${{ github.ref_type == 'tag' || github.event_name != 'push' || needs.changes.outputs.build == 'true' }}
     runs-on: ${{ matrix.os }}
     name: Build ${{ matrix.label }} (Nuitka)
@@ -164,7 +196,13 @@ jobs:
           pip install -e "${{ matrix.install }}"
 
       - name: Build ${{ matrix.label }} executable
-        run: python build_nuitka.py ${{ matrix.target }}
+        # Tag pushes produce artifacts uploaded to the GitHub release, so
+        # pass --release to get a single self-contained onefile binary that
+        # actually works when downloaded. Branch/PR builds skip --release
+        # for speed and only verify that compilation succeeds.
+        run: >
+          python build_nuitka.py
+          ${{ github.ref_type == 'tag' && '--release ' || '' }}${{ matrix.target }}
 
       - name: Verify PE header
         if: matrix.verify_pe

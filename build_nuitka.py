@@ -5,13 +5,32 @@ Nuitka compiles Python to C and then to a native standalone executable.
 Windows targets use MSVC (``--msvc=latest``) on native Windows hosts and
 MinGW (``--mingw64``) when cross-compiling from Linux/macOS on a Python
 3.12-or-older host -- see ``_windows_compiler_args``.
+
+Build modes:
+
+* Default (development): ``--standalone``, ``--lto=no``, ``--python-flag=-O``,
+  parallel jobs, shared cache. The fastest setup for iterating on code; the
+  produced binary is a directory distribution, not a single ``.exe``.
+* ``--release``: re-enables ``--onefile`` and link-time optimization for
+  shippable artifacts. Slower to build, single self-extracting executable.
+
+Compiler selection:
+
+* Native Windows: prefers ClangCL when available (``clang-cl`` on PATH or
+  ``NUITKA_USE_CLANG=1``), otherwise MSVC. Set ``NUITKA_USE_CLANG=0`` to
+  force MSVC.
+* MinGW cross-compile from Linux/macOS: links with LLD when available for
+  noticeably faster link times.
 """
 from __future__ import annotations
 
+import concurrent.futures
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
 
 ROOT = Path(__file__).parent
 DIST_DIR = ROOT / "dist"
@@ -32,9 +51,31 @@ def clean() -> None:
         shutil.rmtree(onefile)
 
 
-def base_args() -> list[str]:
-    """Return base Nuitka arguments used by all targets."""
-    return [
+def _jobs_arg() -> str:
+    """Return ``--jobs=N`` using ``NUITKA_JOBS`` or detected CPU count."""
+    n = os.environ.get("NUITKA_JOBS") or str(os.cpu_count() or 1)
+    return f"--jobs={n}"
+
+
+def _cache_dir_arg() -> str:
+    """Return ``--cache-dir=<path>`` shared across all targets in a tree.
+
+    ``NUITKA_CACHE_DIR`` overrides the default. CI runners should set this
+    to a path that's cached across runs (see ``.github/workflows/build.yml``).
+    """
+    cache_dir = os.environ.get("NUITKA_CACHE_DIR") or str(ROOT / ".nuitka-cache")
+    return f"--cache-dir={cache_dir}"
+
+
+def base_args(release: bool = False) -> list[str]:
+    """Return base Nuitka arguments used by all targets.
+
+    ``release=False`` (default) trades a slightly larger/faster binary for
+    a much shorter build: skip ``--onefile``, skip LTO, drop docstrings.
+    Pass ``release=True`` (via the ``--release`` CLI flag) to re-enable
+    those for shipping artifacts.
+    """
+    args = [
         sys.executable, "-m", "nuitka",
         "--standalone",
         "--assume-yes-for-downloads",
@@ -48,7 +89,29 @@ def base_args() -> list[str]:
         "--nofollow-import-to=tkinter",
         "--nofollow-import-to=unittest",
         "--nofollow-import-to=pytest",
+        _jobs_arg(),
+        _cache_dir_arg(),
     ]
+    if release:
+        args.append("--onefile")
+    else:
+        # Development build: cheaper compile, smaller intermediate C.
+        args.extend([
+            "--python-flag=-O",
+            "--no-docstrings",
+            "--lto=no",
+        ])
+    # Drop unused pymobiledevice3/rich submodules that drag in extra
+    # packages (tornado is only needed by pymobiledevice3's developer
+    # services, never by supervised enrollment).
+    args.extend([
+        "--nofollow-import-to=tornado",
+        "--nofollow-import-to=ipython",
+        "--nofollow-import-to=jupyter",
+        "--nofollow-import-to=notebook",
+        "--nofollow-import-to=rich.jupyter",
+    ])
+    return args
 
 
 def run_nuitka(args: list[str]) -> int:
@@ -75,25 +138,23 @@ def require_pyside6() -> None:
         raise SystemExit(1) from exc
 
 
-def build_cli() -> int:
-    """Build Linux CLI onefile executable."""
-    print("Building Linux CLI executable...")
-    args = base_args()
+def build_cli(release: bool = False) -> int:
+    """Build CLI executable (Linux/macOS host)."""
+    print(f"Building CLI executable (release={release})...")
+    args = base_args(release=release)
     args.extend([
-        "--onefile",
         "--output-filename=ios-enroll",
         str(ROOT / "src" / "apple_device_cli" / "cli.py"),
     ])
     return run_nuitka(args)
 
 
-def build_gui() -> int:
-    """Build Linux GUI executable."""
-    print("Building Linux GUI executable...")
+def build_gui(release: bool = False) -> int:
+    """Build GUI executable (Linux/macOS host)."""
+    print(f"Building GUI executable (release={release})...")
     require_pyside6()
-    args = base_args()
+    args = base_args(release=release)
     args.extend([
-        "--onefile",
         "--output-filename=ios-enroll-gui",
         "--include-package=PySide6",
         "--enable-plugin=pyside6",
@@ -109,11 +170,24 @@ def _windows_compiler_args() -> list[str]:
     ``--msvc=latest``: Nuitka rejects ``--mingw64`` on Python 3.13 or
     higher, and CPython 3.13+ for Windows is built with MSVC.
 
+    If ClangCL (``clang-cl``) is on PATH, or ``NUITKA_USE_CLANG=1`` is
+    set, pass ``--clang`` too: clang's optimizer beats MSVC's cl.exe on
+    the small-to-medium C files Nuitka emits, typically 10-25% faster on
+    the compile step. ``NUITKA_USE_CLANG=0`` forces MSVC.
+
     Cross-compiles from Linux/macOS use MinGW (``--mingw64``), which
     Nuitka only supports on hosts older than Python 3.13. On 3.13+ hosts
     Nuitka aborts with a FATAL, so fail fast here with a fix hint instead.
+    When ``lld`` is available on the MinGW cross-compile host, append
+    ``-fuse-ld=lld`` to use LLVM's linker (much faster than MinGW's
+    default ``ld`` for large binaries).
     """
     if sys.platform == "win32":
+        force_clang = os.environ.get("NUITKA_USE_CLANG")
+        if force_clang == "0":
+            return ["--msvc=latest"]
+        if force_clang == "1" or shutil.which("clang-cl"):
+            return ["--clang", "--msvc=latest"]
         return ["--msvc=latest"]
     if sys.version_info >= (3, 13):
         sys.stderr.write(
@@ -123,15 +197,17 @@ def _windows_compiler_args() -> list[str]:
             "or use a Python 3.12-or-older host for MinGW cross-compiles.\n"
         )
         raise SystemExit(1)
-    return ["--mingw64"]
+    flags = ["--mingw64"]
+    if shutil.which("ld.lld") or shutil.which("lld-link"):
+        flags.append("-fuse-ld=lld")
+    return flags
 
 
-def build_windows_cli() -> int:
+def build_windows_cli(release: bool = False) -> int:
     """Build Windows CLI executable (MSVC on Windows, MinGW elsewhere)."""
-    print("Building Windows CLI executable...")
-    args = base_args()
+    print(f"Building Windows CLI executable (release={release})...")
+    args = base_args(release=release)
     args.extend([
-        "--onefile",
         "--output-filename=ios-enroll.exe",
         *_windows_compiler_args(),
         str(ROOT / "src" / "apple_device_cli" / "cli.py"),
@@ -142,13 +218,12 @@ def build_windows_cli() -> int:
     return run_nuitka(args)
 
 
-def build_windows_gui() -> int:
+def build_windows_gui(release: bool = False) -> int:
     """Build Windows GUI executable (MSVC on Windows, MinGW elsewhere)."""
-    print("Building Windows GUI executable...")
+    print(f"Building Windows GUI executable (release={release})...")
     require_pyside6()
-    args = base_args()
+    args = base_args(release=release)
     args.extend([
-        "--onefile",
         "--output-filename=ios-enroll-gui.exe",
         "--include-package=PySide6",
         "--enable-plugin=pyside6",
@@ -162,8 +237,23 @@ def build_windows_gui() -> int:
     return run_nuitka(args)
 
 
-def main() -> int:
-    args = sys.argv[1:]
+def main(argv: list[str] | None = None) -> int:
+    """Dispatch the requested build target(s).
+
+    ``argv`` defaults to ``sys.argv[1:]`` when called as a script. Accepting
+    it as a parameter makes the function directly testable without
+    monkeypatching ``sys.argv``.
+    """
+    args = list(sys.argv[1:] if argv is None else argv)
+
+    release = "--release" in args
+    if release:
+        args.remove("--release")
+
+    parallel = "--parallel" in args
+    if parallel:
+        args.remove("--parallel")
+
     if "--clean" in args:
         args.remove("--clean")
         clean()
@@ -178,22 +268,35 @@ def main() -> int:
         )
         return 2
 
-    status = 0
-
-    # ``all`` means "all builds for the current platform" — Linux CLI + GUI
-    # only. It deliberately does NOT include the MinGW Windows cross-compile
-    # builders (those need an explicit ``windows*`` target and a MinGW-capable
-    # host). This is what CI workflows and local dev use.
+    # ``all`` means "all builds for the current platform" — Linux/macOS CLI +
+    # GUI only. It deliberately does NOT include the MinGW Windows cross-
+    # compile builders (those need an explicit ``windows*`` target and a
+    # MinGW-capable host). This is what CI workflows and local dev use.
+    builders: list[tuple[str, Callable[[], int]]] = []
     if target in ("all", "cli"):
-        status = build_cli() or status
+        builders.append(("cli", lambda: build_cli(release=release)))
     if target in ("all", "gui"):
-        status = build_gui() or status
-    # ``windows*`` targets always invoke the MinGW Windows builders, even
-    # under ``all`` — explicit opt-in to cross-compile.
+        builders.append(("gui", lambda: build_gui(release=release)))
+    # ``windows*`` targets always invoke the Windows builders, even under
+    # ``all`` — explicit opt-in to cross-compile.
     if target in ("windows", "windows-cli"):
-        status = build_windows_cli() or status
+        builders.append(("windows-cli", lambda: build_windows_cli(release=release)))
     if target in ("windows", "windows-gui"):
-        status = build_windows_gui() or status
+        builders.append(("windows-gui", lambda: build_windows_gui(release=release)))
+
+    status = 0
+    if parallel and len(builders) > 1:
+        # Run independent builds concurrently — biggest wins overlap the
+        # heavy C-compile phase of pymobiledevice3 + cryptography between
+        # CLI and GUI targets. ``run_nuitka`` already streams output, so
+        # interleaved prints from two threads are acceptable.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(builders)) as ex:
+            futures = {ex.submit(fn): name for name, fn in builders}
+            for future in concurrent.futures.as_completed(futures):
+                status = future.result() or status
+    else:
+        for _name, fn in builders:
+            status = fn() or status
 
     if status:
         print("\nBuild failed.")

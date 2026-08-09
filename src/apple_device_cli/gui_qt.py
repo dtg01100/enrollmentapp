@@ -329,10 +329,27 @@ def _require_pyside6() -> None:
             self.enroll_tab = self._create_enroll_tab()
             self.restore_tab = self._create_restore_tab()
 
-            self.tabs.addTab(self.devices_tab, "Devices")
-            self.tabs.addTab(self.orgs_tab, "Organizations")
-            self.tabs.addTab(self.enroll_tab, "Enrollment")
-            self.tabs.addTab(self.restore_tab, "Restore")
+            style = self.style()
+            self.tabs.addTab(
+                self.devices_tab,
+                style.standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon),
+                "Devices",
+            )
+            self.tabs.addTab(
+                self.orgs_tab,
+                style.standardIcon(QStyle.StandardPixmap.SP_DirHomeIcon),
+                "Organizations",
+            )
+            self.tabs.addTab(
+                self.enroll_tab,
+                style.standardIcon(QStyle.StandardPixmap.SP_ArrowRight),
+                "Enrollment",
+            )
+            self.tabs.addTab(
+                self.restore_tab,
+                style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload),
+                "Restore",
+            )
 
             log_group = QWidget()
             log_layout = QVBoxLayout(log_group)

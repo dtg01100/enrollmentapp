@@ -1169,6 +1169,17 @@ class TestEnrollActionGating:
         assert not app.guided_enroll_btn.isEnabled()
 
 
+class TestTabIcons:
+    def test_all_tabs_have_icons(self, make_app):
+        from PySide6.QtWidgets import QTabWidget
+        app = make_app()
+        tabs = app.findChild(QTabWidget)
+        assert tabs is not None
+        for i in range(tabs.count()):
+            icon = tabs.tabIcon(i)
+            assert not icon.isNull(), f"Tab {i} ({tabs.tabText(i)}) has no icon"
+
+
 class TestRestoreEmptyState:
     def test_empty_state_label_exists(self, make_app):
         app = make_app()

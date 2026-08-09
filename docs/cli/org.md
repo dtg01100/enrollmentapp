@@ -3,6 +3,13 @@
 Organization management commands. See the [index](README.md) for global
 options and the shared contracts (confirmation, redaction, JSON output).
 
+> **After pulling new code:** keep the venv in sync with an *editable*
+> install — `uv pip install -e .` — and re-run it after every `git pull`.
+> A non-editable copy in `site-packages` is a snapshot from install time, so
+> a stale install silently misses flags documented here (e.g.
+> `org list --json`). An editable install always tracks the working
+> tree; if a documented flag is missing, refresh it.
+
 ## `org list`
 
 List stored organizations.

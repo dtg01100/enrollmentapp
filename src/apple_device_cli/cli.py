@@ -638,7 +638,11 @@ def device_list(
     try:
         devices = list_devices()
         if not devices:
-            typer.secho("No devices found", fg=typer.colors.YELLOW)
+            if json_output:
+                # Keep stdout pure JSON for scripts.
+                typer.echo("[]")
+            else:
+                typer.secho("No devices found", fg=typer.colors.YELLOW)
             return
         if json_output:
             output = [{
@@ -659,7 +663,11 @@ def device_list(
                 else:
                     typer.echo(f"{_display_udid(d.udid)}\t{d.device_name}")
     except AppleDeviceError as e:
-        typer.secho(f"Error: {e}", fg=typer.colors.RED)
+        if json_output:
+            # Machine-readable contract: failures are a parseable error object.
+            typer.echo(json.dumps({"error": str(e)}))
+        else:
+            typer.secho(f"Error: {e}", fg=typer.colors.RED)
 
 
 @device_app.command("info")
@@ -669,6 +677,11 @@ def device_info(
 ):
     """Get device info."""
     if not udid:
+        if json_output:
+            # Scripts can't drive the interactive picker — require an
+            # explicit target so stdout stays pure JSON.
+            typer.echo(json.dumps({"error": "--udid is required with --json"}))
+            raise typer.Exit(1)
         devices = list_devices()
         if not devices:
             typer.secho("No device found", fg=typer.colors.RED)
@@ -704,7 +717,11 @@ def device_info(
             if info.ecid:
                 typer.echo(f"ECID: {_display_udid(info.ecid)}")
     else:
-        typer.secho(f"Device not found: {_display_udid(udid)}", fg=typer.colors.RED)
+        if json_output:
+            # Machine-readable contract: failures are a parseable error object.
+            typer.echo(json.dumps({"error": f"Device not found: {udid}"}))
+        else:
+            typer.secho(f"Device not found: {_display_udid(udid)}", fg=typer.colors.RED)
 
 
 @device_app.command("restore")
@@ -729,6 +746,10 @@ def device_restore(
     show_cache: bool = typer.Option(
         False, "--show-cache",
         help="Print the current cache state and exit.",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json",
+        help="Output as JSON (with --show-cache or --list-versions).",
     ),
     clear_cache: bool = typer.Option(
         False, "--clear-cache",
@@ -759,11 +780,16 @@ def device_restore(
 
     if show_cache:
         state = cache_state(resolved_cache)
-        typer.echo(f"Cache: {state['path']}")
-        typer.echo(f"  size: {state['size_bytes']:,} bytes")
-        typer.echo(f"  IPSW count: {state['ipsw_count']}")
-        for f in state['ipsw_files']:
-            typer.echo(f"    - {f}")
+        if json_output:
+            # Machine-readable contract: path, size_bytes, ipsw_count,
+            # ipsw_files (basenames).
+            typer.echo(json.dumps(state, indent=2))
+        else:
+            typer.echo(f"Cache: {state['path']}")
+            typer.echo(f"  size: {state['size_bytes']:,} bytes")
+            typer.echo(f"  IPSW count: {state['ipsw_count']}")
+            for f in state['ipsw_files']:
+                typer.echo(f"    - {f}")
         raise typer.Exit(0)
 
     if clear_cache:
@@ -807,7 +833,10 @@ def device_restore(
         except RestoreEngineError as exc:
             typer.secho(str(exc), fg=typer.colors.RED, err=True)
             raise typer.Exit(1) from exc
-        typer.echo(f"Device {udid}: {product_type}")
+        # Keep stdout pure JSON when --json is set (--list-versions --json
+        # is parsed by scripts); the human flow keeps the status line.
+        if not json_output:
+            typer.echo(f"Device {udid}: {product_type}")
 
     # --- --list-versions short-circuit ---
     if list_versions:
@@ -822,8 +851,22 @@ def device_restore(
         except RestoreEngineError as exc:
             typer.secho(str(exc), fg=typer.colors.RED, err=True)
             raise typer.Exit(1) from exc
-        for v in versions:
-            typer.echo(f"{v.display_label}  {v.url}")
+        if json_output:
+            # Machine-readable contract: one object per signed version with
+            # the raw fields a restore script needs.
+            typer.echo(json.dumps([
+                {
+                    "version": v.version,
+                    "build": v.build,
+                    "url": v.url,
+                    "device": v.device,
+                    "display_label": v.display_label,
+                }
+                for v in versions
+            ], indent=2))
+        else:
+            for v in versions:
+                typer.echo(f"{v.display_label}  {v.url}")
         raise typer.Exit(0)
 
     # --- Resolve the IPSW to use ---
@@ -968,18 +1011,27 @@ def org_list(
     manager = OrganizationManager()
     orgs = manager.list_orgs()
     if not orgs:
-        typer.echo("No organizations stored.")
-        typer.echo(f"  Location: {manager.orgs_dir}")
+        # Scripts parse --json output — the empty case must still be valid JSON.
+        if json_output:
+            typer.echo("[]")
+        else:
+            typer.echo("No organizations stored.")
+            typer.echo(f"  Location: {manager.orgs_dir}")
         return
     if json_output:
+        # Machine-readable contract: raw (unredacted) values so scripts can
+        # consume them; the human-readable output below is what gets redacted.
         output = []
         for org in orgs:
             org_data = {
                 "name": org.name,
                 "org_id": org.org_id,
                 "mdm_url": org.mdm_url,
+                "checkin_url": org.checkin_url,
+                "mdm_topic": org.mdm_topic,
                 "has_cert": org.cert_path is not None and Path(org.cert_path).exists(),
                 "has_key": org.key_path is not None and Path(org.key_path).exists(),
+                "wifi_config_path": org.wifi_config_path,
             }
             output.append(org_data)
         typer.echo(json.dumps(output, indent=2))

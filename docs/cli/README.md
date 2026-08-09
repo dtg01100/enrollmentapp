@@ -12,6 +12,7 @@ has its own page.
   - [JSON output](#json-output)
 - [Command groups](#command-groups)
 - [Exit codes](#exit-codes)
+- [Development setup](#development-setup)
 
 ## Global options
 
@@ -84,6 +85,22 @@ The `--json` contract is uniform across every command that supports it:
 - `1` — usage errors, refused/cancelled confirmations, failed operations
   (e.g. restore failure, `verify-ipsw` mismatch, `device info --json`
   without `--udid`).
+
+## Development setup
+
+For development, install the package **editable** so the CLI always tracks
+the working tree:
+
+```bash
+uv pip install -e .
+```
+
+A non-editable install copies the package into `site-packages` at install
+time — a snapshot that goes stale after `git pull`. A stale install
+silently misses flags documented on these pages (e.g. `device restore
+--json`); if a documented flag is missing, refresh the install with the
+command above. (The group pages carry a short version of this note; see
+[device.md](device.md).)
 
 ## See also
 

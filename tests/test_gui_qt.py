@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -918,6 +919,149 @@ class TestCertExpiryBadge:
         # >30 days → green
         far = now + timedelta(days=365)
         assert "🟢" in _format_cert_expiry_badge(far)
+
+
+def _make_real_cert(tmp_path, days_until_expiry: int):
+    """Generate a self-signed DER cert + private key for tests.
+
+    ``days_until_expiry`` may be negative (for expired-cert tests).
+    """
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subj = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test")])
+    now = datetime.now(timezone.utc)
+    not_before = now + timedelta(days=min(days_until_expiry, 0)) - timedelta(days=1)
+    not_after = now + timedelta(days=days_until_expiry)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subj).issuer_name(subj)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(not_before)
+        .not_valid_after(not_after)
+        .sign(key, hashes.SHA256())
+    )
+    cert_path = tmp_path / "test.der"
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.DER))
+    key_path = tmp_path / "test_key.der"
+    key_path.write_bytes(
+        key.private_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    return str(cert_path), str(key_path)
+
+
+class TestCertExpiryBanner:
+    def test_banner_hidden_when_org_has_no_cert(self, make_app, sample_org, monkeypatch):
+        """No cert on selected org → banner stays hidden."""
+        sample_org.name = "CapitalCandy"
+        sample_org.cert_path = None
+        sample_org.key_path = None
+        app = make_app(orgs=[sample_org])
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.get_org",
+            lambda self, name: sample_org,
+        )
+        app.enroll_org_combo.addItem(sample_org.name)
+        idx = app.enroll_org_combo.findText(sample_org.name)
+        app._on_enroll_org_changed(idx)
+        assert app.enroll_cert_warning_label.isHidden()
+
+    def test_banner_hidden_when_no_org(self, make_app):
+        """No org selected → banner hidden."""
+        app = make_app()
+        app._on_enroll_org_changed(-1)
+        assert app.enroll_cert_warning_label.isHidden()
+
+    def test_banner_shown_for_healthy_cert_within_90_days(
+        self, make_app, sample_org, monkeypatch, tmp_path
+    ):
+        """Cert valid for 60 days → green 'soft reminder' shown."""
+        sample_org.name = "CapitalCandy"
+        cert_path, key_path = _make_real_cert(tmp_path, days_until_expiry=60)
+        sample_org.cert_path = cert_path
+        sample_org.key_path = key_path
+
+        app = make_app(orgs=[sample_org])
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.get_org",
+            lambda self, name: sample_org,
+        )
+        app.enroll_org_combo.addItem(sample_org.name)
+        idx = app.enroll_org_combo.findText(sample_org.name)
+        app._on_enroll_org_changed(idx)
+        text = app.enroll_cert_warning_label.text()
+        assert not app.enroll_cert_warning_label.isHidden()
+        assert "valid" in text.lower() or "🟢" in text
+
+    def test_banner_shown_for_expiring_soon(
+        self, make_app, sample_org, monkeypatch, tmp_path
+    ):
+        """Cert expires in 14 days → yellow warning."""
+        sample_org.name = "CapitalCandy"
+        cert_path, key_path = _make_real_cert(tmp_path, days_until_expiry=14)
+        sample_org.cert_path = cert_path
+        sample_org.key_path = key_path
+
+        app = make_app(orgs=[sample_org])
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.get_org",
+            lambda self, name: sample_org,
+        )
+        app.enroll_org_combo.addItem(sample_org.name)
+        idx = app.enroll_org_combo.findText(sample_org.name)
+        app._on_enroll_org_changed(idx)
+        text = app.enroll_cert_warning_label.text()
+        assert not app.enroll_cert_warning_label.isHidden()
+        assert "14" in text or "expir" in text.lower()
+        assert "🟡" in text or "yellow" in text.lower() or "regenerat" in text.lower()
+
+    def test_banner_shown_for_expired_cert(
+        self, make_app, sample_org, monkeypatch, tmp_path
+    ):
+        """Expired cert → red warning."""
+        sample_org.name = "CapitalCandy"
+        cert_path, key_path = _make_real_cert(tmp_path, days_until_expiry=-5)
+        sample_org.cert_path = cert_path
+        sample_org.key_path = key_path
+
+        app = make_app(orgs=[sample_org])
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.get_org",
+            lambda self, name: sample_org,
+        )
+        app.enroll_org_combo.addItem(sample_org.name)
+        idx = app.enroll_org_combo.findText(sample_org.name)
+        app._on_enroll_org_changed(idx)
+        text = app.enroll_cert_warning_label.text()
+        assert not app.enroll_cert_warning_label.isHidden()
+        assert "expired" in text.lower() or "🔴" in text
+
+    def test_banner_shown_for_missing_cert_file(
+        self, make_app, sample_org, monkeypatch
+    ):
+        """Cert file path set but file missing → unreadable warning."""
+        sample_org.name = "CapitalCandy"
+        sample_org.cert_path = "/nonexistent/cert.der"
+        sample_org.key_path = "/nonexistent/key.der"
+        app = make_app(orgs=[sample_org])
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.get_org",
+            lambda self, name: sample_org,
+        )
+        app.enroll_org_combo.addItem(sample_org.name)
+        idx = app.enroll_org_combo.findText(sample_org.name)
+        app._on_enroll_org_changed(idx)
+        assert not app.enroll_cert_warning_label.isHidden()
+        text = app.enroll_cert_warning_label.text()
+        assert "unreadable" in text.lower() or "missing" in text.lower() or "regenerat" in text.lower()
 
 
 class TestClearCache:

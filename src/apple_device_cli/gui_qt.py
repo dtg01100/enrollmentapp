@@ -507,6 +507,18 @@ def _require_pyside6() -> None:
 
             layout.addWidget(org_box)
 
+            # Cert-expiry banner — shown when the selected org's cert is
+            # expiring (yellow), expired (red), or unreadable (red). Hidden
+            # when there's no org selected, no identity, or the cert is
+            # healthy (>90 days remaining).
+            self.enroll_cert_warning_label = QLabel("")
+            self.enroll_cert_warning_label.setWordWrap(True)
+            self.enroll_cert_warning_label.setStyleSheet(
+                "padding: 6px 8px; border-radius: 4px; font-weight: 600;"
+            )
+            self.enroll_cert_warning_label.setVisible(False)
+            layout.addWidget(self.enroll_cert_warning_label)
+
             # ----- WiFi groupbox -----
             wifi_box = QGroupBox("WiFi (optional)")
             wifi_form = QFormLayout(wifi_box)
@@ -1064,6 +1076,67 @@ def _require_pyside6() -> None:
             self.enroll_wifi_ssid.setText(ssid)
             self.enroll_wifi_password.setText(pwd)
             self.enroll_wifi_enc.setCurrentText(enc)
+            self._update_enroll_cert_banner(org)
+
+        def _update_enroll_cert_banner(self, org: Organization | None) -> None:
+            """Show a colored banner if the selected org's cert is bad.
+
+            Hidden when: no org selected, no identity, or cert >90d healthy.
+            Yellow: cert expires within 30 days. Red: cert already expired
+            or unreadable. Green: cert valid for ≤90 days (soft reminder
+            so users have lead time to plan a regenerate).
+            """
+            label = self.enroll_cert_warning_label
+            if org is None or not (org.cert_path and org.key_path):
+                label.setVisible(False)
+                return
+            expiry = _cert_expiry(org.cert_path)
+            if expiry is None:
+                # Cert unreadable — surface a generic warning so the user
+                # doesn't try to enroll with a broken identity.
+                label.setText(
+                    "⚠  Cert file is missing or unreadable — "
+                    "regenerate identity before enrolling."
+                )
+                label.setStyleSheet(
+                    "padding: 6px 8px; border-radius: 4px; font-weight: 600;"
+                    "background: #fdecea; color: #b71c1c;"
+                )
+                label.setVisible(True)
+                return
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            days_left = (expiry - now).days
+            if days_left < 0:
+                label.setText(
+                    f"🔴  Cert expired {-days_left} day(s) ago — "
+                    "regenerate identity before enrolling."
+                )
+                label.setStyleSheet(
+                    "padding: 6px 8px; border-radius: 4px; font-weight: 600;"
+                    "background: #fdecea; color: #b71c1c;"
+                )
+                label.setVisible(True)
+            elif days_left <= 30:
+                label.setText(
+                    f"🟡  Cert expires in {days_left} day(s) — "
+                    "consider regenerating identity."
+                )
+                label.setStyleSheet(
+                    "padding: 6px 8px; border-radius: 4px; font-weight: 600;"
+                    "background: #fff8e1; color: #8d6e00;"
+                )
+                label.setVisible(True)
+            elif days_left <= 90:
+                label.setText(f"🟢  Cert valid for {days_left} more days.")
+                label.setStyleSheet(
+                    "padding: 6px 8px; border-radius: 4px;"
+                    "background: #e8f5e9; color: #2e7d32;"
+                )
+                label.setVisible(True)
+            else:
+                label.setVisible(False)
 
         def _create_org_dialog(self) -> None:
             dialog = QDialog(self)

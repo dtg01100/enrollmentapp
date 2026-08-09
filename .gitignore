@@ -25,6 +25,9 @@ htmlcov/
 .agents/
 agents/
 .nanocoder/
+.freebuff/
+.hermes/plans/
+.hermes/screenshots/
 
 # Memory & state
 .memories/

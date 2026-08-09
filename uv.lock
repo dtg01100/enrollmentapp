@@ -605,7 +605,7 @@ wheels = [
 
 [[package]]
 name = "ios-enroll"
-version = "1.0.0"
+version = "1.3.1"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },

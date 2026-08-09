@@ -27,6 +27,12 @@ from apple_device_cli.enrollment.supervised import (
     make_supervised,
     validate_enrollment_prerequisites,
 )
+from apple_device_cli.cli_actions import (
+    OrgNotFoundError,
+    WifiConfigInvalidError,
+    WifiConfigNotFoundError,
+    set_org_wifi,
+)
 from apple_device_cli.orgs.identity import generate_org_identity
 from apple_device_cli.orgs.manager import Organization, OrganizationManager
 from apple_device_cli.restore.cache import (
@@ -436,6 +442,10 @@ def _require_pyside6() -> None:
             self.export_org_btn = QPushButton("Export…")
             self.export_org_btn.clicked.connect(self._export_org)
             toolbar.addWidget(self.export_org_btn)
+
+            self.attach_wifi_btn = QPushButton("Attach WiFi…")
+            self.attach_wifi_btn.clicked.connect(self._attach_wifi)
+            toolbar.addWidget(self.attach_wifi_btn)
 
             self.delete_org_btn = QPushButton("Delete Org")
             self.delete_org_btn.clicked.connect(self._delete_org)
@@ -1308,6 +1318,69 @@ def _require_pyside6() -> None:
 
             worker = WorkerThread(work)
             self._run_worker(worker, on_done, [self.export_org_btn])
+
+        def _attach_wifi(self) -> None:
+            """Entry point for the 'Attach WiFi…' button.
+
+            Wraps ``set_org_wifi`` from cli_actions so the user can attach a
+            .mobileconfig file to an org without dropping to the CLI. The
+            Enrollment tab already auto-populates WiFi fields from a
+            configured org, so attaching here closes that loop.
+
+            Replaces an existing WiFi config after confirmation (matching
+            the CLI's ``org set-wifi --yes`` flow). Runs on a worker thread
+            because plist parsing + file copy can be slow on cold caches.
+            """
+            org = self._selected_org()
+            if not org:
+                QMessageBox.warning(
+                    self, "No organization", "Select an organization first."
+                )
+                return
+            path_str, _ = QFileDialog.getOpenFileName(
+                self,
+                "Choose WiFi mobileconfig",
+                "",
+                "Mobileconfig (*.mobileconfig);;All Files (*)",
+            )
+            if not path_str:
+                return
+            wifi_path = Path(path_str)
+            if org.wifi_config_path:
+                reply = QMessageBox.question(
+                    self,
+                    "Replace WiFi config?",
+                    (
+                        f"Replace existing WiFi config on '{org.name}'?\n\n"
+                        f"Old: {org.wifi_config_path}\nNew: {wifi_path}"
+                    ),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+            manager = OrganizationManager()
+
+            def work() -> Any:
+                return set_org_wifi(manager, org.name, str(wifi_path))
+
+            def on_done(result: Any, error: Exception | None) -> None:
+                if error:
+                    if isinstance(error, OrgNotFoundError):
+                        msg = f"Organization not found: {org.name}"
+                    elif isinstance(error, WifiConfigNotFoundError):
+                        msg = f"WiFi config not found: {wifi_path}"
+                    elif isinstance(error, WifiConfigInvalidError):
+                        msg = f"Invalid mobileconfig: {wifi_path}"
+                    else:
+                        msg = f"Failed to attach WiFi: {error}"
+                    QMessageBox.warning(self, "Attach failed", msg)
+                    self._log(f"Attach WiFi failed: {error}")
+                    return
+                self._log(f"Attached WiFi to '{org.name}': {result.wifi_config_path}")
+                self._refresh_orgs()
+
+            worker = WorkerThread(work)
+            self._run_worker(worker, on_done, [self.attach_wifi_btn])
 
         def _build_edit_org_form(self, org: Organization) -> tuple[QDialog, dict[str, QLineEdit]]:
             """Construct the Edit Org dialog with QLineEdit fields pre-filled.

@@ -735,6 +735,89 @@ class TestExportOrg:
         assert called["export"] is False
 
 
+class TestAttachWifi:
+    def test_attach_wifi_button_exists(self, make_app):
+        app = make_app()
+        assert app.attach_wifi_btn is not None
+        assert app.attach_wifi_btn.text() == "Attach WiFi…"
+
+    def test_attach_wifi_requires_selection(self, make_app, monkeypatch):
+        """No org selected → 'No organization' warning, no set_org_wifi call."""
+        app = make_app()
+        warnings = []
+        monkeypatch.setattr(
+            QMessageBox,
+            "warning",
+            lambda parent, title, text, *a, **kw: warnings.append((title, text))
+            or QMessageBox.StandardButton.Ok,
+        )
+        called = {"wifi": False}
+        from apple_device_cli.cli_actions import SetOrgWifiResult
+
+        def fake_set_wifi(manager, name, path):
+            called["wifi"] = True
+            return SetOrgWifiResult(name=name, wifi_config_path=path)
+
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.set_org_wifi", fake_set_wifi
+        )
+        app._attach_wifi()
+        assert called["wifi"] is False
+        assert any(t == "No organization" for t, _ in warnings)
+
+    def test_attach_wifi_calls_set_org_wifi(
+        self, make_app, sample_org, monkeypatch, tmp_path
+    ):
+        """Selected org + wifi file → set_org_wifi called with name + path."""
+        from pathlib import Path
+        from apple_device_cli.cli_actions import SetOrgWifiResult
+
+        app = make_app(orgs=[sample_org])
+        app.orgs_list.setCurrentRow(0)
+        wifi_file = tmp_path / "wifi.mobileconfig"
+        wifi_file.write_bytes(b"<?xml version='1.0'?><plist></plist>")
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.QFileDialog.getOpenFileName",
+            lambda *a, **kw: (str(wifi_file), "Mobileconfig (*.mobileconfig)"),
+        )
+        captured = {}
+        def fake_set_wifi(manager, name, path):
+            captured["name"] = name
+            captured["path"] = path
+            return SetOrgWifiResult(name=name, wifi_config_path=path)
+
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.set_org_wifi", fake_set_wifi
+        )
+        monkeypatch.setattr(app, "_refresh_orgs", lambda: None)
+
+        app._attach_wifi()
+        assert captured["name"] == sample_org.name
+        # set_org_wifi receives str(path); accept either str or Path.
+        assert str(captured["path"]) == str(wifi_file)
+
+    def test_attach_wifi_no_op_on_user_cancel(
+        self, make_app, sample_org, monkeypatch
+    ):
+        """Empty file selection → no set_org_wifi call."""
+        app = make_app(orgs=[sample_org])
+        app.orgs_list.setCurrentRow(0)
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.QFileDialog.getOpenFileName",
+            lambda *a, **kw: ("", ""),
+        )
+        called = {"wifi": False}
+
+        def fake_set_wifi(manager, name, path):
+            called["wifi"] = True
+
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.set_org_wifi", fake_set_wifi
+        )
+        app._attach_wifi()
+        assert called["wifi"] is False
+
+
 class TestReenrollConfirmation:
     def test_confirm_message_includes_device(self, make_app, sample_devices, monkeypatch):
         app = make_app()

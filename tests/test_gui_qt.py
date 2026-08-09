@@ -561,6 +561,32 @@ class TestEditOrg:
         assert any(title == "Invalid input" for title, _ in warnings), warnings
 
 
+class TestOrgDetailsPane:
+    def test_details_pane_exists(self, make_app):
+        """The Orgs tab must have a details label."""
+        app = make_app()
+        assert app.orgs_details_label is not None
+
+    def test_details_shows_org_fields(self, make_app, sample_org, monkeypatch):
+        """Selecting an org populates the details label with its fields."""
+        # sample_org.name has a space which is fine for read-only display
+        app = make_app(orgs=[sample_org])
+        # After make_app, the org is in self._orgs and orgs_list has 1 item
+        # with currentRow=0; _update_org_details should have been called.
+        text = app.orgs_details_label.text()
+        assert sample_org.name in text
+        assert "MDM URL:" in text
+        assert "Identity:" in text
+        assert "Created:" in text
+
+    def test_details_empty_when_no_org(self, make_app):
+        """No org selected → details show a placeholder."""
+        app = make_app()
+        app._update_org_details(-1)
+        text = app.orgs_details_label.text()
+        assert "no organization" in text.lower() or text.strip() == ""
+
+
 class TestReenrollConfirmation:
     def test_confirm_message_includes_device(self, make_app, sample_devices, monkeypatch):
         app = make_app()

@@ -439,6 +439,21 @@ def _require_pyside6() -> None:
             self.orgs_list = QListWidget()
             layout.addWidget(self.orgs_list, 1)
 
+            # Read-only details pane; updated by _update_org_details when
+            # the user selects a different org in the list above.
+            self.orgs_details_label = QLabel("(no organization selected)")
+            self.orgs_details_label.setWordWrap(True)
+            self.orgs_details_label.setStyleSheet(
+                "color: palette(mid); font-size: 12px; padding: 6px;"
+                "border: 1px solid palette(midlight); border-radius: 3px;"
+            )
+            self.orgs_details_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            self.orgs_details_label.setMinimumHeight(80)
+            layout.addWidget(self.orgs_details_label)
+            self.orgs_list.currentRowChanged.connect(self._update_org_details)
+
             self.orgs_empty_label = QLabel(
                 "No organizations yet. Click Create Org or Refresh Orgs."
             )
@@ -747,6 +762,29 @@ def _require_pyside6() -> None:
             if current < 0 or current >= len(self._orgs):
                 return None
             return self._orgs[current]
+
+        def _update_org_details(self, current_row: int) -> None:
+            """Render the selected org's fields in the read-only details pane.
+
+            Connected to ``orgs_list.currentRowChanged`` in ``_create_orgs_tab``.
+            Called with ``-1`` when the list becomes empty (e.g. after delete).
+            """
+            org = self._selected_org()
+            if not org:
+                self.orgs_details_label.setText("(no organization selected)")
+                return
+            has_identity = bool(org.cert_path and org.key_path)
+            lines = [
+                f"<b>{org.name}</b>",
+                f"Org ID: {org.org_id or '(none)'}",
+                f"MDM URL: {org.mdm_url or '(none)'}",
+                f"Check-in URL: {org.checkin_url or '(none)'}",
+                f"MDM Topic: {org.mdm_topic or '(none)'}",
+                f"Identity: {'yes' if has_identity else 'no'}",
+                f"WiFi config: {org.wifi_config_path or '(none)'}",
+                f"Created: {org.created_at}",
+            ]
+            self.orgs_details_label.setText("<br>".join(lines))
 
         def _run_worker(
             self,

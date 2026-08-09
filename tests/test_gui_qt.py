@@ -1064,6 +1064,58 @@ class TestCertExpiryBanner:
         assert "unreadable" in text.lower() or "missing" in text.lower() or "regenerat" in text.lower()
 
 
+class TestDevicesContextMenu:
+    def test_devices_list_has_custom_context_menu(self, make_app):
+        from PySide6.QtCore import Qt
+        app = make_app()
+        assert app.devices_list.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
+
+    def test_build_devices_context_menu_has_all_actions(
+        self, make_app, sample_devices
+    ):
+        """_build_devices_context_menu returns a QMenu with all 4 actions."""
+        from PySide6.QtWidgets import QListWidgetItem, QMenu
+        app = make_app()
+        app._devices = sample_devices
+        for d in sample_devices:
+            QListWidgetItem(f"{d.device_name} ({d.udid})", app.devices_list)
+
+        # Pretend we right-clicked at position (10, 10) on the first row.
+        app.devices_list.setCurrentRow(0)
+        menu = app._build_devices_context_menu()
+        assert isinstance(menu, QMenu)
+        labels = [a.text() for a in menu.actions()]
+        expected = ["Show Device Info", "Activate", "Pair / Trust", "Make Supervised"]
+        for label in expected:
+            assert label in labels, f"Missing context menu item: {label}"
+        menu.deleteLater()
+
+    def test_context_menu_bails_when_no_row_at_pos(self, make_app):
+        """_show_devices_context_menu bails on empty list — no menu shown."""
+        app = make_app()
+        # Override exec to assert it's never called
+        from PySide6.QtWidgets import QMenu as RealQMenu
+        original_init = RealQMenu.__init__
+
+        def init_capture(self, *args, **kwargs):
+            original_init(self, *args, **kwargs)
+            # Override exec to raise if called
+            import types
+            self.exec = types.MethodType(
+                lambda self_m: (_ for _ in ()).throw(
+                    AssertionError("exec should not be called when no row")
+                ),
+                self,
+            )
+
+        RealQMenu.__init__ = init_capture
+        try:
+            from PySide6.QtCore import QPoint
+            app._show_devices_context_menu(QPoint(0, 0))
+        finally:
+            RealQMenu.__init__ = original_init
+
+
 class TestEnrollActionGating:
     def test_buttons_disabled_when_no_org(self, make_app):
         app = make_app()

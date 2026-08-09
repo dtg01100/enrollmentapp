@@ -83,6 +83,7 @@ if TYPE_CHECKING:
         QListWidget,
         QListWidgetItem,
         QMainWindow,
+        QMenu,
         QMessageBox,
         QProgressBar,
         QPushButton,
@@ -239,11 +240,13 @@ def _require_pyside6() -> None:
             QListWidget,
             QListWidgetItem,
             QMainWindow,
+            QMenu,
             QMessageBox,
             QProgressBar,
             QPushButton,
             QSplitter,
             QStatusBar,
+            QStyle,
             QTabWidget,
             QTextEdit,
             QVBoxLayout,
@@ -386,6 +389,10 @@ def _require_pyside6() -> None:
             # below it when the list is empty (so resizing the list
             # doesn't require keeping the placeholder geometry in sync).
             self.devices_list = QListWidget()
+            self.devices_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            self.devices_list.customContextMenuRequested.connect(
+                self._show_devices_context_menu
+            )
             layout.addWidget(self.devices_list, 1)
 
             self.devices_empty_label = QLabel(
@@ -985,6 +992,56 @@ def _require_pyside6() -> None:
                 self._log(f"Pairing failed: {error}")
             else:
                 self._log("Device paired/trusted successfully.")
+
+        def _show_devices_context_menu(self, pos) -> None:
+            """Right-click context menu on the Devices list.
+
+            Mirrors the toolbar buttons but is right-click accessible.
+            Selects the row under the cursor first so subsequent
+            actions operate on the right device even when the user
+            hasn't clicked to select it. Bails when the click is on
+            empty space (no item at ``pos``).
+
+            Splits menu construction from menu display so tests can
+            inspect the actions without going through the modal
+            ``QMenu.exec`` (which is a C++ builtin that can't be
+            monkeypatched from Python and would hang the offscreen
+            test runner).
+            """
+            item = self.devices_list.itemAt(pos)
+            if item is None:
+                return
+            self.devices_list.setCurrentRow(self.devices_list.row(item))
+            menu = self._build_devices_context_menu()
+            menu.exec(self.devices_list.mapToGlobal(pos))
+
+        def _build_devices_context_menu(self) -> Any:
+            """Construct the context menu. Tests call this directly."""
+            menu = QMenu(self.devices_list)
+            menu.addAction("Show Device Info", self._show_device_info)
+            menu.addAction("Activate", self._activate_device)
+            menu.addAction("Pair / Trust", self._pair_device)
+            # Make Supervised lives on the Enrollment tab; route there
+            # and trigger Guided Enroll if prerequisites are met.
+            menu.addAction("Make Supervised", self._make_supervised_from_context)
+            return menu
+
+        def _make_supervised_from_context(self) -> None:
+            """Bridge from devices context menu → Enrollment tab's Guided Enroll.
+
+            Switches to the Enrollment tab so the user sees the action
+            take effect. If an org + UDID are both populated, fires
+            Guided Enroll; otherwise just lands them on the tab.
+            """
+            self.tabs.setCurrentWidget(self.enroll_tab)
+            self._update_enroll_action_gates()
+            if self.guided_enroll_btn.isEnabled():
+                self._guided_enroll()
+            else:
+                self._log(
+                    "Switched to Enrollment tab — pick an organization "
+                    "to start the workflow."
+                )
 
         def _refresh_orgs(self) -> None:
             self._log("Refreshing organizations...")

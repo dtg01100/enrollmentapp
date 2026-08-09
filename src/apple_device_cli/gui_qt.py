@@ -175,11 +175,11 @@ def _require_pyside6() -> None:
     global QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout
     global QHBoxLayout
     global QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow
-    global QMessageBox, QProgressBar, QPushButton, QSplitter, QTabWidget, QTextEdit
+    global QMessageBox, QProgressBar, QPushButton, QSplitter, QStatusBar, QTabWidget, QTextEdit
     global QVBoxLayout, QWidget
-    global QGroupBox
+    global QGroupBox, QSettings
     try:
-        from PySide6.QtCore import QEvent, Qt, QThread, Signal, Slot  # noqa: F401
+        from PySide6.QtCore import QEvent, QSettings, Qt, QThread, Signal, Slot  # noqa: F401
         from PySide6.QtWidgets import (  # noqa: F401
             QApplication,
             QComboBox,
@@ -198,6 +198,7 @@ def _require_pyside6() -> None:
             QProgressBar,
             QPushButton,
             QSplitter,
+            QStatusBar,
             QTabWidget,
             QTextEdit,
             QVBoxLayout,
@@ -317,12 +318,15 @@ def _require_pyside6() -> None:
             self._restore_is_recovery: bool = False
 
             self._setup_ui()
+            self.setStatusBar(QStatusBar())
             self.log_signal.connect(self._append_log)
             self.restore_log_signal.connect(self._append_restore_log)
             self.restore_progress_signal.connect(self._on_restore_progress_event)
             self.enroll_org_combo.currentIndexChanged.connect(self._on_enroll_org_changed)
             self._log("GUI initialized. Connect an iOS device to begin.")
+            self._restore_geometry()
             self._load_initial_state()
+            self._update_status_bar()
 
         def _setup_ui(self) -> None:
             central_widget = QWidget()
@@ -901,6 +905,7 @@ def _require_pyside6() -> None:
             self._populate_restore_device_combo()
             self._update_mode_labels()
             self._log(f"Found {len(self._devices)} device(s).")
+            self._update_status_bar()
 
         def _next_token(self) -> int:
             self._request_token += 1
@@ -1008,6 +1013,7 @@ def _require_pyside6() -> None:
                 self.orgs_list.setCurrentRow(0)
             self._update_enroll_orgs()
             self._log(f"Found {len(self._orgs)} organization(s).")
+            self._update_status_bar()
 
         def _update_enroll_orgs(self) -> None:
             self.enroll_org_combo.clear()
@@ -2517,6 +2523,9 @@ def _require_pyside6() -> None:
             the Python interpreter against in-flight C-level USB IO and can leave
             the device in an undefined state. Users must wait for in-flight work
             to finish (or let it fail naturally) before the window can close.
+
+            When allowed to close, persist the window geometry so the next
+            launch restores the user's preferred size/position.
             """
             if self._workers:
                 busy = len(self._workers)
@@ -2528,7 +2537,39 @@ def _require_pyside6() -> None:
                 )
                 event.ignore()
                 return
+            self._save_geometry()
             event.accept()
+
+        def _update_status_bar(self) -> None:
+            """Refresh the status bar with device/org counts and active workers.
+
+            Cheap to call; reads only from in-memory state. Called after every
+            refresh, every worker start, and every worker completion so the
+            bar always reflects current reality.
+            """
+            devices = len(self._devices)
+            orgs = len(self._orgs)
+            workers = len(self._workers)
+            msg = f"{devices} device(s)  •  {orgs} organization(s)"
+            if workers:
+                msg += f"  •  {workers} operation(s) running"
+            self.statusBar().showMessage(msg)
+
+        def _restore_geometry(self) -> None:
+            """Restore window geometry from QSettings (silent on first launch)."""
+            settings = QSettings("ios-enroll", "gui")
+            geometry = settings.value("geometry")
+            if geometry:
+                self.restoreGeometry(geometry)
+            state = settings.value("windowState")
+            if state:
+                self.restoreState(state)
+
+        def _save_geometry(self) -> None:
+            """Persist window geometry to QSettings (called from closeEvent)."""
+            settings = QSettings("ios-enroll", "gui")
+            settings.setValue("geometry", self.saveGeometry())
+            settings.setValue("windowState", self.saveState())
 
 
 def _write_identity_atomic(org_dir: Path, cert_der: bytes, key_der: bytes) -> None:

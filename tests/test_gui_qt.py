@@ -818,6 +818,44 @@ class TestAttachWifi:
         assert called["wifi"] is False
 
 
+class TestStatusBarAndGeometry:
+    def test_status_bar_exists(self, make_app):
+        """Main window must have a status bar."""
+        app = make_app()
+        assert app.statusBar() is not None
+
+    def test_status_bar_shows_counts_after_refresh(
+        self, make_app, sample_devices, sample_org
+    ):
+        """After refresh, status bar shows device + org counts."""
+        app = make_app(orgs=[sample_org])
+        app._devices = sample_devices
+        app._update_status_bar()
+        msg = app.statusBar().currentMessage()
+        assert "1 device" in msg
+        assert "1 organization" in msg or "1 org" in msg
+
+    def test_status_bar_shows_worker_count(
+        self, make_app, sample_devices, sample_org
+    ):
+        """Active workers are surfaced in the status bar."""
+        from unittest.mock import MagicMock
+
+        app = make_app(orgs=[sample_org])
+        app._devices = sample_devices
+        worker = MagicMock(spec=["run", "quit", "wait"])
+        app._workers.append(worker)
+        app._update_status_bar()
+        msg = app.statusBar().currentMessage()
+        assert "1 operation" in msg
+
+    def test_geometry_save_and_restore_methods_exist(self, make_app):
+        """Save/restore helpers must exist."""
+        app = make_app()
+        assert callable(getattr(app, "_save_geometry", None))
+        assert callable(getattr(app, "_restore_geometry", None))
+
+
 class TestClearCache:
     def test_clear_cache_button_exists(self, make_app):
         app = make_app()

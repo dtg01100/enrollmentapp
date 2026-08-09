@@ -1977,6 +1977,53 @@ class TestRefreshFlows:
         assert app._devices == []
         assert app.devices_list.count() == 0
 
+    def test_devices_empty_label_hides_when_devices_arrive(self, make_app, monkeypatch):
+        """Empty-state placeholder must hide after a refresh populates devices."""
+        from unittest.mock import MagicMock
+
+        app = make_app()
+        # Empty state: placeholder visible (initial state from _create_devices_tab)
+        app.devices_empty_label.setVisible(True)
+        fake = MagicMock(spec=DeviceInfo, udid="d1", device_name="iPhone")
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.list_devices", lambda: [fake]
+        )
+        app._refresh_devices()
+        assert app.devices_empty_label.isHidden(), \
+            "Placeholder should hide when devices list is populated"
+
+    def test_devices_empty_label_shows_after_drain(self, make_app, monkeypatch):
+        """After a refresh empties the list, placeholder must re-appear."""
+        from unittest.mock import MagicMock
+
+        app = make_app()
+        # Start with one device
+        fake = MagicMock(spec=DeviceInfo, udid="d1", device_name="iPhone")
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.list_devices", lambda: [fake]
+        )
+        app._refresh_devices()
+        assert app.devices_empty_label.isHidden()
+        # Now refresh with empty list
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.list_devices", lambda: []
+        )
+        app._refresh_devices()
+        assert not app.devices_empty_label.isHidden(), \
+            "Placeholder should re-appear when list becomes empty"
+
+    def test_orgs_empty_label_hides_when_orgs_arrive(self, make_app, sample_org, monkeypatch):
+        """Empty-state placeholder must hide after an org refresh populates orgs."""
+        app = make_app(orgs=[sample_org])
+        # Reset orgs and trigger refresh — placeholder should hide.
+        app.orgs_empty_label.setVisible(True)
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.list_orgs",
+            lambda self: [sample_org],
+        )
+        app._refresh_orgs()
+        assert app.orgs_empty_label.isHidden()
+
     def test_refresh_orgs_happy_path_populates_list_and_enroll_combo(
         self, make_app, sample_org, monkeypatch
     ):

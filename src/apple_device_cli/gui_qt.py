@@ -341,6 +341,10 @@ def _require_pyside6() -> None:
             self.log_text = QTextEdit()
             self.log_text.setReadOnly(True)
             self.log_text.setObjectName("log_text")
+            # Inner padding so descenders aren't clipped at the bottom edge.
+            self.log_text.setStyleSheet(
+                "QTextEdit { padding: 4px 6px; }"
+            )
             # Cap the log at a fixed height so a verbose operation can't
             # squeeze the tab content to zero height. Min keeps at least
             # 4 lines visible.
@@ -992,7 +996,8 @@ def _require_pyside6() -> None:
                 )
                 display = (
                     f"{org.name}  (MDM: {org.mdm_url or 'none'}, "
-                    f"identity: {'yes' if has_identity else 'no'}{badge})"
+                    f"identity: {'yes' if has_identity else 'no'}"
+                    f"{badge})"
                 )
                 QListWidgetItem(display, self.orgs_list)
             self.orgs_empty_label.setVisible(self.orgs_list.count() == 0)

@@ -214,7 +214,7 @@ def _require_pyside6() -> None:
     # calls don't need to re-define classes or re-import.
     if "EnrollmentApp" in globals():
         return
-    global WorkerThread, StreamingWorkerThread, EnrollmentApp
+    global WorkerThread, EnrollmentApp
     global QEvent, Qt, QThread, Signal, Slot
     global QApplication
     global QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout
@@ -272,72 +272,6 @@ def _require_pyside6() -> None:
                 self.error = exc
             finally:
                 self.completed.emit(self.result, self.error)
-
-
-    class StreamingWorkerThread(QThread):
-        """Run a subprocess and stream stdout to a callback.
-
-        Distinct from ``WorkerThread`` (which wraps a single callable):
-        this one launches an external command (e.g. ``idevicerestore``)
-        and reads its stdout line by line, invoking ``on_progress`` for
-        each line. When the process exits, ``on_finished`` is called
-        once with a ``{"returncode": int, "stdout": str, "stderr": str}``
-        dict (or an exception, if the launch itself failed).
-
-        The callbacks are wired to the ``progress`` /
-        ``finished_with_result`` signals in the constructor, so they are
-        delivered on the GUI thread (queued) while the blocking read
-        loop runs on this QThread.
-
-        NOT for use with a process the user wants to cancel — the
-        restore engine does not support mid-restore cancellation (see
-        the restore spec).
-        """
-
-        progress = Signal(str)
-        finished_with_result = Signal(object, object)  # result, error
-
-        def __init__(
-            self,
-            cmd: list[str],
-            on_progress: Callable[[str], None],
-            on_finished: Callable[[Any, Exception | None], None],
-            parent=None,
-        ) -> None:
-            super().__init__(parent)
-            self._cmd = cmd
-            self._result: dict | None = None
-            self._error: Exception | None = None
-            self._proc: subprocess.Popen | None = None
-            self.progress.connect(on_progress)
-            self.finished_with_result.connect(on_finished)
-
-        def run(self) -> None:
-            try:
-                self._proc = subprocess.Popen(
-                    self._cmd,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                )
-                stdout_lines: list[str] = []
-                assert self._proc.stdout is not None
-                for line in self._proc.stdout:
-                    stripped = line.rstrip("\n")
-                    stdout_lines.append(line)
-                    self.progress.emit(stripped)
-                self._proc.wait()
-                self._result = {
-                    "returncode": self._proc.returncode,
-                    "stdout": "".join(stdout_lines),
-                    "stderr": "",
-                }
-            except Exception as exc:  # noqa: BLE001
-                self._error = exc
-            finally:
-                self.finished_with_result.emit(self._result, self._error)
 
 
     class EnrollmentApp(QMainWindow):
@@ -2694,7 +2628,7 @@ def run_gui() -> None:
 # at module top-level) so ``import apple_device_cli.gui_qt`` succeeds on a
 # headless install. ``__getattr__`` materializes them on first access and
 # raises the friendly ``RuntimeError`` if PySide6 is missing.
-_LAZY_QT_NAMES = frozenset({"WorkerThread", "StreamingWorkerThread", "EnrollmentApp", "run_gui"})
+_LAZY_QT_NAMES = frozenset({"WorkerThread", "EnrollmentApp", "run_gui"})
 
 
 def __getattr__(name: str) -> Any:

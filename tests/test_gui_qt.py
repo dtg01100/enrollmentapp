@@ -38,7 +38,7 @@ def qapp() -> QApplication:
 
 @pytest.fixture(autouse=True)
 def _no_blocking_dialogs(monkeypatch):
-    """Make QMessageBox.{warning,critical} return immediately.
+    """Make QMessageBox.{warning,critical,information,question} return immediately.
 
     Modal dialogs block the test runner forever under the offscreen Qt
     platform plugin because no user input can ever dismiss them. Production
@@ -54,6 +54,11 @@ def _no_blocking_dialogs(monkeypatch):
     monkeypatch.setattr(
         QMessageBox,
         "critical",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Ok,
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
         lambda *args, **kwargs: QMessageBox.StandardButton.Ok,
     )
     yield
@@ -656,6 +661,78 @@ class TestImportOrg:
         )
         app._import_org()
         assert called["import"] is False
+
+
+class TestExportOrg:
+    def test_export_button_exists(self, make_app):
+        app = make_app()
+        assert app.export_org_btn is not None
+        assert app.export_org_btn.text() == "Export…"
+
+    def test_export_requires_selection(self, make_app, monkeypatch):
+        """No org selected → 'No organization' warning, no export call."""
+        app = make_app()
+        warnings = []
+        monkeypatch.setattr(
+            QMessageBox,
+            "warning",
+            lambda parent, title, text, *a, **kw: warnings.append((title, text))
+            or QMessageBox.StandardButton.Ok,
+        )
+        called = {"export": False}
+        def fake_export(self, *a, **kw):
+            called["export"] = True
+            return True
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.export_org", fake_export
+        )
+        app._export_org()
+        assert called["export"] is False
+        assert any(t == "No organization" for t, _ in warnings)
+
+    def test_export_routes_to_export_org_with_path(
+        self, make_app, sample_org, monkeypatch
+    ):
+        """Selected org + chosen path → export_org(name, dest) called."""
+        from pathlib import Path
+
+        app = make_app(orgs=[sample_org])
+        app.orgs_list.setCurrentRow(0)
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.QFileDialog.getSaveFileName",
+            lambda *a, **kw: ("/tmp/Export.zip", "Zip (*.zip)"),
+        )
+        captured = {}
+        def fake_export(self, name, dest):
+            captured["name"] = name
+            captured["dest"] = dest
+            return True
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.export_org", fake_export
+        )
+        app._export_org()
+        assert captured["name"] == sample_org.name
+        assert captured["dest"] == Path("/tmp/Export.zip")
+
+    def test_export_no_op_when_user_cancels(
+        self, make_app, sample_org, monkeypatch
+    ):
+        """Empty save path → no export call."""
+        app = make_app(orgs=[sample_org])
+        app.orgs_list.setCurrentRow(0)
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.QFileDialog.getSaveFileName",
+            lambda *a, **kw: ("", ""),
+        )
+        called = {"export": False}
+        def fake_export(self, *a, **kw):
+            called["export"] = True
+            return True
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.export_org", fake_export
+        )
+        app._export_org()
+        assert called["export"] is False
 
 
 class TestReenrollConfirmation:

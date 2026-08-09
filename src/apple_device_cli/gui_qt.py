@@ -433,6 +433,10 @@ def _require_pyside6() -> None:
             self.import_org_btn.clicked.connect(self._import_org)
             toolbar.addWidget(self.import_org_btn)
 
+            self.export_org_btn = QPushButton("Export…")
+            self.export_org_btn.clicked.connect(self._export_org)
+            toolbar.addWidget(self.export_org_btn)
+
             self.delete_org_btn = QPushButton("Delete Org")
             self.delete_org_btn.clicked.connect(self._delete_org)
             toolbar.addWidget(self.delete_org_btn)
@@ -1256,6 +1260,54 @@ def _require_pyside6() -> None:
 
             worker = WorkerThread(work)
             self._run_worker(worker, on_done, [self.import_org_btn])
+
+        def _export_org(self) -> None:
+            """Entry point for the 'Export…' button.
+
+            Opens a Save-As dialog (defaulting to <org-name>.zip) and calls
+            OrganizationManager.export_org(name, dest) on a worker thread.
+            The destination can be a .zip file or a directory path — both
+            are supported by export_org.
+            """
+            org = self._selected_org()
+            if not org:
+                QMessageBox.warning(
+                    self, "No organization", "Select an organization first."
+                )
+                return
+            default_name = f"{org.name}.zip"
+            path_str, _ = QFileDialog.getSaveFileName(
+                self,
+                "Export organization",
+                default_name,
+                "Zip (*.zip);;Directory (use a folder name)",
+            )
+            if not path_str:
+                return
+            dest = Path(path_str)
+
+            def work() -> bool:
+                return OrganizationManager().export_org(org.name, dest)
+
+            def on_done(result: bool, error: Exception | None) -> None:
+                if error:
+                    QMessageBox.warning(
+                        self, "Export failed", f"Failed to export: {error}"
+                    )
+                    self._log(f"Export failed: {error}")
+                    return
+                if not result:
+                    QMessageBox.warning(
+                        self, "Export failed", "export_org returned False"
+                    )
+                    return
+                self._log(f"Exported organization: {org.name} → {dest}")
+                QMessageBox.information(
+                    self, "Export complete", f"Exported to {dest}"
+                )
+
+            worker = WorkerThread(work)
+            self._run_worker(worker, on_done, [self.export_org_btn])
 
         def _build_edit_org_form(self, org: Organization) -> tuple[QDialog, dict[str, QLineEdit]]:
             """Construct the Edit Org dialog with QLineEdit fields pre-filled.

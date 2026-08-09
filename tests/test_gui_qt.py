@@ -1169,6 +1169,39 @@ class TestEnrollActionGating:
         assert not app.guided_enroll_btn.isEnabled()
 
 
+class TestRestoreEmptyState:
+    def test_empty_state_label_exists(self, make_app):
+        app = make_app()
+        assert app.restore_empty_state_label is not None
+
+    def test_empty_state_visible_initially(self, make_app):
+        """No device, no IPSW, no version → hint visible."""
+        app = make_app()
+        app._update_restore_empty_state()
+        assert not app.restore_empty_state_label.isHidden()
+
+    def test_empty_state_hidden_when_device_selected(self, make_app):
+        app = make_app()
+        app.restore_device_combo.addItem("Test iPhone", userData="udid-x")
+        app._update_restore_empty_state()
+        assert app.restore_empty_state_label.isHidden()
+
+    def test_empty_state_hidden_when_ipsw_browsed(self, make_app, tmp_path):
+        app = make_app()
+        ipsw = tmp_path / "test.ipsw"
+        ipsw.write_bytes(b"x")
+        app._restore_ipsw_path = ipsw
+        app._update_restore_empty_state()
+        assert app.restore_empty_state_label.isHidden()
+
+    def test_empty_state_hidden_when_version_in_combo(self, make_app):
+        """A signed version in the versions combo also hides the hint."""
+        app = make_app()
+        app.restore_versions_combo.addItem("17.0 (cached)", userData="https://example.com/ipsw")
+        app._update_restore_empty_state()
+        assert app.restore_empty_state_label.isHidden()
+
+
 class TestClearCache:
     def test_clear_cache_button_exists(self, make_app):
         app = make_app()

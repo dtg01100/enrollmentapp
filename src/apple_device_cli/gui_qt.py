@@ -741,6 +741,21 @@ def _require_pyside6() -> None:
             self.restore_progress_bar.setFixedHeight(22)
             self.restore_progress_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.restore_progress_bar.setTextVisible(True)
+            # Empty-state hint — visible until the user selects a device,
+            # browses an IPSW, or picks a signed version. Helps new users
+            # find their footing on a tab that previously showed blank
+            # <select a device> / <not selected> placeholders with no guidance.
+            self.restore_empty_state_label = QLabel(
+                "Select a device, then either browse for a local IPSW "
+                "or refresh signed versions."
+            )
+            self.restore_empty_state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.restore_empty_state_label.setWordWrap(True)
+            self.restore_empty_state_label.setStyleSheet(
+                "color: palette(mid); font-size: 13px; padding: 12px;"
+                "border: 1px dashed palette(midlight); border-radius: 4px;"
+            )
+            status_layout.addWidget(self.restore_empty_state_label)
             # Always visible so the layout doesn't reflow when a restore
             # starts. Idle state: determinate 0% with a "Ready" label. On
             # restore start the bar switches to indeterminate ("Working...")
@@ -1966,6 +1981,7 @@ def _require_pyside6() -> None:
                 self._restore_selected_udid = None
                 self._reset_restore_firmware_selection()
                 self._update_mode_labels()
+                self._update_restore_empty_state()
                 return
             udid = self.restore_device_combo.currentData()
             # A locally-browsed IPSW (and the disabled version combo it
@@ -2020,6 +2036,7 @@ def _require_pyside6() -> None:
             self.restore_ipsw_path_label.setText("<not selected>")
             self.restore_versions_combo.setEnabled(True)
             self._update_restore_verify_enabled()
+            self._update_restore_empty_state()
 
         def _load_cached_ipsw_for_recovery(self) -> None:
             """Populate the versions combo with cached .ipsw files (Recovery mode).
@@ -2040,6 +2057,7 @@ def _require_pyside6() -> None:
                 self.restore_start_btn.setEnabled(True)
                 # The cached file can be hashed against ipsw.me too.
                 self._update_restore_verify_enabled()
+                self._update_restore_empty_state()
                 self._log_to_restore(f"Found {len(ipsws)} cached IPSW(s) in {cache_dir}.")
             else:
                 self._restore_ipsw_path = None
@@ -2143,6 +2161,7 @@ def _require_pyside6() -> None:
                 if not self._restore_ipsw_path:
                     self.restore_start_btn.setEnabled(True)
                 self._update_restore_verify_enabled()
+                self._update_restore_empty_state()
 
         def _browse_ipsw(self) -> None:
             filename, _ = QFileDialog.getOpenFileName(
@@ -2155,12 +2174,31 @@ def _require_pyside6() -> None:
             self.restore_versions_combo.setEnabled(False)
             self.restore_start_btn.setEnabled(True)
             self._update_restore_verify_enabled()
+            self._update_restore_empty_state()
             self._log_to_restore(f"Using local IPSW: {filename}")
 
         def _update_restore_verify_enabled(self) -> None:
             """Enable Verify when an IPSW can be resolved (local or cached)."""
             path = self._resolve_verify_ipsw_path()
             self.restore_verify_btn.setEnabled(path is not None)
+
+        def _update_restore_empty_state(self) -> None:
+            """Hide the empty-state hint once the user has anything to act on.
+
+            The hint disappears when any of these is populated:
+              • a device is selected in restore_device_combo
+              • an IPSW is browsed (_restore_ipsw_path is a real file)
+              • a signed version is in restore_versions_combo
+            """
+            has_device = bool(self.restore_device_combo.currentData())
+            has_ipsw = (
+                self._restore_ipsw_path is not None
+                and self._restore_ipsw_path.is_file()
+            )
+            has_version = self.restore_versions_combo.count() > 0
+            self.restore_empty_state_label.setHidden(
+                has_device or has_ipsw or has_version
+            )
 
         def _resolve_verify_ipsw_path(self) -> Path | None:
             """Resolve the IPSW path Verify should hash, or None.

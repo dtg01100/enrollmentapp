@@ -1169,6 +1169,49 @@ class TestEnrollActionGating:
         assert not app.guided_enroll_btn.isEnabled()
 
 
+class TestKeyboardShortcuts:
+    def test_ctrl_r_refreshes_devices(self, make_app, monkeypatch):
+        app = make_app()
+        called = {"refresh": False}
+        monkeypatch.setattr(app, "_refresh_devices", lambda: called.__setitem__("refresh", True))
+        from PySide6.QtGui import QKeySequence, QShortcut
+        for child in app.findChildren(QShortcut):
+            if QKeySequence(child.key()) == QKeySequence("Ctrl+R"):
+                child.activated.emit()
+                break
+        assert called["refresh"]
+
+    def test_ctrl_e_triggers_guided_enroll(self, make_app, monkeypatch):
+        app = make_app()
+        called = {"guided": False}
+        monkeypatch.setattr(app, "_guided_enroll", lambda: called.__setitem__("guided", True))
+        from PySide6.QtGui import QKeySequence, QShortcut
+        for child in app.findChildren(QShortcut):
+            if QKeySequence(child.key()) == QKeySequence("Ctrl+E"):
+                child.activated.emit()
+                break
+        assert called["guided"]
+
+    def test_ctrl_s_triggers_start_restore(self, make_app, monkeypatch):
+        app = make_app()
+        called = {"restore": False}
+        monkeypatch.setattr(app, "_start_restore", lambda: called.__setitem__("restore", True))
+        from PySide6.QtGui import QKeySequence, QShortcut
+        for child in app.findChildren(QShortcut):
+            if QKeySequence(child.key()) == QKeySequence("Ctrl+S"):
+                child.activated.emit()
+                break
+        assert called["restore"]
+
+    def test_all_three_shortcuts_exist(self, make_app):
+        from PySide6.QtGui import QKeySequence, QShortcut
+        app = make_app()
+        keys = {QKeySequence(child.key()).toString() for child in app.findChildren(QShortcut)}
+        assert "Ctrl+R" in keys
+        assert "Ctrl+E" in keys
+        assert "Ctrl+S" in keys
+
+
 class TestTabIcons:
     def test_all_tabs_have_icons(self, make_app):
         from PySide6.QtWidgets import QTabWidget

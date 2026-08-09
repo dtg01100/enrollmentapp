@@ -301,6 +301,15 @@ def _require_pyside6() -> None:
 
             self._setup_ui()
             self.setStatusBar(QStatusBar())
+            # Keyboard shortcuts — work regardless of which tab is visible.
+            # _start_restore already confirms before wiping, so Ctrl+S is safe.
+            from PySide6.QtGui import QKeySequence, QShortcut
+            shortcut_refresh = QShortcut(QKeySequence("Ctrl+R"), self)
+            shortcut_refresh.activated.connect(self._refresh_devices)
+            shortcut_guided = QShortcut(QKeySequence("Ctrl+E"), self)
+            shortcut_guided.activated.connect(self._guided_enroll)
+            shortcut_restore = QShortcut(QKeySequence("Ctrl+S"), self)
+            shortcut_restore.activated.connect(self._start_restore)
             self.log_signal.connect(self._append_log)
             self.restore_log_signal.connect(self._append_restore_log)
             self.restore_progress_signal.connect(self._on_restore_progress_event)

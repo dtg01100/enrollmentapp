@@ -1393,6 +1393,7 @@ def _require_pyside6() -> None:
             try:
                 OrganizationManager().delete_org(org.name)
                 self._log(f"Deleted organization: {org.name}")
+                self._record_last_op(f"Deleted org '{org.name}'")
                 self._refresh_orgs()
             except Exception as exc:  # noqa: BLE001
                 QMessageBox.warning(self, "Delete failed", f"Failed to delete organization: {exc}")
@@ -1502,6 +1503,7 @@ def _require_pyside6() -> None:
                     )
                     return
                 self._log(f"Exported organization: {org.name} → {dest}")
+                self._record_last_op(f"Exported org '{org.name}'")
                 QMessageBox.information(
                     self, "Export complete", f"Exported to {dest}"
                 )
@@ -1667,6 +1669,7 @@ def _require_pyside6() -> None:
             try:
                 OrganizationManager().save_org(updated, overwrite=True)
                 self._log(f"Updated organization: {name}")
+                self._record_last_op(f"Updated org '{name}'")
                 dialog.accept()
                 self._refresh_orgs()
             except Exception as exc:  # noqa: BLE001
@@ -2386,6 +2389,9 @@ def _require_pyside6() -> None:
                     f"Cleared firmware cache: {state['ipsw_count']} file(s), "
                     f"{state['size_bytes']:,} bytes freed."
                 )
+                self._record_last_op(
+                    f"Cleared cache ({state['ipsw_count']} file(s))"
+                )
             except Exception as exc:  # noqa: BLE001
                 QMessageBox.warning(self, "Clear failed", str(exc))
                 self._log_to_restore(f"Clear cache failed: {exc}")
@@ -2649,6 +2655,9 @@ def _require_pyside6() -> None:
             if result.success:
                 self._log_to_restore("Restore completed successfully.")
                 self._finalize_restore_progress_bar(success=True)
+                self._record_last_op(
+                    f"Restored to {(self.restore_versions_combo.currentText() or 'local IPSW').strip()}"
+                )
             else:
                 self._log_to_restore(f"Restore failed: {result.error}")
                 self._finalize_restore_progress_bar(success=False)
@@ -2762,19 +2771,54 @@ def _require_pyside6() -> None:
             event.accept()
 
         def _update_status_bar(self) -> None:
-            """Refresh the status bar with device/org counts and active workers.
+            """Refresh the status bar with device/org counts, workers, and last op.
 
-            Cheap to call; reads only from in-memory state. Called after every
-            refresh, every worker start, and every worker completion so the
-            bar always reflects current reality.
+            Cheap to call; reads only from in-memory state + QSettings.
+            Called after every refresh, every worker start, and every
+            worker completion so the bar always reflects current reality.
             """
+            self._refresh_status_bar_with_last()
+
+        def _status_bar_base_text(self) -> str:
+            """The non-'last operation' part of the status bar message."""
             devices = len(self._devices)
             orgs = len(self._orgs)
             workers = len(self._workers)
             msg = f"{devices} device(s)  •  {orgs} organization(s)"
             if workers:
                 msg += f"  •  {workers} operation(s) running"
-            self.statusBar().showMessage(msg)
+            return msg
+
+        def _refresh_status_bar_with_last(self, last: str | None = None) -> None:
+            """Status bar includes base counts AND last operation (if any).
+
+            When called without ``last``, reads from QSettings so the bar
+            always reflects the persisted last-op even when the caller
+            doesn't have an explicit value to display.
+            """
+            if last is None:
+                settings = QSettings("ios-enroll", "gui")
+                last = settings.value("lastOperation")
+            base = self._status_bar_base_text()
+            if last:
+                base = f"{base}  •  Last: {last}"
+            self.statusBar().showMessage(base)
+
+        def _record_last_op(self, description: str) -> None:
+            """Record an operation description to the status bar + QSettings.
+
+            Called by long-running destructive operations (delete org,
+            restore, enrollment, cache clear) so users returning to the
+            app know what they were last doing — especially useful after
+            a crash or accidental close during a long restore.
+
+            Cheap: in-memory write + single QSettings.setValue call.
+            """
+            timestamp = datetime.now().strftime("%H:%M")
+            entry = f"{description} @ {timestamp}"
+            settings = QSettings("ios-enroll", "gui")
+            settings.setValue("lastOperation", entry)
+            self._refresh_status_bar_with_last(entry)
 
         def _restore_geometry(self) -> None:
             """Restore window geometry from QSettings (silent on first launch)."""

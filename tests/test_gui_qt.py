@@ -1169,6 +1169,32 @@ class TestEnrollActionGating:
         assert not app.guided_enroll_btn.isEnabled()
 
 
+class TestLastOperation:
+    def test_record_last_op_updates_status_bar(self, make_app):
+        app = make_app()
+        app._record_last_op("Restored iPhone 14")
+        msg = app.statusBar().currentMessage()
+        assert "Last:" in msg
+        assert "Restored iPhone 14" in msg
+
+    def test_record_last_op_persists_via_qsettings(self, make_app):
+        app = make_app()
+        app._record_last_op("Enrolled iPhone 14 with Acme")
+        from PySide6.QtCore import QSettings
+        s = QSettings("ios-enroll", "gui")
+        stored = s.value("lastOperation")
+        assert stored is not None
+        assert stored.startswith("Enrolled iPhone 14 with Acme @ ")
+
+    def test_status_bar_includes_restored_last_op(self, make_app):
+        """A pre-seeded lastOperation shows on the status bar."""
+        from PySide6.QtCore import QSettings
+        QSettings("ios-enroll", "gui").setValue("lastOperation", "Enrolled iPad")
+        app = make_app()
+        msg = app.statusBar().currentMessage()
+        assert "Enrolled iPad" in msg
+
+
 class TestKeyboardShortcuts:
     def test_ctrl_r_refreshes_devices(self, make_app, monkeypatch):
         app = make_app()

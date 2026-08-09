@@ -15,87 +15,193 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+# Only build the latest commit on a ref: a new push cancels the previous
+# run instead of queuing multiple 1-2 hour Nuitka builds behind each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-windows:
-    runs-on: windows-latest
-    name: Build Windows Executables (Nuitka)
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.13'
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e .[build,gui]
-
-    - name: Build Windows executables with Nuitka
-      run: |
-        python build_nuitka.py windows
-
-    - name: Upload Windows executables
-      uses: actions/upload-artifact@v4
-      with:
-        name: ios-enroll-windows
-        path: dist/*.exe
-        retention-days: 30
-
-    - name: Create release (on tag)
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
-      with:
-        files: dist/*.exe
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-linux:
+  # --- Fast test gate (always runs on every push/PR) ---------------------
+  # Builds below depend on this job, so broken code never burns Nuitka
+  # minutes. Docs-only pushes still run this (the docs-drift test lives
+  # here) but skip the expensive builds.
+  test:
     runs-on: ubuntu-latest
-    name: Build Linux Executables (Nuitka)
+    name: Test suite (pytest)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[gui]'
+          pip install pytest
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+  # --- Change detection: skip builds for docs-only pushes ----------------
+  # Branch pushes to main/develop only build when build-relevant files
+  # change; tag pushes (releases) and PRs always build. Path filters are
+  # not evaluated for tag pushes, so releases can never be skipped.
+  changes:
+    runs-on: ubuntu-latest
+    name: Detect build-relevant changes
+    outputs:
+      build: ${{ steps.filter.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        # Only branch pushes are gated. Tag pushes and PRs bypass the
+        # filter (the build job's `if` short-circuits on them anyway).
+        if: github.event_name == 'push' && github.ref_type == 'branch'
+        with:
+          filters: |
+            build:
+              - 'src/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - 'build_nuitka.py'
+              - '.github/workflows/**'
+
+  # --- Parallel Nuitka builds: CLI + GUI x Windows + Linux ----------------
+  # Four jobs on four runners instead of two sequential compiles per OS.
+  # Each job installs only the extras it needs (CLI builds skip the
+  # ~250 MB PySide6 wheels) and restores a content-hashed Nuitka cache,
+  # so unchanged third-party modules are not recompiled between runs.
+  build:
+    needs: [ changes, test ]
+    if: ${{ github.ref_type == 'tag' || github.event_name != 'push' || needs.changes.outputs.build == 'true' }}
+    runs-on: ${{ matrix.os }}
+    name: Build ${{ matrix.label }} (Nuitka)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows CLI
+            os: windows-latest
+            target: windows-cli
+            install: '.[build]'
+            artifact: ios-enroll-windows-cli
+            file: dist/ios-enroll.exe
+            verify_pe: true
+          - label: Windows GUI
+            os: windows-latest
+            target: windows-gui
+            install: '.[build,gui]'
+            artifact: ios-enroll-windows-gui
+            file: dist/ios-enroll-gui.exe
+          - label: Linux CLI
+            os: ubuntu-latest
+            target: cli
+            install: '.[build]'
+            artifact: ios-enroll-linux-cli
+            file: dist/ios-enroll
+          - label: Linux GUI
+            os: ubuntu-latest
+            target: gui
+            install: '.[build,gui]'
+            artifact: ios-enroll-linux-gui
+            file: dist/ios-enroll-gui
+    env:
+      # Deterministic Nuitka cache location (overrides appdirs default),
+      # restored/saved by actions/cache below. Nuitka's cache is keyed on
+      # module content hashes, so unchanged third-party packages (the bulk
+      # of a 1-2h build) are reused across runs.
+      NUITKA_CACHE_DIR: ${{ github.workspace }}/.nuitka-cache
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install system dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y patchelf
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf ccache
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.13'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
-    - name: Install Python dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e .[build,gui]
-    
-    - name: Build Linux executables with Nuitka
-      run: |
-        # ``build_nuitka.py all`` runs the Linux CLI + GUI builders only;
-        # it does NOT invoke the MinGW Windows cross-compile builders
-        # (those require an explicit ``windows*`` target and MinGW on the
-        # host). The Windows job in this same workflow handles the
-        # .exe builds separately.
-        python build_nuitka.py all
-    
-    - name: Upload Linux executables
-      uses: actions/upload-artifact@v4
-      with:
-        name: ios-enroll-linux
-        path: dist/*
-        retention-days: 30
-    
-    - name: Create release (on tag)
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
-      with:
-        files: dist/*
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Restore Nuitka cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.nuitka-cache
+            ~/.cache/ccache
+          key: nuitka-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          restore-keys: |
+            nuitka-${{ runner.os }}-${{ matrix.target }}-
+            nuitka-${{ runner.os }}-
+          # Save even when a build fails so the next run starts warm.
+          save-always: true
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "${{ matrix.install }}"
+
+      - name: Build ${{ matrix.label }} executable
+        run: python build_nuitka.py ${{ matrix.target }}
+
+      - name: Verify PE header
+        if: matrix.verify_pe
+        shell: pwsh
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes("${{ matrix.file }}")
+          if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+            Write-Error "Not a valid PE file (MZ magic missing)"
+            exit 1
+          }
+          $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3C)
+          if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset+1] -ne 0x45) {
+            Write-Error "PE signature missing"
+            exit 1
+          }
+          $size = (Get-Item "${{ matrix.file }}").Length
+          Write-Host "${{ matrix.file }}: $size bytes, valid PE"
+
+      - name: Upload ${{ matrix.label }} executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.file }}
+          if-no-files-found: error
+          retention-days: 30
+
+  # --- Single consolidated release (tag pushes only) ---------------------
+  # Downloads the four artifacts and uploads them to one GitHub release.
+  # The old per-job "Create release" steps raced each other; this also
+  # stops the 2.2 GB Linux artifact (which previously globbed the Nuitka
+  # .build intermediate dirs) from being attached to releases.
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    name: Create GitHub release (on tag)
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release-assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

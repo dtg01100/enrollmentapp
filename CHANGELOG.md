@@ -66,6 +66,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   three gained `--yes` for non-interactive runs.
 
 ### Changed
+- **CI builds are no longer 1.5–2h wall-clock on every push.** The Build
+  Executables workflow now: skips builds entirely for docs-only pushes to
+  main/develop (tag pushes and PRs always build — path filters are not
+  evaluated for tags); runs the CLI and GUI Nuitka compiles as four
+  parallel jobs (CLI × Windows/Linux + GUI × Windows/Linux) instead of two
+  sequential compiles per OS; and gives each job a `needs: test` gate so
+  a failing test suite never burns Nuitka minutes. A fast pytest job runs
+  on every push/PR.
+- **Nuitka's compile cache is persisted between CI runs.** Each build job
+  restores/saves the content-hashed Nuitka cache dir (and `ccache` on
+  Linux) via `actions/cache` (keyed on pyproject/uv.lock, `save-always`
+  so failed builds still warm the next run). Unchanged third-party
+  packages — the bulk of a 1.5–2h build — are no longer recompiled from
+  scratch on every commit. CLI-only jobs also install just `[build]`,
+  skipping the ~250 MB PySide6 wheel download.
+- **Consolidated tag release.** The old per-job "Create release" steps
+  raced each other; a single release job now downloads the four artifacts
+  and uploads them to one GitHub release. This also fixed the Linux
+  release artifact, which had been ~2.2 GB because the upload globbed the
+  Nuitka `.build` intermediate dirs instead of just the binaries.
+- **`build-windows-exe.yml` merged into `build.yml`.** Its CLI-only
+  Windows build (with the PE-header verification step) is now the
+  `windows-cli` matrix entry; the duplicate workflow file is deleted.
 - **Restore tab asks before wiping a device.** "Start Restore" now shows a
   confirmation dialog naming the target device and the exact IPSW before
   erasing it — matching the CLI's `typer.confirm("Erase and restore device

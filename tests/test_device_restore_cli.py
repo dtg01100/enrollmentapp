@@ -134,6 +134,39 @@ class TestDeviceRestoreCLI:
         ipsw.write_bytes(b"fake")
         mock_restore.return_value = SimpleNamespace(success=True, error=None, udid=None)
 
+        # --yes: CliRunner stdin is not a TTY, so the confirmation gate
+        # requires an explicit opt-in for the wipe.
+        result = runner.invoke(
+            app,
+            [
+                "device", "restore",
+                "--ecid", "0x00094daa01d80032",
+                "--ipsw", str(ipsw),
+                "--yes",
+            ],
+        )
+
+        assert result.exit_code == 0
+        mock_restore.assert_called_once()
+        kwargs = mock_restore.call_args.kwargs
+        assert kwargs.get("ecid") == "0x00094daa01d80032"
+        assert kwargs.get("udid") is None
+
+    @patch("apple_device_cli.cli.restore_device")
+    @patch("apple_device_cli.cli.shutil.which")
+    def test_restore_cli_non_interactive_without_yes_refuses(
+        self, mock_which, mock_restore, tmp_path
+    ):
+        """A non-TTY run must pass --yes — it must not silently wipe a device.
+
+        Regression: the confirmation prompt was gated on ``stdin.isatty()``,
+        so piped/cron invocations skipped it entirely and erased the device
+        without any explicit opt-in.
+        """
+        mock_which.return_value = "/usr/bin/idevicerestore"
+        ipsw = tmp_path / "iPad_26.6_23G71_Restore.ipsw"
+        ipsw.write_bytes(b"fake")
+
         result = runner.invoke(
             app,
             [
@@ -143,11 +176,61 @@ class TestDeviceRestoreCLI:
             ],
         )
 
+        assert result.exit_code == 1
+        assert "--yes" in result.output
+        mock_restore.assert_not_called()
+
+    @patch("apple_device_cli.cli.cache_state")
+    def test_clear_cache_non_interactive_without_yes_refuses(
+        self, mock_state, tmp_path, monkeypatch
+    ):
+        """Deleting cached IPSWs also needs --yes off a TTY."""
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        ipsw = cache / "iPad_26.6_23G71_Restore.ipsw"
+        ipsw.write_bytes(b"fake")
+        monkeypatch.setattr(
+            "apple_device_cli.cli.resolve_cache_dir", lambda override=None: cache
+        )
+        mock_state.return_value = {
+            "path": str(cache),
+            "size_bytes": 4,
+            "ipsw_count": 1,
+            "ipsw_files": [ipsw.name],
+        }
+
+        result = runner.invoke(app, ["device", "restore", "--clear-cache"])
+
+        assert result.exit_code == 1
+        assert "--yes" in result.output
+        assert ipsw.exists()  # not deleted
+
+    @patch("apple_device_cli.cli.cache_state")
+    def test_clear_cache_with_yes_deletes(
+        self, mock_state, tmp_path, monkeypatch
+    ):
+        """--yes opts into the cache wipe (non-interactive scripts)."""
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        ipsw = cache / "iPad_26.6_23G71_Restore.ipsw"
+        ipsw.write_bytes(b"fake")
+        monkeypatch.setattr(
+            "apple_device_cli.cli.resolve_cache_dir", lambda override=None: cache
+        )
+        mock_state.return_value = {
+            "path": str(cache),
+            "size_bytes": 4,
+            "ipsw_count": 1,
+            "ipsw_files": [ipsw.name],
+        }
+
+        result = runner.invoke(
+            app, ["device", "restore", "--clear-cache", "--yes"]
+        )
+
         assert result.exit_code == 0
-        mock_restore.assert_called_once()
-        kwargs = mock_restore.call_args.kwargs
-        assert kwargs.get("ecid") == "0x00094daa01d80032"
-        assert kwargs.get("udid") is None
+        assert not ipsw.exists()
+        assert "Removed 1 IPSW files" in result.output
 
     def test_restore_cli_rejects_ecid_and_udid_together(self):
         result = runner.invoke(

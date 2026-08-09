@@ -5,6 +5,8 @@ from pathlib import Path
 import shutil
 from typing import Callable
 import json
+import plistlib
+import zipfile
 
 import asyncio
 import typer
@@ -74,6 +76,78 @@ def _normalize_prompted_path(path: str | None) -> str | None:
 
 def _display_name(value: str | None) -> str:
     return redact_name(value)
+
+
+def _guard_non_interactive_destructive(yes: bool, what: str) -> None:
+    """Refuse a destructive action in non-interactive runs unless ``--yes``.
+
+    ``typer.confirm`` can only prompt on a TTY, so an invocation with piped
+    stdin (CI, cron, shell pipelines) used to skip the confirmation entirely
+    and wipe a device / delete files without any explicit opt-in. Interactive
+    runs are unaffected (they still get the normal prompt); non-interactive
+    runs must pass ``--yes`` or fail fast with a fix hint.
+    """
+    if yes or sys.stdin.isatty():
+        return
+    typer.secho(
+        f"Refusing to {what} in non-interactive mode without --yes. "
+        "Pass --yes to confirm.",
+        fg=typer.colors.RED, err=True,
+    )
+    raise typer.Exit(1)
+
+
+def _confirm_destructive_action(
+    yes: bool,
+    what: str,
+    warning_lines: list[tuple[str, str | None, bool | None]] = (),
+    prompt: str = "Continue?",
+) -> None:
+    """Gate a destructive CLI action behind user confirmation.
+
+    Combines the non-interactive guard (piped/cron runs must pass ``--yes``)
+    with the interactive prompt. On a TTY, ``warning_lines`` —
+    ``(text, color, bold)`` triples — are shown before the prompt; declining,
+    or a refused non-interactive run, exits 1. Used by every destructive
+    command so the confirmation behaves identically everywhere.
+    """
+    _guard_non_interactive_destructive(yes, what)
+    if yes or not sys.stdin.isatty():
+        return
+    typer.echo()
+    for text, color, bold in warning_lines:
+        typer.secho(text, fg=color, bold=bool(bold))
+    typer.echo()
+    confirm = typer.confirm(prompt, default=False)
+    if not confirm:
+        typer.secho("Cancelled.", fg=typer.colors.YELLOW)
+        raise typer.Exit(1)
+
+
+def _import_source_name(path: str | Path) -> str | None:
+    """Peek at an import source to derive the org name it will produce.
+
+    Mirrors the manager's own parsing (org.json / plist ``name`` / zip
+    ``org.json``) so the CLI can check for an existing org *before*
+    importing — importing over a same-named org replaces it. Returns None
+    when the name can't be determined; in that case the import itself will
+    fail with a parse error anyway, so there's nothing to overwrite.
+    """
+    p = Path(path)
+    try:
+        if p.is_dir():
+            data = json.loads((p / "org.json").read_text())
+            return data.get("name")
+        if p.suffix.lower() == ".organization":
+            data = plistlib.loads(p.read_bytes())
+            return data.get("name")
+        if p.suffix.lower() == ".zip":
+            with zipfile.ZipFile(p) as zf:
+                data = json.loads(zf.read("org.json"))
+                return data.get("name")
+    except Exception:  # noqa: BLE001 — unreadable source ⇒ unknown name ⇒ no pre-check
+        return None
+    return None
 
 
 def _set_org_field(
@@ -797,14 +871,11 @@ def device_restore(
         if not state['ipsw_files']:
             typer.echo("Cache is already empty.")
             raise typer.Exit(0)
-        if not yes and sys.stdin.isatty():
-            confirm = typer.confirm(
-                f"Delete {state['ipsw_count']} IPSW files from {state['path']}?",
-                default=False,
-            )
-            if not confirm:
-                typer.secho("Cancelled.", fg=typer.colors.YELLOW)
-                raise typer.Exit(1)
+        _confirm_destructive_action(
+            yes,
+            "delete cached IPSW files",
+            prompt=f"Delete {state['ipsw_count']} IPSW files from {state['path']}?",
+        )
         for f in state['ipsw_files']:
             (resolved_cache / f).unlink()
         typer.echo(f"Removed {state['ipsw_count']} IPSW files.")
@@ -895,21 +966,22 @@ def device_restore(
 
     # --- Confirmation gate (engine itself passes -y to idevicerestore) ---
     target_label = udid or ecid or "<unknown>"
-    if not yes and sys.stdin.isatty():
-        typer.secho(
-            f"\nAbout to ERASE and RESTORE {target_label} to {ipsw_path.name}.",
-            fg=typer.colors.YELLOW, bold=True,
-        )
-        typer.secho(
-            "This will delete all data on the device. Older iPads "
-            "may take 45-60+ minutes — run via tmux/screen or the agent's "
-            "background mode to survive the terminal timeout.",
-            fg=typer.colors.RED,
-        )
-        confirm = typer.confirm("Continue?", default=False)
-        if not confirm:
-            typer.secho("Cancelled.", fg=typer.colors.YELLOW)
-            raise typer.Exit(1)
+    _confirm_destructive_action(
+        yes,
+        "erase and restore the device",
+        [
+            (
+                f"About to ERASE and RESTORE {target_label} to {ipsw_path.name}.",
+                typer.colors.YELLOW, True,
+            ),
+            (
+                "This will delete all data on the device. Older iPads may "
+                "take 45-60+ minutes — run via tmux/screen or the agent's "
+                "background mode to survive the terminal timeout.",
+                typer.colors.RED, False,
+            ),
+        ],
+    )
 
     # --- Run the restore (no subprocess timeout) ---
     if not shutil.which("idevicerestore"):
@@ -1107,13 +1179,58 @@ def org_create(
         typer.echo(f"  WiFi Config: {redact_path(result.wifi_config_path)}")
 
 
+def _org_delete_warning(name: str, has_identity: bool) -> list[str]:
+    """Warning lines shown before permanently deleting an organization.
+
+    Extracted from the command so tests can pin the wording without
+    simulating a TTY prompt.
+    """
+    lines = [
+        f"WARNING: This will permanently delete organization '{_display_name(name)}'.",
+    ]
+    if has_identity:
+        lines.append(
+            "  The supervising certificate and private key stored in this org "
+            "will be permanently lost. Devices already enrolled with it cannot "
+            "re-enroll without first exporting the org."
+        )
+    return lines
+
+
 @org_app.command("delete")
-def org_delete(name: str = typer.Option(..., "--name")):
-    """Delete organization."""
+def org_delete(
+    name: str = typer.Option(..., "--name"),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Skip the confirmation prompt (for scripts).",
+    ),
+):
+    """Delete organization (permanently removes it and any attached files)."""
     manager = OrganizationManager()
+
+    # Load the org (if present) so the warning can reflect whether a
+    # supervising identity (cert + key) will be lost. get_org returns
+    # None for an unknown name.
+    org = manager.get_org(name)
+    if org is None:
+        typer.secho(f"Organization not found: {_display_name(name)}", fg=typer.colors.RED)
+        return
+    has_identity = bool(org.cert_path and org.key_path)
+
+    _confirm_destructive_action(
+        yes,
+        f"delete organization '{_display_name(name)}'",
+        [
+            # The identity-loss line is the scarier one — render it red.
+            (line, typer.colors.RED if i else typer.colors.YELLOW, False)
+            for i, line in enumerate(_org_delete_warning(name, has_identity))
+        ],
+    )
+
     try:
         delete_org(manager, name)
     except OrgNotFoundError:
+        # Deleted concurrently since we loaded it — report and exit quietly.
         typer.secho(f"Organization not found: {_display_name(name)}", fg=typer.colors.RED)
         return
     typer.secho(f"Deleted organization: {_display_name(name)}", fg=typer.colors.GREEN)
@@ -1206,9 +1323,37 @@ def org_show(name: str = typer.Option(..., "--name")):
 def org_import(
     path: str = typer.Option(..., "--path"),
     password: str = typer.Option("", "-p", "--password"),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Skip the confirmation prompt (for scripts).",
+    ),
 ):
-    """Import organization from Apple Configurator .organization file, directory, or zip."""
+    """Import organization from Apple Configurator .organization file, directory, or zip.
+
+    Importing over an org with the same name replaces it — the previous
+    org's identity, WiFi config, and metadata are deleted. When that would
+    happen, confirmation is required (prompt on a TTY, --yes otherwise).
+    """
     manager = OrganizationManager()
+
+    # Importing over a same-named org wipes it (the manager rmtrees the org
+    # directory), so confirm before importing when the target already exists.
+    existing_name = _import_source_name(path)
+    existing = manager.get_org(existing_name) if existing_name else None
+    if existing is not None:
+        _confirm_destructive_action(
+            yes,
+            f"overwrite organization '{_display_name(existing.name)}'",
+            [
+                (
+                    f"Organization '{_display_name(existing.name)}' already exists. "
+                    "Importing will REPLACE it: the current identity (cert/key), "
+                    "WiFi config, and metadata will be deleted.",
+                    typer.colors.RED, False,
+                ),
+            ],
+        )
+
     try:
         org = import_org(manager, path, password)
     except ValueError as e:
@@ -1249,6 +1394,10 @@ def org_import_mobileconfig(
 def org_set_wifi(
     name: str = typer.Option(..., "--name"),
     path: str = typer.Option(..., "--path"),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Skip the confirmation prompt (for scripts).",
+    ),
 ):
     """Attach a WiFi mobileconfig to an organization.
 
@@ -1260,6 +1409,18 @@ def org_set_wifi(
     from apple_device_cli.cli_actions import WifiConfigInvalidError, WifiConfigNotFoundError
 
     manager = OrganizationManager()
+    # Replacing an existing WiFi config is a write over the org's current
+    # one — confirm before overwriting it.
+    existing = manager.get_org(name)
+    if existing is not None and existing.wifi_config_path:
+        _confirm_destructive_action(
+            yes,
+            f"replace WiFi config for organization '{_display_name(name)}'",
+            prompt=(
+                f"Organization '{_display_name(name)}' already has a WiFi "
+                "config. Replace it?"
+            ),
+        )
     try:
         result = set_org_wifi(manager, name, path)
     except OrgNotFoundError:
@@ -1295,6 +1456,10 @@ def org_generate(
     mdm_topic: str = typer.Option(None, "--mdm-topic"),
     mdm_description: str = typer.Option(None, "--mdm-description"),
     valid_days: int = typer.Option(365 * 5, "--valid-days"),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Skip the confirmation prompt (for scripts).",
+    ),
 ):
     """Generate a new supervising identity for an organization.
 
@@ -1307,9 +1472,22 @@ def org_generate(
     """
     manager = OrganizationManager()
     existing = manager.get_org(name)
-    if existing and existing.cert_path and existing.key_path:
-        if not typer.confirm(f"Organization '{name}' already has a cert/key. Overwrite?"):
-            return
+    if existing is not None:
+        # Regenerating replaces the org directory — any existing cert/key,
+        # WiFi config, or metadata is deleted (generate_org rmtrees it).
+        _confirm_destructive_action(
+            yes,
+            f"regenerate identity for organization '{_display_name(name)}'",
+            [
+                (
+                    f"Organization '{_display_name(name)}' already exists. "
+                    "Generating a new identity will replace the org directory — "
+                    "any existing cert/key, WiFi config, or metadata will be "
+                    "deleted.",
+                    typer.colors.YELLOW, False,
+                ),
+            ],
+        )
 
     result = generate_org(
         manager=manager,

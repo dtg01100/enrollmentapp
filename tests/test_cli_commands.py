@@ -14,6 +14,8 @@ reads ``Path.home()``) is never called.
 from __future__ import annotations
 
 import json
+import zipfile
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import plistlib
@@ -115,11 +117,12 @@ class TestOrgCreate:
 
 
 class TestOrgDelete:
-    """ios-enroll org delete --name ... happy + not-found."""
+    """ios-enroll org delete --name ... happy + not-found + confirmation."""
 
     @patch("apple_device_cli.cli.OrganizationManager", spec=True)
     def test_org_delete_not_found(self, mock_mgr_class):
         mock_mgr = _build_mock_manager()
+        mock_mgr.get_org.return_value = None  # no such org
         mock_mgr.delete_org.return_value = False  # not found
         mock_mgr_class.return_value = mock_mgr
 
@@ -131,13 +134,45 @@ class TestOrgDelete:
     @patch("apple_device_cli.cli.OrganizationManager", spec=True)
     def test_org_delete_found(self, mock_mgr_class):
         mock_mgr = _build_mock_manager()
+        mock_mgr.get_org.return_value = _build_mock_org(name="Found")
+        mock_mgr.delete_org.return_value = True
+        mock_mgr_class.return_value = mock_mgr
+
+        # --yes: CliRunner stdin is not a TTY, so the confirmation gate
+        # requires an explicit opt-in for the deletion.
+        result = runner.invoke(app, ["org", "delete", "--name", "Found", "--yes"])
+
+        assert result.exit_code == 0
+        assert "Deleted" in result.stdout
+
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
+    def test_org_delete_non_interactive_without_yes_refuses(self, mock_mgr_class):
+        """A non-TTY run must pass --yes — org delete must not silently delete.
+
+        Regression: org delete removed the org directory (including any
+        supervising cert/key) with no confirmation at all.
+        """
+        mock_mgr = _build_mock_manager()
+        mock_mgr.get_org.return_value = _build_mock_org(name="Found")
         mock_mgr.delete_org.return_value = True
         mock_mgr_class.return_value = mock_mgr
 
         result = runner.invoke(app, ["org", "delete", "--name", "Found"])
 
-        assert result.exit_code == 0
-        assert "Deleted" in result.stdout
+        assert result.exit_code == 1
+        assert "--yes" in result.output
+        mock_mgr.delete_org.assert_not_called()
+
+    def test_org_delete_warning_mentions_identity_loss(self):
+        """The warning names the cert/key loss only when an identity exists."""
+        from apple_device_cli.cli import _org_delete_warning
+
+        with_identity = _org_delete_warning("Found", has_identity=True)
+        assert "permanently delete organization" in with_identity[0].lower()
+        assert "certificate and private key" in " ".join(with_identity)
+
+        without_identity = _org_delete_warning("Found", has_identity=False)
+        assert "certificate and private key" not in " ".join(without_identity)
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +231,70 @@ class TestOrgImport:
         # The CLI prints the error and does NOT raise — exit 0.
         assert result.exit_code == 0
         assert "Import failed" in result.stdout
+
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
+    def test_org_import_overwrite_refuses_without_yes(self, mock_mgr_class, tmp_path):
+        """Importing over an existing org must not silently replace it.
+
+        Regression: importing a same-named org deleted the old org's files
+        (identity, WiFi config, metadata) with no prompt.
+        """
+        mock_mgr = _build_mock_manager()
+        mock_mgr.get_org.return_value = _build_mock_org(name="Imported")
+        mock_mgr.import_org.return_value = _build_mock_org(name="Imported")
+        mock_mgr_class.return_value = mock_mgr
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "org.json").write_text(json.dumps({"name": "Imported"}))
+
+        result = runner.invoke(app, ["org", "import", "--path", str(src)])
+
+        assert result.exit_code == 1
+        assert "--yes" in result.output
+        mock_mgr.import_org.assert_not_called()
+
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
+    def test_org_import_overwrite_with_yes_proceeds(self, mock_mgr_class, tmp_path):
+        """--yes opts into replacing the existing org (non-interactive)."""
+        mock_mgr = _build_mock_manager()
+        mock_mgr.get_org.return_value = _build_mock_org(name="Imported")
+        mock_mgr.import_org.return_value = _build_mock_org(name="Imported")
+        mock_mgr_class.return_value = mock_mgr
+
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "org.json").write_text(json.dumps({"name": "Imported"}))
+
+        result = runner.invoke(app, ["org", "import", "--path", str(src), "--yes"])
+
+        assert result.exit_code == 0
+        assert "Imported" in result.stdout
+        mock_mgr.import_org.assert_called_once()
+
+    def test_import_source_name_peeks_dir_zip_organization(self, tmp_path):
+        """The overwrite pre-check derives the org name from the source."""
+        from apple_device_cli.cli import _import_source_name
+
+        # Directory source
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "org.json").write_text(json.dumps({"name": "Dir Org"}))
+        assert _import_source_name(src) == "Dir Org"
+
+        # .organization plist source
+        org_file = tmp_path / "acme.organization"
+        org_file.write_bytes(plistlib.dumps({"name": "Plist Org"}))
+        assert _import_source_name(org_file) == "Plist Org"
+
+        # Zip source with org.json at the root
+        zip_path = tmp_path / "bundle.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("org.json", json.dumps({"name": "Zip Org"}))
+        assert _import_source_name(zip_path) == "Zip Org"
+
+        # Unreadable / nonexistent → None (no pre-check; import fails anyway)
+        assert _import_source_name(tmp_path / "nope.organization") is None
 
 
 class TestOrgImportMobileconfig:
@@ -287,6 +386,50 @@ class TestOrgSetWifi:
         assert result.exit_code == 1
         assert "not found" in result.stdout.lower()
 
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
+    def test_set_wifi_replaces_existing_config_with_yes(self, mock_mgr_class, tmp_path):
+        """--yes opts into replacing the org's current WiFi config."""
+        mock_mgr = _build_mock_manager()
+        org = _build_mock_org(name="X")
+        org.wifi_config_path = "/orgs/X/wifi.mobileconfig"
+        mock_mgr.get_org.return_value = org
+        mock_mgr_class.return_value = mock_mgr
+
+        wifi = tmp_path / "new.mobileconfig"
+        wifi.write_bytes(plistlib.dumps({"PayloadContent": []}))
+
+        with patch(
+            "apple_device_cli.cli.set_org_wifi",
+            return_value=SimpleNamespace(name="X", wifi_config_path=str(wifi)),
+        ) as mock_set:
+            result = runner.invoke(
+                app, ["org", "set-wifi", "--name", "X", "--path", str(wifi), "--yes"]
+            )
+
+        assert result.exit_code == 0
+        mock_set.assert_called_once()
+
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
+    def test_set_wifi_existing_config_without_yes_refuses(self, mock_mgr_class, tmp_path):
+        """Replacing an existing WiFi config needs --yes off a TTY."""
+        mock_mgr = _build_mock_manager()
+        org = _build_mock_org(name="X")
+        org.wifi_config_path = "/orgs/X/wifi.mobileconfig"
+        mock_mgr.get_org.return_value = org
+        mock_mgr_class.return_value = mock_mgr
+
+        wifi = tmp_path / "new.mobileconfig"
+        wifi.write_bytes(plistlib.dumps({"PayloadContent": []}))
+
+        with patch("apple_device_cli.cli.set_org_wifi") as mock_set:
+            result = runner.invoke(
+                app, ["org", "set-wifi", "--name", "X", "--path", str(wifi)]
+            )
+
+        assert result.exit_code == 1
+        assert "--yes" in result.output
+        mock_set.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # org_app — generate
@@ -322,6 +465,40 @@ class TestOrgGenerate:
         assert org_dir.exists()
         assert (org_dir / "cert.der").exists()
         assert (org_dir / "key.der").exists()
+
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
+    def test_generate_existing_org_without_yes_refuses(self, mock_mgr_class):
+        """Regenerating over an existing org needs --yes off a TTY.
+
+        Regression: the old confirm only fired when cert/key existed, so an
+        org with metadata/WiFi config but no identity was silently wiped.
+        """
+        mock_mgr = _build_mock_manager()
+        mock_mgr.get_org.return_value = _build_mock_org(name="X")
+        mock_mgr_class.return_value = mock_mgr
+
+        with patch("apple_device_cli.cli.generate_org") as mock_gen:
+            result = runner.invoke(app, ["org", "generate", "--name", "X"])
+
+        assert result.exit_code == 1
+        assert "--yes" in result.output
+        mock_gen.assert_not_called()
+
+    @patch("apple_device_cli.cli.OrganizationManager", spec=True)
+    def test_generate_existing_org_with_yes_overwrites(self, mock_mgr_class):
+        """--yes opts into regenerating an existing org (non-interactive)."""
+        mock_mgr = _build_mock_manager()
+        mock_mgr.get_org.return_value = _build_mock_org(name="X")
+        mock_mgr_class.return_value = mock_mgr
+
+        with patch("apple_device_cli.cli.generate_org") as mock_gen:
+            mock_gen.return_value = SimpleNamespace(
+                name="X", mdm_url=None, checkin_url=None, mdm_topic=None
+            )
+            result = runner.invoke(app, ["org", "generate", "--name", "X", "--yes"])
+
+        assert result.exit_code == 0
+        mock_gen.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

@@ -471,15 +471,48 @@ class TestReenrollConfirmation:
 # ---------------------------------------------------------------------------
 
 
+def _fresh_gui_qt():
+    """Import ``apple_device_cli.gui_qt`` with a clean namespace.
+
+    Earlier tests run with real PySide6 and materialize the Qt-using classes
+    (``EnrollmentApp`` etc.) as module globals. ``importlib.reload`` would keep
+    them — reload only re-runs the module body, and the body never rebinds
+    those names — so drop the module from ``sys.modules`` to force a fresh
+    execution with empty globals, like a real headless ``python -m`` start.
+
+    Also repair the ``apple_device_cli.gui_qt`` package attribute: forms like
+    ``import apple_device_cli.gui_qt as x`` / ``from apple_device_cli import
+    gui_qt`` resolve through that attribute rather than ``sys.modules``, and
+    other tests (e.g. ``runpy.run_module``) can leave it pointing at a
+    superseded module object.
+    """
+    sys.modules.pop("apple_device_cli.gui_qt", None)
+    import apple_device_cli.gui_qt as mod
+
+    import apple_device_cli as pkg
+
+    pkg.gui_qt = mod
+    return mod
+
+
 class TestRunGui:
-    def test_run_gui_raises_when_pyside6_missing(self):
-        from apple_device_cli.gui_qt import run_gui
+    def test_run_gui_raises_when_pyside6_missing(self, monkeypatch):
+        """``run_gui`` raises ``RuntimeError`` on a headless install.
 
-        with patch.dict(sys.modules, {"PySide6.QtWidgets": None}):
-            with pytest.raises(RuntimeError):
-                run_gui()
+        Earlier tests run with real PySide6 and materialize the Qt-using
+        classes on the ``gui_qt`` module, so use a freshly imported module
+        (simulating a headless process) to ensure ``run_gui`` actually
+        attempts the PySide6 import instead of short-circuiting.
+        """
+        gui_qt = _fresh_gui_qt()
+        # ``monkeypatch.setitem`` (not ``patch.dict``) on sys.modules: patch.dict
+        # clears the whole registry on exit, which can orphan module objects
+        # referenced through package attributes.
+        monkeypatch.setitem(sys.modules, "PySide6.QtWidgets", None)
+        with pytest.raises(RuntimeError):
+            gui_qt.run_gui()
 
-    def test_module_imports_without_pyside6(self):
+    def test_module_imports_without_pyside6(self, monkeypatch):
         """``import apple_device_cli.gui_qt`` must succeed even when PySide6
         is not installed, so the GUI module isn't a hard dependency on the
         core install path.
@@ -487,13 +520,22 @@ class TestRunGui:
         # Drop any cached PySide6 imports and block re-import.
         for name in [k for k in sys.modules if k == "PySide6" or k.startswith("PySide6.")]:
             del sys.modules[name]
-        with patch.dict(sys.modules, {"PySide6": None, "PySide6.QtCore": None, "PySide6.QtWidgets": None}):
-            # Force a fresh import. ``runpy`` runs the module body in a fresh
-            # namespace, just like a real ``python -m apple_device_cli.gui_qt``
-            # would at process start.
-            import runpy
+        monkeypatch.setitem(sys.modules, "PySide6", None)
+        monkeypatch.setitem(sys.modules, "PySide6.QtCore", None)
+        monkeypatch.setitem(sys.modules, "PySide6.QtWidgets", None)
+        # Force a fresh import. ``runpy`` runs the module body in a fresh
+        # namespace, just like a real ``python -m apple_device_cli.gui_qt``
+        # would at process start. It emits a RuntimeWarning if the module is
+        # already in sys.modules (which it now is, since earlier tests ran
+        # with real PySide6), so temporarily pop it.
+        import runpy
 
+        saved_gui_qt = sys.modules.pop("apple_device_cli.gui_qt", None)
+        try:
             ns = runpy.run_module("apple_device_cli.gui_qt", run_name="__not_main__")
+        finally:
+            if saved_gui_qt is not None:
+                sys.modules["apple_device_cli.gui_qt"] = saved_gui_qt
 
         # Pure-Python names (no Qt needed) should be available.
         assert "validate_org_fields" in ns
@@ -504,23 +546,21 @@ class TestRunGui:
         assert "WorkerThread" not in ns
         assert "EnrollmentApp" not in ns
 
-    def test_lazy_attr_raises_friendly_error_without_pyside6(self):
+    def test_lazy_attr_raises_friendly_error_without_pyside6(self, monkeypatch):
         """Accessing ``WorkerThread``, ``EnrollmentApp``, or ``run_gui`` on
         a headless install must raise ``RuntimeError`` (with the install
         hint) instead of bubbling up an ``ImportError`` traceback.
         """
         for name in [k for k in sys.modules if k == "PySide6" or k.startswith("PySide6.")]:
             del sys.modules[name]
-        with patch.dict(sys.modules, {"PySide6": None, "PySide6.QtCore": None, "PySide6.QtWidgets": None}):
-            import importlib
-
-            import apple_device_cli.gui_qt as mod
-
-            importlib.reload(mod)
-            # Accessing the lazy attribute triggers _require_pyside6()
-            # which raises the friendly RuntimeError.
-            with pytest.raises(RuntimeError, match=r"ios-enroll\[gui\]"):
-                mod.WorkerThread  # noqa: B018
+        monkeypatch.setitem(sys.modules, "PySide6", None)
+        monkeypatch.setitem(sys.modules, "PySide6.QtCore", None)
+        monkeypatch.setitem(sys.modules, "PySide6.QtWidgets", None)
+        mod = _fresh_gui_qt()
+        # Accessing the lazy attribute triggers _require_pyside6()
+        # which raises the friendly RuntimeError.
+        with pytest.raises(RuntimeError, match=r"ios-enroll\[gui\]"):
+            mod.WorkerThread  # noqa: B018
 
     def test_main_returns_friendly_message_when_pyside6_missing(self, capsys):
         """``_main`` (used by ``python -m`` and the ``ios-enroll-gui``

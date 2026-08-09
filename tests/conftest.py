@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -140,15 +140,30 @@ def mock_pymobiledevice3():
     mock_pm3.lockdown.create_using_usbmux = AsyncMock(spec=lockdown.create_using_usbmux)
     mock_pm3.ca.create_keybag_file = MagicMock(spec=ca.create_keybag_file)
 
-    with patch.dict(
-        "sys.modules",
-        {
-            "pymobiledevice3": mock_pm3,
-            "pymobiledevice3.lockdown": mock_pm3.lockdown,
-            "pymobiledevice3.services": mock_pm3.services,
-            "pymobiledevice3.services.mobile_config": mock_pm3.services.mobile_config,
-            "pymobiledevice3.services.mobile_activation": mock_pm3.services.mobile_activation,
-            "pymobiledevice3.ca": mock_pm3.ca,
-        },
-    ):
+    # Swap only the pymobiledevice3 entries in sys.modules, restoring them by
+    # key on teardown. Do NOT use patch.dict("sys.modules", ...) here:
+    # unittest.mock's _patch_dict restores the dict by clearing it entirely and
+    # re-applying the snapshot taken at entry, so ANY module lazily imported
+    # during the test (e.g. ``rich``, which typer imports the first time
+    # ``--help`` renders) is silently removed from sys.modules. The stale module
+    # objects survive via package attributes (typer.rich_utils), so the next
+    # test that re-imports rich gets a second set of classes and isinstance
+    # checks across the two copies fail with confusing TypeErrors.
+    patched_modules = {
+        "pymobiledevice3": mock_pm3,
+        "pymobiledevice3.lockdown": mock_pm3.lockdown,
+        "pymobiledevice3.services": mock_pm3.services,
+        "pymobiledevice3.services.mobile_config": mock_pm3.services.mobile_config,
+        "pymobiledevice3.services.mobile_activation": mock_pm3.services.mobile_activation,
+        "pymobiledevice3.ca": mock_pm3.ca,
+    }
+    original_modules = {name: sys.modules[name] for name in patched_modules if name in sys.modules}
+    sys.modules.update(patched_modules)
+    try:
         yield mock_pm3
+    finally:
+        for name in patched_modules:
+            if name in original_modules:
+                sys.modules[name] = original_modules[name]
+            else:
+                sys.modules.pop(name, None)

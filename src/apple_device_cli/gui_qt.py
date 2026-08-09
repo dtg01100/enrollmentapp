@@ -429,6 +429,10 @@ def _require_pyside6() -> None:
             self.edit_org_btn.clicked.connect(self._edit_org)
             toolbar.addWidget(self.edit_org_btn)
 
+            self.import_org_btn = QPushButton("Import…")
+            self.import_org_btn.clicked.connect(self._import_org)
+            toolbar.addWidget(self.import_org_btn)
+
             self.delete_org_btn = QPushButton("Delete Org")
             self.delete_org_btn.clicked.connect(self._delete_org)
             toolbar.addWidget(self.delete_org_btn)
@@ -1212,6 +1216,46 @@ def _require_pyside6() -> None:
             button_box.accepted.connect(save)
             button_box.rejected.connect(dialog.reject)
             dialog.exec()
+
+        def _import_org(self) -> None:
+            """Entry point for the 'Import…' button.
+
+            Routes to OrganizationManager.import_org (Apple Configurator
+            .organization file) or .import_mobileconfig (MDM .mobileconfig)
+            based on the file extension. Both run on a worker thread so the
+            GUI stays responsive on large .organization files.
+            """
+            path_str, _ = QFileDialog.getOpenFileName(
+                self,
+                "Import organization",
+                "",
+                "All supported (*.organization *.mobileconfig);;"
+                "Apple Configurator (*.organization);;"
+                "Mobileconfig (*.mobileconfig);;"
+                "All Files (*)",
+            )
+            if not path_str:
+                return
+            path = Path(path_str)
+            manager = OrganizationManager()
+
+            def work() -> Organization:
+                if path.suffix.lower() == ".mobileconfig":
+                    return manager.import_mobileconfig(path)
+                return manager.import_org(path)
+
+            def on_done(result: Organization, error: Exception | None) -> None:
+                if error:
+                    QMessageBox.warning(
+                        self, "Import failed", f"Failed to import: {error}"
+                    )
+                    self._log(f"Import failed: {error}")
+                    return
+                self._log(f"Imported organization: {result.name}")
+                self._refresh_orgs()
+
+            worker = WorkerThread(work)
+            self._run_worker(worker, on_done, [self.import_org_btn])
 
         def _build_edit_org_form(self, org: Organization) -> tuple[QDialog, dict[str, QLineEdit]]:
             """Construct the Edit Org dialog with QLineEdit fields pre-filled.

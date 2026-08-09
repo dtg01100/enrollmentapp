@@ -587,6 +587,77 @@ class TestOrgDetailsPane:
         assert "no organization" in text.lower() or text.strip() == ""
 
 
+class TestImportOrg:
+    def test_import_button_exists(self, make_app):
+        app = make_app()
+        assert app.import_org_btn is not None
+        assert app.import_org_btn.text() == "Import…"
+
+    def test_import_routes_organization_file_to_import_org(
+        self, make_app, monkeypatch
+    ):
+        """.organization extension → OrganizationManager.import_org called."""
+        from pathlib import Path
+        from apple_device_cli.orgs.manager import Organization
+
+        app = make_app()
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.QFileDialog.getOpenFileName",
+            lambda *a, **kw: ("/tmp/Test.organization", "Apple Configurator (*.organization)"),
+        )
+        captured = {}
+        def fake_import(self, path, password="password"):
+            captured["path"] = path
+            return Organization(name="Imported")
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.import_org", fake_import
+        )
+
+        app._import_org()
+        assert captured["path"] == Path("/tmp/Test.organization")
+
+    def test_import_routes_mobileconfig_to_import_mobileconfig(
+        self, make_app, monkeypatch
+    ):
+        """.mobileconfig extension → OrganizationManager.import_mobileconfig called."""
+        from pathlib import Path
+        from apple_device_cli.orgs.manager import Organization
+
+        app = make_app()
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.QFileDialog.getOpenFileName",
+            lambda *a, **kw: ("/tmp/profile.mobileconfig", "Mobileconfig (*.mobileconfig)"),
+        )
+        captured = {}
+        def fake_import_mc(self, path):
+            captured["path"] = path
+            return Organization(name="Imported")
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.import_mobileconfig",
+            fake_import_mc,
+        )
+
+        app._import_org()
+        assert captured["path"] == Path("/tmp/profile.mobileconfig")
+
+    def test_import_no_op_when_user_cancels(self, make_app, monkeypatch):
+        """Empty selection → no import call."""
+        app = make_app()
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.QFileDialog.getOpenFileName",
+            lambda *a, **kw: ("", ""),
+        )
+        called = {"import": False}
+        def fake_import(self, *a, **kw):
+            called["import"] = True
+            return None
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.import_org", fake_import
+        )
+        app._import_org()
+        assert called["import"] is False
+
+
 class TestReenrollConfirmation:
     def test_confirm_message_includes_device(self, make_app, sample_devices, monkeypatch):
         app = make_app()

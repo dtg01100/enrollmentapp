@@ -860,6 +860,199 @@ class TestClearCache:
         assert tmp_path.is_dir()  # recreated
 
 
+class TestGuidedEnroll:
+    def test_guided_enroll_button_exists(self, make_app):
+        app = make_app()
+        assert app.guided_enroll_btn is not None
+        assert "Guided Enroll" in app.guided_enroll_btn.text()
+
+    def test_guided_enroll_no_org_warns_returns(self, make_app, monkeypatch):
+        """No org selected → warning, no worker."""
+        from types import SimpleNamespace
+
+        app = make_app()
+        warnings = []
+        monkeypatch.setattr(
+            QMessageBox,
+            "warning",
+            lambda parent, title, text, *a, **kw: warnings.append((title, text))
+            or QMessageBox.StandardButton.Ok,
+        )
+        called = {"make": False}
+        def fake_make(**kwargs):
+            called["make"] = True
+            return SimpleNamespace(
+                supervised=True, mdm_enrolled=True, wifi_installed=False, errors=[]
+            )
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.make_supervised", fake_make
+        )
+        app._guided_enroll()
+        assert called["make"] is False
+        assert any(t == "No organization" for t, _ in warnings)
+
+    def test_guided_enroll_missing_identity_warns_returns(
+        self, make_app, sample_org, monkeypatch
+    ):
+        """Org without cert/key → 'Missing identity' warning, no worker."""
+        sample_org.name = "CapitalCandy"  # validator-friendly
+        sample_org.cert_path = None
+        sample_org.key_path = "/tmp/key.der"
+
+        app = make_app(orgs=[sample_org])
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.get_org",
+            lambda self, name: sample_org,
+        )
+        app.enroll_udid_combo.addItem("udid-x")
+        warnings = []
+        monkeypatch.setattr(
+            QMessageBox,
+            "warning",
+            lambda parent, title, text, *a, **kw: warnings.append((title, text))
+            or QMessageBox.StandardButton.Ok,
+        )
+        called = {"make": False}
+        def fake_make(**kwargs):
+            called["make"] = True
+            return None
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.make_supervised", fake_make
+        )
+        app._guided_enroll()
+        assert called["make"] is False
+        assert any(t == "Missing identity" for t, _ in warnings)
+
+    def test_guided_enroll_no_udid_warns_returns(
+        self, make_app, sample_org, monkeypatch
+    ):
+        """Empty UDID combo → 'No device' warning, no worker."""
+        sample_org.name = "CapitalCandy"
+
+        app = make_app(orgs=[sample_org])
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.get_org",
+            lambda self, name: sample_org,
+        )
+        warnings = []
+        monkeypatch.setattr(
+            QMessageBox,
+            "warning",
+            lambda parent, title, text, *a, **kw: warnings.append((title, text))
+            or QMessageBox.StandardButton.Ok,
+        )
+        called = {"make": False}
+        def fake_make(**kwargs):
+            called["make"] = True
+            return None
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.make_supervised", fake_make
+        )
+        app._guided_enroll()
+        assert called["make"] is False
+        assert any(t == "No device" for t, _ in warnings)
+
+    def test_guided_enroll_user_declines_no_worker(
+        self, make_app, sample_org, monkeypatch
+    ):
+        """User clicks No on confirm → no make_supervised call."""
+        sample_org.name = "CapitalCandy"
+
+        app = make_app(orgs=[sample_org])
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.get_org",
+            lambda self, name: sample_org,
+        )
+        app.enroll_udid_combo.addItem("udid-x")
+        monkeypatch.setattr(
+            QMessageBox,
+            "question",
+            lambda *a, **kw: QMessageBox.StandardButton.No,
+        )
+        called = {"make": False}
+        def fake_make(**kwargs):
+            called["make"] = True
+            return None
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.make_supervised", fake_make
+        )
+        app._guided_enroll()
+        assert called["make"] is False
+
+    def test_guided_enroll_happy_path_runs_make_supervised(
+        self, make_app, sample_org, monkeypatch
+    ):
+        """All guards pass + user confirms → make_supervised called with form values."""
+        from types import SimpleNamespace
+
+        sample_org.name = "CapitalCandy"
+        sample_org.org_id = "com.capitalcandy"
+
+        app = make_app(orgs=[sample_org])
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.get_org",
+            lambda self, name: sample_org,
+        )
+        app.enroll_udid_combo.addItem("udid-1")
+        app.enroll_wifi_ssid.setText("CorpNet")
+        app.enroll_wifi_password.setText("supersecret")
+        monkeypatch.setattr(
+            QMessageBox,
+            "question",
+            lambda *a, **kw: QMessageBox.StandardButton.Yes,
+        )
+        captured = {}
+        def fake_make(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                supervised=True, mdm_enrolled=True, wifi_installed=True, errors=[]
+            )
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.make_supervised", fake_make
+        )
+        app._guided_enroll()
+        assert captured["udid"] == "udid-1"
+        assert captured["org_name"] == "CapitalCandy"
+        assert captured["wifi_ssid"] == "CorpNet"
+        assert captured["wifi_password"] == "supersecret"
+        assert callable(captured["progress_callback"])
+
+    def test_guided_enroll_progress_scrubs_wifi_password(
+        self, make_app, sample_org, monkeypatch
+    ):
+        """progress_callback must redact WiFi password from progress messages."""
+        from types import SimpleNamespace
+
+        sample_org.name = "CapitalCandy"
+
+        app = make_app(orgs=[sample_org])
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.get_org",
+            lambda self, name: sample_org,
+        )
+        app.enroll_udid_combo.addItem("udid-1")
+        app.enroll_wifi_password.setText("supersecret")
+        monkeypatch.setattr(
+            QMessageBox, "question",
+            lambda *a, **kw: QMessageBox.StandardButton.Yes,
+        )
+        captured = {}
+        def fake_make(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                supervised=True, mdm_enrolled=False, wifi_installed=False, errors=[]
+            )
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.make_supervised", fake_make
+        )
+        app._guided_enroll()
+        log_before = app.log_text.toPlainText()
+        captured["progress_callback"]("Connecting to supersecret network...")
+        new_text = app.log_text.toPlainText()[len(log_before):]
+        assert "supersecret" not in new_text
+        assert "***" in new_text
+
+
 class TestReenrollConfirmation:
     def test_confirm_message_includes_device(self, make_app, sample_devices, monkeypatch):
         app = make_app()

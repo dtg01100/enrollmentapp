@@ -544,6 +544,19 @@ def _require_pyside6() -> None:
             actions_row.setSpacing(8)
 
             # Primary action — bold + taller so the eye lands on it.
+            self.guided_enroll_btn = QPushButton("Guided Enroll")
+            self.guided_enroll_btn.setObjectName("guided_enroll_btn")
+            f = self.guided_enroll_btn.font()
+            f.setBold(True)
+            self.guided_enroll_btn.setFont(f)
+            self.guided_enroll_btn.setMinimumHeight(36)
+            self.guided_enroll_btn.setToolTip(
+                "Validate prerequisites, then enroll the selected device "
+                "with the selected org in one click."
+            )
+            self.guided_enroll_btn.clicked.connect(self._guided_enroll)
+            actions_row.addWidget(self.guided_enroll_btn)
+
             self.make_supervised_btn = QPushButton("Make Supervised")
             self.make_supervised_btn.setObjectName("make_supervised_btn")
             f = self.make_supervised_btn.font()
@@ -1596,6 +1609,94 @@ def _require_pyside6() -> None:
                 self._log("Errors:")
                 for err in result.errors:
                     self._log(f"  - {err}")
+
+        def _guided_enroll(self) -> None:
+            """Single-click enrollment: validate → confirm → run.
+
+            The single highest-value workflow in the GUI — pick an org,
+            pick a device, fill WiFi (optional), click Guided Enroll.
+            Shows a confirm dialog summarizing the resolved parameters
+            before kicking off ``make_supervised`` on a worker thread.
+
+            Differs from ``_make_supervised`` only in UX: same engine call,
+            but with a confirmation step that mirrors the CLI's
+            ``guided-enroll`` interactive flow.
+            """
+            org = self._resolve_enroll_org()
+            if not org:
+                return
+            if not org.cert_path or not org.key_path:
+                QMessageBox.warning(
+                    self,
+                    "Missing identity",
+                    (
+                        f"Organization '{org.name}' needs a supervising "
+                        "certificate and key. Generate one in the "
+                        "Organizations tab first."
+                    ),
+                )
+                return
+            udid = self.enroll_udid_combo.currentText().strip()
+            if not udid:
+                QMessageBox.warning(self, "No device", "Select a device UDID.")
+                return
+            try:
+                skip_list = resolve_skip_panes(
+                    self.enroll_preset_combo.currentText(), None
+                )
+            except ValueError as exc:
+                QMessageBox.warning(self, "Invalid preset", str(exc))
+                return
+
+            wifi_ssid = self.enroll_wifi_ssid.text().strip() or None
+            wifi_password = self.enroll_wifi_password.text() or None
+            wifi_encryption = self.enroll_wifi_enc.currentText()
+
+            summary = (
+                f"Enroll {udid} with '{org.name}'\n\n"
+                f"  Preset: {self.enroll_preset_combo.currentText()}\n"
+                f"  WiFi: {wifi_ssid or '(none)'}\n"
+                f"  MDM URL: {org.mdm_url or '(none)'}\n\n"
+                "This will activate, supervise, and install the MDM profile."
+            )
+            reply = QMessageBox.question(
+                self,
+                "Confirm Guided Enrollment",
+                summary,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+            self._log(f"Guided enrollment starting for {udid}...")
+
+            def progress(msg: str) -> None:
+                masked = sanitize_text(_redact_in_text(msg, wifi_password))
+                self._log(f"  {masked}")
+
+            def work() -> Any:
+                return make_supervised(
+                    cert_path=org.cert_path,
+                    key_path=org.key_path,
+                    org_name=org.name,
+                    org_uuid=org.org_id,
+                    skip_list=skip_list,
+                    mdm_url=org.mdm_url,
+                    mdm_checkin_url=org.checkin_url,
+                    mdm_topic=org.mdm_topic,
+                    wifi_ssid=wifi_ssid,
+                    wifi_password=wifi_password,
+                    wifi_encryption=wifi_encryption,
+                    udid=udid,
+                    progress_callback=progress,
+                )
+
+            worker = WorkerThread(work)
+            self._run_worker(
+                worker,
+                self._on_make_supervised_result,
+                [self.guided_enroll_btn, self.make_supervised_btn],
+            )
 
         def _check_status(self) -> None:
             udid = self.enroll_udid_combo.currentText().strip()

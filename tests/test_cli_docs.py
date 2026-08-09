@@ -25,7 +25,9 @@ from apple_device_cli.cli import app
 
 # Rich truncates long flag names (e.g. --no-fail-on-mdm-error) in the
 # default 80-column help box; widen the terminal so --help shows full names.
-os.environ.setdefault("COLUMNS", "200")
+# Assignment (not setdefault): a shell/CI-inherited narrow COLUMNS would
+# otherwise win and truncate flags again.
+os.environ["COLUMNS"] = "200"
 
 DOCS_DIR = Path(__file__).resolve().parent.parent / "docs" / "cli"
 # doc file -> CLI group name (the docs name their sections `group cmd`).
@@ -44,7 +46,12 @@ def _help_flags(group: str, command: str) -> set[str]:
     """The flags the CLI actually registers for ``group command``."""
     result = runner.invoke(app, [group, command, "--help"])
     assert result.exit_code == 0, f"`{group} {command} --help` failed:\n{result.output}"
-    box = re.search(r"╭─ Options ─.*?╰─", result.output, re.S)
+    # GitHub Actions sets GITHUB_ACTIONS, which makes typer force terminal
+    # mode (FORCE_TERMINAL) and emit ANSI escape codes around every styled
+    # segment. Strip them so the literal box characters are contiguous and
+    # the panel regex below still matches.
+    output = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    box = re.search(r"╭─ Options ─.*?╰─", output, re.S)
     assert box is not None, f"no Options box in `{group} {command} --help`"
     flags = set(_LONG_FLAG.findall(box.group(0))) | set(_SHORT_FLAG.findall(box.group(0)))
     flags.discard("--help")  # implicit click option, never documented

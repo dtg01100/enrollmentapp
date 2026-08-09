@@ -1064,6 +1064,59 @@ class TestCertExpiryBanner:
         assert "unreadable" in text.lower() or "missing" in text.lower() or "regenerat" in text.lower()
 
 
+class TestEnrollActionGating:
+    def test_buttons_disabled_when_no_org(self, make_app):
+        app = make_app()
+        # Both buttons exist
+        assert app.guided_enroll_btn is not None
+        assert app.make_supervised_btn is not None
+        # Default state: no org selected → buttons disabled
+        assert not app.guided_enroll_btn.isEnabled()
+        assert not app.make_supervised_btn.isEnabled()
+
+    def test_buttons_still_disabled_when_org_but_no_device(
+        self, make_app, sample_org
+    ):
+        sample_org.name = "CapitalCandy"
+        app = make_app(orgs=[sample_org])
+        # Org in the combo but no device → still disabled
+        app._update_enroll_action_gates()
+        assert not app.guided_enroll_btn.isEnabled()
+        assert not app.make_supervised_btn.isEnabled()
+
+    def test_buttons_enabled_when_org_and_device_present(
+        self, make_app, sample_org, sample_devices
+    ):
+        sample_org.name = "CapitalCandy"
+        app = make_app(orgs=[sample_org])
+        # Populate the UDID combo
+        app.enroll_udid_combo.addItems([d.udid for d in sample_devices])
+        app._update_enroll_action_gates()
+        assert app.guided_enroll_btn.isEnabled()
+        assert app.make_supervised_btn.isEnabled()
+
+    def test_tooltip_explains_disabled_state(self, make_app):
+        app = make_app()
+        tooltip = app.guided_enroll_btn.toolTip()
+        assert "org" in tooltip.lower() or "device" in tooltip.lower()
+
+    def test_gates_update_when_org_combo_changes(
+        self, make_app, sample_org
+    ):
+        """Changing the org combo must re-evaluate the gate."""
+        sample_org.name = "CapitalCandy"
+        app = make_app(orgs=[sample_org])
+        # Add UDID — still no org text
+        app.enroll_udid_combo.addItem("udid-x")
+        # Gate fires when combo signals. Add the org name to the combo.
+        app.enroll_org_combo.addItem(sample_org.name)
+        # currentIndexChanged signal triggers _update_enroll_action_gates
+        assert app.guided_enroll_btn.isEnabled()
+        # Clear org → disabled again
+        app.enroll_org_combo.setCurrentIndex(-1)
+        assert not app.guided_enroll_btn.isEnabled()
+
+
 class TestClearCache:
     def test_clear_cache_button_exists(self, make_app):
         app = make_app()

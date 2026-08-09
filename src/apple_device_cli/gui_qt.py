@@ -302,6 +302,8 @@ def _require_pyside6() -> None:
             self.restore_log_signal.connect(self._append_restore_log)
             self.restore_progress_signal.connect(self._on_restore_progress_event)
             self.enroll_org_combo.currentIndexChanged.connect(self._on_enroll_org_changed)
+            self.enroll_org_combo.currentIndexChanged.connect(self._update_enroll_action_gates)
+            self.enroll_udid_combo.currentIndexChanged.connect(self._update_enroll_action_gates)
             self._log("GUI initialized. Connect an iOS device to begin.")
             self._restore_geometry()
             self._load_initial_state()
@@ -914,6 +916,7 @@ def _require_pyside6() -> None:
             self.enroll_udid_combo.addItems([d.udid for d in self._devices])
             if self._devices:
                 self.enroll_udid_combo.setCurrentIndex(0)
+            self._update_enroll_action_gates()
 
         def _use_selected_device(self) -> None:
             device = self._selected_device()
@@ -1024,6 +1027,7 @@ def _require_pyside6() -> None:
             self.enroll_org_combo.addItems([o.name for o in self._orgs])
             if self._orgs:
                 self.enroll_org_combo.setCurrentIndex(0)
+            self._update_enroll_action_gates()
 
         @Slot(int)
         def _on_enroll_org_changed(self, index: int) -> None:
@@ -1680,6 +1684,37 @@ def _require_pyside6() -> None:
                 self._log("Errors:")
                 for err in result.errors:
                     self._log(f"  - {err}")
+
+        def _update_enroll_action_gates(self) -> None:
+            """Enable Guided Enroll + Make Supervised only when org + UDID are present.
+
+            Disabling the buttons (vs warning + bailing) prevents the
+            'five dialogs in a row' UX trap where the user clicks the
+            primary action and gets walked through every missing-input
+            guard sequentially.
+            """
+            has_org = self.enroll_org_combo.count() > 0 and bool(
+                self.enroll_org_combo.currentText().strip()
+            )
+            has_device = self.enroll_udid_combo.count() > 0 and bool(
+                self.enroll_udid_combo.currentText().strip()
+            )
+            enabled = has_org and has_device
+            self.guided_enroll_btn.setEnabled(enabled)
+            self.make_supervised_btn.setEnabled(enabled)
+            if not has_org:
+                tip = "Select an organization in the Organizations tab, then a device here."
+            elif not has_device:
+                tip = "Connect an iOS device and click Refresh Devices, then select one here."
+            else:
+                tip = (
+                    "Validate prerequisites, then enroll the selected device "
+                    "with the selected org in one click."
+                )
+            self.guided_enroll_btn.setToolTip(tip)
+            self.make_supervised_btn.setToolTip(
+                tip if enabled else "Same prerequisites as Guided Enroll."
+            )
 
         def _guided_enroll(self) -> None:
             """Single-click enrollment: validate → confirm → run.

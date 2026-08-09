@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Machine-readable output for scripts.** `device restore --show-cache
+  --json` emits the cache state (path, size_bytes, ipsw_count, ipsw_files),
+  `device restore --list-versions --json` emits one object per signed
+  version (version, build, url, device, display_label), and `org list
+  --json` now always emits valid JSON — `[]` when no orgs exist (it
+  previously fell back to prose text, which broke `jq` pipelines) — and
+  includes `checkin_url`, `mdm_topic`, and `wifi_config_path` alongside the
+  existing fields. `device list --json` and `device info --json` now also
+  keep stdout pure JSON — `device list --json` emits `[]` with no devices,
+  failures yield `{"error": ...}`, and `device info --json` requires
+  `--udid` (no interactive picker in JSON mode).
+- **Consolidated CLI reference.** New `docs/cli/` documents every command,
+  flag, and output contract (JSON shapes, confirmation/`--yes` rules, exit
+  codes): a shared-contracts index plus per-group pages for `device`,
+  `org`, and `enroll`, so it stays maintainable as commands grow. README
+  links to it and stays a quick start.
+
 ### Testing
 - **Restore tests are hermetic again.** `test_restore_engine.py` no longer
   requires `irecovery` / `ipsw` / `idevicerestore` on the host PATH — the
@@ -31,6 +49,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   releases on tag pushes. The repo's default workflow permission is
   read-only, which made `softprops/action-gh-release` fail with
   `GitHub release failed with status: 403` → `Too many retries`.
+- **CLI: destructive restores can no longer bypass confirmation.**
+  `device restore` (and its `--clear-cache`) only prompted when stdin was a
+  TTY, so a piped/cron invocation without `--yes` silently wiped the device
+  or deleted cached IPSWs. Non-interactive runs now fail fast with a hint to
+  pass `--yes`; interactive runs keep the normal prompt.
+- **CLI: `org delete` now confirms before deleting.** It previously removed
+  the org directory — including any supervising cert/key — with no prompt.
+  It now warns about identity loss when the org has a cert+key, prompts on
+  a TTY, and requires `--yes` in non-interactive runs.
+- **CLI: org overwrites confirm too.** `org import` no longer silently
+  replaces a same-named org (it wiped the old identity/files), `org
+  generate` confirms for *any* existing org instead of only when a cert/key
+  was present (a metadata/WiFi-only org was previously wiped silently), and
+  `org set-wifi` confirms before replacing an existing WiFi config. All
+  three gained `--yes` for non-interactive runs.
+
+### Changed
+- **Restore tab asks before wiping a device.** "Start Restore" now shows a
+  confirmation dialog naming the target device and the exact IPSW before
+  erasing it — matching the CLI's `typer.confirm("Erase and restore device
+  now?")` and the other destructive GUI actions (delete org, prepare
+  re-enrollment, enter recovery).
+- **No stale firmware state when switching devices.** A locally-browsed IPSW
+  (and the permanently-disabled version combo that came with it) now clears
+  when the restore target changes; the same-device path is preserved across
+  refreshes. Verify stays consistent: it re-enables for cached IPSWs picked
+  in Recovery mode and disables again on device switch.
+- **Conflicting actions are gated during a restore.** Enter/Exit Recovery,
+  "Exit Recovery (any)", Refresh versions, and Verify are disabled while a
+  restore runs so they can't race the restore's USB access.
 
 ## [1.3.1] - 2026-08-07
 

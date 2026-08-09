@@ -57,6 +57,8 @@ pip install -e .
 
 ## Usage
 
+> Full command reference: [`docs/cli/`](docs/cli/README.md) — every command, flag, and output contract.
+
 ### Device Commands
 
 ```bash
@@ -67,21 +69,26 @@ ios-enroll device info [--udid <UDID>] [--json]          # Get device info
 ### Organization Commands
 
 ```bash
-ios-enroll org list                                      # List organizations
+ios-enroll org list [--json]                           # List organizations (--json for scripts)
 ios-enroll org create --name "My Org"                    # Create organization
-ios-enroll org delete --name "My Org"                    # Delete organization
+ios-enroll org delete --name "My Org" [--yes]            # Delete organization (asks first; --yes for scripts)
 ios-enroll org show --name "My Org"                      # Show organization details
-ios-enroll org import --path <file|dir|zip>              # Import from .organization, dir, or zip
+ios-enroll org import --path <file|dir|zip> [--yes]      # Import (replaces same-named org — asks first)
 ios-enroll org export --name "My Org" --path <dir|zip>   # Export organization
-ios-enroll org generate --name "My Org"                  # Generate supervising identity
+ios-enroll org generate --name "My Org" [--yes]          # Generate identity (asks first if org exists)
 ios-enroll org set-cert --name "My Org" -C cert.der      # Set certificate
 ios-enroll org set-key --name "My Org" -K key.der        # Set private key
 ios-enroll org set-mdm-url --name "My Org" --mdm-url <URL>  # Set MDM URL
 ios-enroll org set-checkin-url --name "My Org" --checkin-url <URL>   # Set check-in URL
 ios-enroll org set-mdm-topic --name "My Org" --mdm-topic <topic>     # Set MDM topic
 ios-enroll org import-mobileconfig --path <file>             # Import from MDM .mobileconfig
-ios-enroll org set-wifi --name "My Org" --wifi-config <file> # Attach WiFi config
+ios-enroll org set-wifi --name "My Org" --path <file> [--yes]  # Attach WiFi config (asks first if replacing)
 ```
+
+`org delete`, importing over an existing org, regenerating an identity, and
+replacing a WiFi config are destructive — each asks for confirmation on an
+interactive terminal and requires `--yes` in non-interactive (scripted/CI)
+runs, where there is no prompt.
 
 ### Enrollment Commands
 
@@ -108,12 +115,18 @@ pip install 'ios-enroll[gui]'    # or: uv tool install 'ios-enroll[gui]'
 ### Restore Commands
 
 ```bash
-ios-enroll device restore --udid <UDID> --list-versions    # List signed iOS versions for a device
-ios-enroll device restore --udid <UDID> --ipsw <path>      # Restore a local .ipsw file
-ios-enroll device restore --show-cache                     # Show firmware cache contents
-ios-enroll device restore --clear-cache                    # Remove downloaded IPSW files
+ios-enroll device restore --udid <UDID> --list-versions [--json]  # List signed iOS versions (--json for scripts)
+ios-enroll device restore --udid <UDID> --ipsw <path> [--yes]   # Restore a local .ipsw file (asks first)
+ios-enroll device restore --show-cache [--json]            # Show firmware cache contents (--json for scripts)
+ios-enroll device restore --clear-cache [--yes]            # Remove downloaded IPSW files (asks first)
 ios-enroll device restore --cache-dir <DIR>                # Override the firmware cache location
 ```
+
+A restore erases the device, and `--clear-cache` deletes downloaded IPSW
+files — both ask for confirmation on an interactive terminal. In
+non-interactive (scripted/CI) runs there is no prompt, so pass `--yes` to
+confirm; without it the command refuses to run rather than silently wiping
+the device or cache.
 
 `idevicerestore` performs the restore (with a `pymobiledevice3` fallback when
 it's not on PATH). There is **no timeout** on the restore subprocess — older
@@ -135,6 +148,39 @@ Enrollment): pick a device, refresh the signed-version dropdown (or browse
 for a local `.ipsw`), and click Start Restore. The cache folder is
 configurable from the tab, and the live `idevicerestore` output streams into
 the tab's log panel.
+
+## Machine-Readable Output (`--json`)
+
+Several commands accept `--json` for scripting. The contract is uniform
+across all of them:
+
+- **stdout is always valid JSON** — never prose — so it can be piped straight
+  into a parser (`ios-enroll org list --json | jq .`).
+- **Empty result sets stay parseable**: list commands emit `[]`; `--show-cache`
+  always emits the full object with zeroed fields.
+- **Failures emit `{"error": "..."}`** — check for an `error` key. Usage
+  errors (e.g. `device info --json` without `--udid`) also exit non-zero.
+- **JSON is raw/unredacted** (machine-readable); redaction applies only to
+  the human-readable text output.
+
+| Command | JSON output |
+|---|---|
+| `device list --json` | array of `{udid, name, type, ios_version, build_version, ecid}` — `[]` when no devices |
+| `device info --json` | object `{udid, name, type, ios_version, build_version, ecid}` (requires `--udid`) |
+| `device restore --show-cache --json` | object `{path, size_bytes, ipsw_count, ipsw_files}` |
+| `device restore --list-versions --json` | array of `{version, build, url, device, display_label}` |
+| `org list --json` | array of `{name, org_id, mdm_url, checkin_url, mdm_topic, has_cert, has_key, wifi_config_path}` — `[]` when no orgs |
+
+```bash
+# Names of orgs that have a supervising identity
+ios-enroll org list --json | jq -r '.[] | select(.has_cert) | .name'
+
+# Bytes used by the firmware cache
+ios-enroll device restore --show-cache --json | jq -r '.size_bytes'
+
+# First signed iOS version for a device
+ios-enroll device restore --udid <UDID> --list-versions --json | jq -r '.[0].display_label'
+```
 
 ## Organization Storage
 

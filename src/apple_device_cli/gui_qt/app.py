@@ -316,6 +316,9 @@ def _require_pyside6() -> None:
             # and tests stop reaching into private state.
             self._workers = self._worker_pool._workers
             self._request_token: int = 0
+            from apple_device_cli.gui_qt.gating import _Gating
+
+            self._gating = _Gating()
             self._restore_ipsw_path: Path | None = None
             self._restore_selected_udid: str | None = None
             self._restore_step_label: str | None = None
@@ -725,6 +728,16 @@ def _require_pyside6() -> None:
 
         def _update_enroll_action_gates(self) -> None:
             self.enroll_tab_controller._update_enroll_action_gates()
+            # Sync gating from current enroll tab state — tabs pull from
+            # _gating on every button-enable decision.
+            udid = self.enroll_udid_combo.currentText().strip()
+            device = None
+            if udid:
+                device = next((d for d in self._devices if d.udid == udid), None)
+            self._gating.set_org(
+                self._resolve_enroll_org() if self.enroll_org_combo.count() else None
+            )
+            self._gating.set_device(device)
 
         def _update_enroll_cert_banner(self, org: Organization | None) -> None:
             self.enroll_tab_controller._update_enroll_cert_banner(org)

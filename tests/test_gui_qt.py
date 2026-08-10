@@ -1086,9 +1086,12 @@ class TestDevicesContextMenu:
         menu = app._build_devices_context_menu()
         assert isinstance(menu, QMenu)
         labels = [a.text() for a in menu.actions()]
-        expected = ["Show Device Info", "Activate", "Pair / Trust", "Make Supervised"]
+        expected = ["Show Device Info", "Activate", "Pair / Trust"]
         for label in expected:
             assert label in labels, f"Missing context menu item: {label}"
+        # "Make Supervised" only appears when an org is selected — gating
+        # hides it otherwise (closes Round 2's open question).
+        assert "Make Supervised" not in labels
         menu.deleteLater()
 
     def test_context_menu_bails_when_no_row_at_pos(self, make_app):

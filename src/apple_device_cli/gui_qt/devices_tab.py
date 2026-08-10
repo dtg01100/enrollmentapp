@@ -265,7 +265,11 @@ class DevicesTab:
         menu.addAction("Show Device Info", self._show_device_info)
         menu.addAction("Activate", self._activate_device)
         menu.addAction("Pair / Trust", self._pair_device)
-        menu.addAction("Make Supervised", self._make_supervised_from_context)
+        # Make Supervised is hidden when there's no org selected — clicking
+        # it with no org would just bounce to the Enrollment tab with no
+        # way forward. Gating tells us whether the action can succeed.
+        if self._shell._gating.can_enroll():
+            menu.addAction("Make Supervised", self._make_supervised_from_context)
         return menu
 
     def _make_supervised_from_context(self) -> None:

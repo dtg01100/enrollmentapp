@@ -422,77 +422,177 @@ def _require_pyside6() -> None:
             return self.devices_tab_controller.tab_widget()
 
         def _create_orgs_tab(self) -> QWidget:
-            widget = QWidget()
-            layout = QVBoxLayout(widget)
-            layout.setContentsMargins(8, 8, 8, 8)
-            layout.setSpacing(6)
+            from apple_device_cli.gui_qt.orgs_tab import OrgsTab
 
-            toolbar = QHBoxLayout()
-            toolbar.setSpacing(6)
-            self.refresh_orgs_btn = QPushButton("Refresh Orgs")
-            self.refresh_orgs_btn.clicked.connect(self._refresh_orgs)
-            toolbar.addWidget(self.refresh_orgs_btn)
+            self.orgs_tab_controller = OrgsTab(self)
+            self.orgs_list = self.orgs_tab_controller.orgs_list
+            self.orgs_details_label = self.orgs_tab_controller.orgs_details_label
+            self.orgs_empty_label = self.orgs_tab_controller.orgs_empty_label
+            self.refresh_orgs_btn = self.orgs_tab_controller.refresh_orgs_btn
+            self.create_org_btn = self.orgs_tab_controller.create_org_btn
+            self.generate_id_btn = self.orgs_tab_controller.generate_id_btn
+            self.edit_org_btn = self.orgs_tab_controller.edit_org_btn
+            self.import_org_btn = self.orgs_tab_controller.import_org_btn
+            self.export_org_btn = self.orgs_tab_controller.export_org_btn
+            self.attach_wifi_btn = self.orgs_tab_controller.attach_wifi_btn
+            self.delete_org_btn = self.orgs_tab_controller.delete_org_btn
+            return self.orgs_tab_controller.tab_widget()
 
-            self.create_org_btn = QPushButton("Create Org")
-            self.create_org_btn.clicked.connect(self._create_org_dialog)
-            toolbar.addWidget(self.create_org_btn)
+        def _refresh_orgs(self) -> None:
+            self.orgs_tab_controller._refresh()
 
-            self.generate_id_btn = QPushButton("Generate Identity")
-            self.generate_id_btn.clicked.connect(self._generate_identity_dialog)
-            toolbar.addWidget(self.generate_id_btn)
+        @Slot(object, object)
+        def _on_orgs_refreshed(self, result: Any, error: Exception | None, token: int) -> None:
+            self.orgs_tab_controller._on_refreshed(result, error, token)
 
-            self.edit_org_btn = QPushButton("Edit Org")
-            self.edit_org_btn.clicked.connect(self._edit_org)
-            toolbar.addWidget(self.edit_org_btn)
+        def _selected_org(self) -> Organization | None:
+            return self.orgs_tab_controller._selected_org()
 
-            self.import_org_btn = QPushButton("Import…")
-            self.import_org_btn.clicked.connect(self._import_org)
-            toolbar.addWidget(self.import_org_btn)
+        def _create_org_dialog(self) -> None:
+            self.orgs_tab_controller._create_org_dialog()
 
-            self.export_org_btn = QPushButton("Export…")
-            self.export_org_btn.clicked.connect(self._export_org)
-            toolbar.addWidget(self.export_org_btn)
+        def _generate_identity_dialog(self) -> None:
+            self.orgs_tab_controller._generate_identity_dialog()
 
-            self.attach_wifi_btn = QPushButton("Attach WiFi…")
-            self.attach_wifi_btn.clicked.connect(self._attach_wifi)
-            toolbar.addWidget(self.attach_wifi_btn)
+        def _on_identity_generated(self, dialog, org, result, error) -> None:
+            self.orgs_tab_controller._on_identity_generated(dialog, org, result, error)
 
-            self.delete_org_btn = QPushButton("Delete Org")
-            self.delete_org_btn.clicked.connect(self._delete_org)
-            toolbar.addWidget(self.delete_org_btn)
+        def _delete_org(self) -> None:
+            self.orgs_tab_controller._delete_org()
 
-            toolbar.addStretch()
-            layout.addLayout(toolbar)
+        def _edit_org(self) -> None:
+            self.orgs_tab_controller._edit_org()
 
-            self.orgs_list = QListWidget()
-            layout.addWidget(self.orgs_list, 1)
+        def _import_org(self) -> None:
+            self.orgs_tab_controller._import_org()
 
-            # Read-only details pane; updated by _update_org_details when
-            # the user selects a different org in the list above.
-            self.orgs_details_label = QLabel("(no organization selected)")
-            self.orgs_details_label.setWordWrap(True)
-            self.orgs_details_label.setStyleSheet(
-                "color: palette(mid); font-size: 12px; padding: 6px;"
-                "border: 1px solid palette(midlight); border-radius: 3px;"
-            )
-            self.orgs_details_label.setTextInteractionFlags(
-                Qt.TextInteractionFlag.TextSelectableByMouse
-            )
-            self.orgs_details_label.setMinimumHeight(80)
-            layout.addWidget(self.orgs_details_label)
-            self.orgs_list.currentRowChanged.connect(self._update_org_details)
+        def _export_org(self) -> None:
+            self.orgs_tab_controller._export_org()
 
-            self.orgs_empty_label = QLabel(
-                "No organizations yet. Click Create Org or Refresh Orgs."
-            )
-            self.orgs_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.orgs_empty_label.setStyleSheet(
-                "color: palette(mid); font-size: 13px; padding: 4px;"
-            )
-            layout.addWidget(self.orgs_empty_label)
-            self.orgs_empty_label.setVisible(self.orgs_list.count() == 0)
+        def _attach_wifi(self) -> None:
+            self.orgs_tab_controller._attach_wifi()
 
-            return widget
+        def _build_edit_org_form(self, org: Organization) -> tuple[QDialog, dict[str, QLineEdit]]:
+            return self.orgs_tab_controller._build_edit_org_form(org)
+
+        def _apply_edit_org(self, org, fields, dialog) -> None:
+            self.orgs_tab_controller._apply_edit_org(org, fields, dialog)
+
+        # Cross-tab methods: still wired up on EnrollmentApp because
+        # signals + shortcuts reach in via ``app._on_enroll_org_changed``,
+        # and the enroll tab's combo is built in ``_create_enroll_tab``
+        # which calls ``self._update_enroll_orgs()`` after population.
+        # Will move to EnrollTab in step 6.
+
+        def _update_enroll_orgs(self) -> None:
+            self.enroll_org_combo.clear()
+            self.enroll_org_combo.addItems([o.name for o in self._orgs])
+            if self._orgs:
+                self.enroll_org_combo.setCurrentIndex(0)
+            self._update_enroll_action_gates()
+
+        @Slot(int)
+        def _on_enroll_org_changed(self, index: int) -> None:
+            self._enroll_org_changed(index)
+
+        def _enroll_org_changed(self, index: int) -> None:
+            """Auto-populate enrollment WiFi widgets from the selected org."""
+            if index < 0:
+                return
+            name = self.enroll_org_combo.currentText().strip()
+            if not name:
+                return
+
+            ssid = ""
+            pwd = ""
+            enc = "WPA"
+
+            try:
+                org = OrganizationManager().get_org(name)
+            except Exception as exc:  # noqa: BLE001
+                self._log(f"Could not load org '{name}': {exc}")
+                org = None
+
+            if org is not None:
+                wifi_path = getattr(org, "wifi_config_path", None)
+                if not wifi_path:
+                    self._log(f"Org '{name}' has no bundled wifi.mobileconfig — fields cleared.")
+                else:
+                    try:
+                        parsed = OrganizationManager().read_wifi_profile(name)
+                    except Exception as exc:  # noqa: BLE001
+                        self._log(f"Could not read WiFi profile for '{name}': {exc}")
+                    else:
+                        if parsed:
+                            ssid = parsed.get("ssid") or ""
+                            pwd = parsed.get("password") or ""
+                            enc_raw = parsed.get("encryption") or "WPA"
+                            enc = enc_raw if enc_raw in ("WPA", "WEP", "None") else "WPA"
+                            self._log(
+                                f"Populated WiFi fields from '{name}' "
+                                f"(SSID: {redact_name(ssid)}, encryption: {enc})"
+                            )
+                        else:
+                            self._log(
+                                f"Org '{name}' has wifi.mobileconfig but no "
+                                f"com.apple.wifi.managed payload — fields cleared."
+                            )
+
+            self.enroll_wifi_ssid.setText(ssid)
+            self.enroll_wifi_password.setText(pwd)
+            self.enroll_wifi_enc.setCurrentText(enc)
+            self._update_enroll_cert_banner(org)
+
+        def _update_enroll_cert_banner(self, org: Organization | None) -> None:
+            label = self.enroll_cert_warning_label
+            if org is None or not (org.cert_path and org.key_path):
+                label.setVisible(False)
+                return
+            expiry = _cert_expiry(org.cert_path)
+            if expiry is None:
+                label.setText(
+                    "⚠  Cert file is missing or unreadable — "
+                    "regenerate identity before enrolling."
+                )
+                label.setStyleSheet(
+                    "padding: 6px 8px; border-radius: 4px; font-weight: 600;"
+                    "background: #fdecea; color: #b71c1c;"
+                )
+                label.setVisible(True)
+                return
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            days_left = (expiry - now).days
+            if days_left < 0:
+                label.setText(
+                    f"🔴  Cert expired {-days_left} day(s) ago — "
+                    "regenerate identity before enrolling."
+                )
+                label.setStyleSheet(
+                    "padding: 6px 8px; border-radius: 4px; font-weight: 600;"
+                    "background: #fdecea; color: #b71c1c;"
+                )
+                label.setVisible(True)
+            elif days_left <= 30:
+                label.setText(
+                    f"🟡  Cert expires in {days_left} day(s) — "
+                    "consider regenerating identity."
+                )
+                label.setStyleSheet(
+                    "padding: 6px 8px; border-radius: 4px; font-weight: 600;"
+                    "background: #fff8e1; color: #8d6e00;"
+                )
+                label.setVisible(True)
+            elif days_left <= 90:
+                label.setText(f"🟢  Cert valid for {days_left} more days.")
+                label.setStyleSheet(
+                    "padding: 6px 8px; border-radius: 4px;"
+                    "background: #e8f5e9; color: #2e7d32;"
+                )
+                label.setVisible(True)
+            else:
+                label.setVisible(False)
 
         def _create_enroll_tab(self) -> QWidget:
             """Build the Enrollment tab.
@@ -833,12 +933,6 @@ def _require_pyside6() -> None:
             QMessageBox.warning(self, "No device", "Select a device first.")
             self._log("No device selected.")
 
-        def _selected_org(self) -> Organization | None:
-            current = self.orgs_list.currentRow()
-            if current < 0 or current >= len(self._orgs):
-                return None
-            return self._orgs[current]
-
         def _update_org_details(self, current_row: int) -> None:
             """Render the selected org's fields in the read-only details pane.
 
@@ -936,598 +1030,6 @@ def _require_pyside6() -> None:
 
         def _make_supervised_from_context(self) -> None:
             self.devices_tab_controller._make_supervised_from_context()
-
-        def _refresh_orgs(self) -> None:
-            self._log("Refreshing organizations...")
-            token = self._next_token()
-            worker = WorkerThread(lambda: OrganizationManager().list_orgs())
-            self._run_worker(worker, self._on_orgs_refreshed, [self.refresh_orgs_btn], token=token)
-
-        @Slot(object, object)
-        def _on_orgs_refreshed(self, result: Any, error: Exception | None, token: int) -> None:
-            if not self._is_current_token(token):
-                return
-            if error:
-                self._log(f"Failed to list organizations: {error}")
-                return
-            orgs = result or []
-            self._orgs = list(orgs)
-            self.orgs_list.clear()
-            for org in self._orgs:
-                has_identity = bool(org.cert_path and org.key_path)
-                badge = (
-                    _format_cert_expiry_badge(_cert_expiry(org.cert_path))
-                    if has_identity
-                    else ""
-                )
-                display = (
-                    f"{org.name}  (MDM: {org.mdm_url or 'none'}, "
-                    f"identity: {'yes' if has_identity else 'no'}"
-                    f"{badge})"
-                )
-                QListWidgetItem(display, self.orgs_list)
-            self.orgs_empty_label.setVisible(self.orgs_list.count() == 0)
-            if self._orgs:
-                self.orgs_list.setCurrentRow(0)
-            self._update_enroll_orgs()
-            self._log(f"Found {len(self._orgs)} organization(s).")
-            self._update_status_bar()
-
-        def _update_enroll_orgs(self) -> None:
-            self.enroll_org_combo.clear()
-            self.enroll_org_combo.addItems([o.name for o in self._orgs])
-            if self._orgs:
-                self.enroll_org_combo.setCurrentIndex(0)
-            self._update_enroll_action_gates()
-
-        @Slot(int)
-        def _on_enroll_org_changed(self, index: int) -> None:
-            """Auto-populate the Enrollment tab WiFi widgets from the selected org's
-            wifi.mobileconfig when one is available.
-            """
-            if index < 0:
-                return
-            name = self.enroll_org_combo.currentText().strip()
-            if not name:
-                return
-
-            # Default to empty/reset; only filled in if the org's wifi.mobileconfig
-            # has a usable com.apple.wifi.managed payload.
-            ssid = ""
-            pwd = ""
-            enc = "WPA"
-
-            try:
-                org = OrganizationManager().get_org(name)
-            except Exception as exc:  # noqa: BLE001
-                self._log(f"Could not load org '{name}': {exc}")
-                org = None
-
-            if org is not None:
-                wifi_path = getattr(org, "wifi_config_path", None)
-                if not wifi_path:
-                    self._log(f"Org '{name}' has no bundled wifi.mobileconfig — fields cleared.")
-                else:
-                    try:
-                        parsed = OrganizationManager().read_wifi_profile(name)
-                    except Exception as exc:  # noqa: BLE001
-                        self._log(f"Could not read WiFi profile for '{name}': {exc}")
-                    else:
-                        if parsed:
-                            ssid = parsed.get("ssid") or ""
-                            pwd = parsed.get("password") or ""
-                            enc_raw = parsed.get("encryption") or "WPA"
-                            enc = enc_raw if enc_raw in ("WPA", "WEP", "None") else "WPA"
-                            self._log(
-                                f"Populated WiFi fields from '{name}' "
-                                f"(SSID: {redact_name(ssid)}, encryption: {enc})"
-                            )
-                        else:
-                            self._log(
-                                f"Org '{name}' has wifi.mobileconfig but no "
-                                f"com.apple.wifi.managed payload — fields cleared."
-                            )
-
-            self.enroll_wifi_ssid.setText(ssid)
-            self.enroll_wifi_password.setText(pwd)
-            self.enroll_wifi_enc.setCurrentText(enc)
-            self._update_enroll_cert_banner(org)
-
-        def _update_enroll_cert_banner(self, org: Organization | None) -> None:
-            """Show a colored banner if the selected org's cert is bad.
-
-            Hidden when: no org selected, no identity, or cert >90d healthy.
-            Yellow: cert expires within 30 days. Red: cert already expired
-            or unreadable. Green: cert valid for ≤90 days (soft reminder
-            so users have lead time to plan a regenerate).
-            """
-            label = self.enroll_cert_warning_label
-            if org is None or not (org.cert_path and org.key_path):
-                label.setVisible(False)
-                return
-            expiry = _cert_expiry(org.cert_path)
-            if expiry is None:
-                # Cert unreadable — surface a generic warning so the user
-                # doesn't try to enroll with a broken identity.
-                label.setText(
-                    "⚠  Cert file is missing or unreadable — "
-                    "regenerate identity before enrolling."
-                )
-                label.setStyleSheet(
-                    "padding: 6px 8px; border-radius: 4px; font-weight: 600;"
-                    "background: #fdecea; color: #b71c1c;"
-                )
-                label.setVisible(True)
-                return
-            if expiry.tzinfo is None:
-                expiry = expiry.replace(tzinfo=timezone.utc)
-            now = datetime.now(timezone.utc)
-            days_left = (expiry - now).days
-            if days_left < 0:
-                label.setText(
-                    f"🔴  Cert expired {-days_left} day(s) ago — "
-                    "regenerate identity before enrolling."
-                )
-                label.setStyleSheet(
-                    "padding: 6px 8px; border-radius: 4px; font-weight: 600;"
-                    "background: #fdecea; color: #b71c1c;"
-                )
-                label.setVisible(True)
-            elif days_left <= 30:
-                label.setText(
-                    f"🟡  Cert expires in {days_left} day(s) — "
-                    "consider regenerating identity."
-                )
-                label.setStyleSheet(
-                    "padding: 6px 8px; border-radius: 4px; font-weight: 600;"
-                    "background: #fff8e1; color: #8d6e00;"
-                )
-                label.setVisible(True)
-            elif days_left <= 90:
-                label.setText(f"🟢  Cert valid for {days_left} more days.")
-                label.setStyleSheet(
-                    "padding: 6px 8px; border-radius: 4px;"
-                    "background: #e8f5e9; color: #2e7d32;"
-                )
-                label.setVisible(True)
-            else:
-                label.setVisible(False)
-
-        def _create_org_dialog(self) -> None:
-            dialog = QDialog(self)
-            dialog.setWindowTitle("Create Organization")
-            dialog.setModal(True)
-            layout = QFormLayout(dialog)
-
-            name_edit = QLineEdit()
-            org_id_edit = QLineEdit()
-            mdm_url_edit = QLineEdit()
-            checkin_url_edit = QLineEdit()
-            mdm_topic_edit = QLineEdit()
-
-            layout.addRow("Name:", name_edit)
-            layout.addRow("Org ID:", org_id_edit)
-            layout.addRow("MDM URL:", mdm_url_edit)
-            layout.addRow("Check-in URL:", checkin_url_edit)
-            layout.addRow("MDM Topic:", mdm_topic_edit)
-
-            button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-            layout.addRow(button_box)
-
-            def save_org() -> None:
-                name = name_edit.text().strip()
-                mdm_url = mdm_url_edit.text().strip() or None
-                checkin_url = checkin_url_edit.text().strip() or None
-                mdm_topic = mdm_topic_edit.text().strip() or None
-                try:
-                    validate_org_fields(name, mdm_url, checkin_url, mdm_topic)
-                except OrgValidationError as exc:
-                    QMessageBox.warning(dialog, "Invalid input", str(exc))
-                    return
-
-                org = Organization(
-                    name=name,
-                    org_id=org_id_edit.text().strip() or None,
-                    mdm_url=mdm_url,
-                    checkin_url=checkin_url,
-                    mdm_topic=mdm_topic,
-                )
-                try:
-                    OrganizationManager().save_org(org)
-                    self._log(f"Created organization: {name}")
-                    dialog.accept()
-                    self._refresh_orgs()
-                except Exception as exc:  # noqa: BLE001
-                    QMessageBox.warning(dialog, "Save failed", f"Failed to create organization: {exc}")
-                    self._log(f"Failed to create organization: {exc}")
-
-            button_box.accepted.connect(save_org)
-            button_box.rejected.connect(dialog.reject)
-            dialog.exec()
-
-        def _generate_identity_dialog(self) -> None:
-            org = self._selected_org()
-            if not org:
-                QMessageBox.warning(self, "No organization", "Select an organization first.")
-                return
-
-            dialog = QDialog(self)
-            dialog.setWindowTitle(f"Generate Identity for {org.name}")
-            dialog.setModal(True)
-            layout = QFormLayout(dialog)
-
-            days_edit = QLineEdit(str(365 * 5))
-            layout.addRow("Validity (days):", days_edit)
-
-            button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-            layout.addRow(button_box)
-
-            def generate_identity() -> None:
-                try:
-                    days = int(days_edit.text().strip())
-                except ValueError:
-                    QMessageBox.warning(dialog, "Invalid value", "Validity must be a whole number of days.")
-                    return
-                try:
-                    validate_identity_days(days)
-                except ValueError as exc:
-                    QMessageBox.warning(dialog, "Invalid value", str(exc))
-                    return
-
-                def work() -> tuple[bytes, bytes]:
-                    return generate_org_identity(org.name, days)
-
-                def on_done(result: Any, error: Exception | None) -> None:
-                    self._on_identity_generated(dialog, org, result, error)
-
-                worker = WorkerThread(work)
-                self._run_worker(worker, on_done, [self.generate_id_btn])
-
-            button_box.accepted.connect(generate_identity)
-            button_box.rejected.connect(dialog.reject)
-            dialog.exec()
-
-        @Slot(object, object)
-        def _on_identity_generated(
-            self,
-            dialog: QDialog,
-            org: Organization,
-            result: Any,
-            error: Exception | None,
-        ) -> None:
-            if error:
-                self._log(f"Identity generation failed: {error}")
-                QMessageBox.warning(dialog, "Generation failed", f"Identity generation failed: {error}")
-                return
-            if not result or not isinstance(result, tuple) or len(result) != 2:
-                self._log("Identity generation returned an unexpected result.")
-                return
-            cert_der, key_der = result
-            manager = OrganizationManager()
-            org_dir = manager.org_dir_for(org.name)
-            try:
-                _write_identity_atomic(org_dir, cert_der, key_der)
-            except OSError as exc:
-                self._log(f"Failed to write identity: {exc}")
-                QMessageBox.warning(dialog, "Write failed", f"Failed to write identity: {exc}")
-                return
-            org.cert_path = str(org_dir / "cert.der")
-            org.key_path = str(org_dir / "key.der")
-            manager.save_org(org, overwrite=True)
-            self._log(f"Generated identity for {org.name}")
-            dialog.accept()
-            self._refresh_orgs()
-
-        def _delete_org(self) -> None:
-            org = self._selected_org()
-            if not org:
-                QMessageBox.warning(self, "No organization", "Select an organization first.")
-                return
-            has_identity = bool(org.cert_path and org.key_path)
-            warning = (
-                f"Delete organization '{org.name}'?\n\n"
-                "This permanently removes the org and any attached MDM profile."
-            )
-            if has_identity:
-                warning += (
-                    "\n\nWARNING: The supervising certificate and private key "
-                    "stored in this org will be permanently lost. Devices already "
-                    "enrolled with this org will not be able to re-enroll without "
-                    "first exporting the org."
-                )
-            reply = QMessageBox.question(
-                self,
-                "Confirm Delete",
-                warning,
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
-            try:
-                OrganizationManager().delete_org(org.name)
-                self._log(f"Deleted organization: {org.name}")
-                self._record_last_op(f"Deleted org '{org.name}'")
-                self._refresh_orgs()
-            except Exception as exc:  # noqa: BLE001
-                QMessageBox.warning(self, "Delete failed", f"Failed to delete organization: {exc}")
-                self._log(f"Failed to delete organization: {exc}")
-
-        def _edit_org(self) -> None:
-            """Entry point for the 'Edit Org' button.
-
-            Opens a dialog pre-filled with the selected org's editable fields
-            (org_id, mdm_url, checkin_url, mdm_topic, cert_path). The key is
-            intentionally not editable here — use 'Generate Identity' to
-            regenerate both cert and key together (security-sensitive).
-            """
-            org = self._selected_org()
-            if not org:
-                QMessageBox.warning(self, "No organization", "Select an organization first.")
-                return
-            dialog, fields = self._build_edit_org_form(org)
-            button_box = dialog.findChild(QDialogButtonBox)
-            assert button_box is not None  # we just added it
-
-            def save() -> None:
-                self._apply_edit_org(org, fields, dialog)
-
-            button_box.accepted.connect(save)
-            button_box.rejected.connect(dialog.reject)
-            dialog.exec()
-
-        def _import_org(self) -> None:
-            """Entry point for the 'Import…' button.
-
-            Routes to OrganizationManager.import_org (Apple Configurator
-            .organization file) or .import_mobileconfig (MDM .mobileconfig)
-            based on the file extension. Both run on a worker thread so the
-            GUI stays responsive on large .organization files.
-            """
-            path_str, _ = QFileDialog.getOpenFileName(
-                self,
-                "Import organization",
-                "",
-                "All supported (*.organization *.mobileconfig);;"
-                "Apple Configurator (*.organization);;"
-                "Mobileconfig (*.mobileconfig);;"
-                "All Files (*)",
-            )
-            if not path_str:
-                return
-            path = Path(path_str)
-            manager = OrganizationManager()
-
-            def work() -> Organization:
-                if path.suffix.lower() == ".mobileconfig":
-                    return manager.import_mobileconfig(path)
-                return manager.import_org(path)
-
-            def on_done(result: Organization, error: Exception | None) -> None:
-                if error:
-                    QMessageBox.warning(
-                        self, "Import failed", f"Failed to import: {error}"
-                    )
-                    self._log(f"Import failed: {error}")
-                    return
-                self._log(f"Imported organization: {result.name}")
-                self._refresh_orgs()
-
-            worker = WorkerThread(work)
-            self._run_worker(worker, on_done, [self.import_org_btn])
-
-        def _export_org(self) -> None:
-            """Entry point for the 'Export…' button.
-
-            Opens a Save-As dialog (defaulting to <org-name>.zip) and calls
-            OrganizationManager.export_org(name, dest) on a worker thread.
-            The destination can be a .zip file or a directory path — both
-            are supported by export_org.
-            """
-            org = self._selected_org()
-            if not org:
-                QMessageBox.warning(
-                    self, "No organization", "Select an organization first."
-                )
-                return
-            default_name = f"{org.name}.zip"
-            path_str, _ = QFileDialog.getSaveFileName(
-                self,
-                "Export organization",
-                default_name,
-                "Zip (*.zip);;Directory (use a folder name)",
-            )
-            if not path_str:
-                return
-            dest = Path(path_str)
-
-            def work() -> bool:
-                return OrganizationManager().export_org(org.name, dest)
-
-            def on_done(result: bool, error: Exception | None) -> None:
-                if error:
-                    QMessageBox.warning(
-                        self, "Export failed", f"Failed to export: {error}"
-                    )
-                    self._log(f"Export failed: {error}")
-                    return
-                if not result:
-                    QMessageBox.warning(
-                        self, "Export failed", "export_org returned False"
-                    )
-                    return
-                self._log(f"Exported organization: {org.name} → {dest}")
-                self._record_last_op(f"Exported org '{org.name}'")
-                QMessageBox.information(
-                    self, "Export complete", f"Exported to {dest}"
-                )
-
-            worker = WorkerThread(work)
-            self._run_worker(worker, on_done, [self.export_org_btn])
-
-        def _attach_wifi(self) -> None:
-            """Entry point for the 'Attach WiFi…' button.
-
-            Wraps ``set_org_wifi`` from cli_actions so the user can attach a
-            .mobileconfig file to an org without dropping to the CLI. The
-            Enrollment tab already auto-populates WiFi fields from a
-            configured org, so attaching here closes that loop.
-
-            Replaces an existing WiFi config after confirmation (matching
-            the CLI's ``org set-wifi --yes`` flow). Runs on a worker thread
-            because plist parsing + file copy can be slow on cold caches.
-            """
-            org = self._selected_org()
-            if not org:
-                QMessageBox.warning(
-                    self, "No organization", "Select an organization first."
-                )
-                return
-            path_str, _ = QFileDialog.getOpenFileName(
-                self,
-                "Choose WiFi mobileconfig",
-                "",
-                "Mobileconfig (*.mobileconfig);;All Files (*)",
-            )
-            if not path_str:
-                return
-            wifi_path = Path(path_str)
-            if org.wifi_config_path:
-                reply = QMessageBox.question(
-                    self,
-                    "Replace WiFi config?",
-                    (
-                        f"Replace existing WiFi config on '{org.name}'?\n\n"
-                        f"Old: {org.wifi_config_path}\nNew: {wifi_path}"
-                    ),
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                )
-                if reply != QMessageBox.StandardButton.Yes:
-                    return
-            manager = OrganizationManager()
-
-            def work() -> Any:
-                return set_org_wifi(manager, org.name, str(wifi_path))
-
-            def on_done(result: Any, error: Exception | None) -> None:
-                if error:
-                    if isinstance(error, OrgNotFoundError):
-                        msg = f"Organization not found: {org.name}"
-                    elif isinstance(error, WifiConfigNotFoundError):
-                        msg = f"WiFi config not found: {wifi_path}"
-                    elif isinstance(error, WifiConfigInvalidError):
-                        msg = f"Invalid mobileconfig: {wifi_path}"
-                    else:
-                        msg = f"Failed to attach WiFi: {error}"
-                    QMessageBox.warning(self, "Attach failed", msg)
-                    self._log(f"Attach WiFi failed: {error}")
-                    return
-                self._log(f"Attached WiFi to '{org.name}': {result.wifi_config_path}")
-                self._refresh_orgs()
-
-            worker = WorkerThread(work)
-            self._run_worker(worker, on_done, [self.attach_wifi_btn])
-
-        def _build_edit_org_form(self, org: Organization) -> tuple[QDialog, dict[str, QLineEdit]]:
-            """Construct the Edit Org dialog with QLineEdit fields pre-filled.
-
-            Returns (dialog, fields) where fields maps field names to their
-            QLineEdit widgets. Tests use this to verify pre-fill behavior
-            without spinning up the dialog's event loop.
-
-            Cert path is editable via a 'Browse...' button (QFileDialog). The
-            key is intentionally not exposed — use 'Generate Identity'.
-            """
-            dialog = QDialog(self)
-            dialog.setWindowTitle(f"Edit Organization — {org.name}")
-            dialog.setModal(True)
-            layout = QFormLayout(dialog)
-
-            org_id_edit = QLineEdit(org.org_id or "")
-            mdm_url_edit = QLineEdit(org.mdm_url or "")
-            checkin_url_edit = QLineEdit(org.checkin_url or "")
-            mdm_topic_edit = QLineEdit(org.mdm_topic or "")
-            cert_path_edit = QLineEdit(org.cert_path or "")
-
-            cert_browse = QPushButton("Browse…")
-            cert_row = QHBoxLayout()
-            cert_row.addWidget(cert_path_edit, 1)
-            cert_row.addWidget(cert_browse)
-
-            def pick_cert() -> None:
-                path, _ = QFileDialog.getOpenFileName(
-                    dialog,
-                    "Choose certificate (DER)",
-                    "",
-                    "DER (*.der);;All Files (*)",
-                )
-                if path:
-                    cert_path_edit.setText(path)
-
-            cert_browse.clicked.connect(pick_cert)
-
-            layout.addRow("Org ID:", org_id_edit)
-            layout.addRow("MDM URL:", mdm_url_edit)
-            layout.addRow("Check-in URL:", checkin_url_edit)
-            layout.addRow("MDM Topic:", mdm_topic_edit)
-            layout.addRow("Certificate:", cert_row)
-
-            button_box = QDialogButtonBox(
-                QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
-            )
-            layout.addRow(button_box)
-
-            fields = {
-                "org_id": org_id_edit,
-                "mdm_url": mdm_url_edit,
-                "checkin_url": checkin_url_edit,
-                "mdm_topic": mdm_topic_edit,
-                "cert_path": cert_path_edit,
-            }
-            return dialog, fields
-
-        def _apply_edit_org(
-            self,
-            org: Organization,
-            fields: dict[str, QLineEdit],
-            dialog: QDialog,
-        ) -> None:
-            """Validate form, build a fresh Organization, and save it.
-
-            Split from ``_edit_org`` so tests can drive it directly without
-            needing to mock QDialog.exec. On invalid input: shows a warning
-            and returns without saving. On save success: closes the dialog
-            and refreshes the org list.
-            """
-            name = org.name  # immutable from this dialog
-            mdm_url = fields["mdm_url"].text().strip() or None
-            checkin_url = fields["checkin_url"].text().strip() or None
-            mdm_topic = fields["mdm_topic"].text().strip() or None
-            try:
-                validate_org_fields(name, mdm_url, checkin_url, mdm_topic)
-            except OrgValidationError as exc:
-                QMessageBox.warning(dialog, "Invalid input", str(exc))
-                return
-
-            new_cert_path = fields["cert_path"].text().strip() or org.cert_path
-            updated = Organization(
-                name=name,
-                org_id=fields["org_id"].text().strip() or None,
-                mdm_url=mdm_url,
-                checkin_url=checkin_url,
-                mdm_topic=mdm_topic,
-                cert_path=new_cert_path,
-                key_path=org.key_path,  # not editable here
-                wifi_config_path=org.wifi_config_path,  # preserved
-            )
-            try:
-                OrganizationManager().save_org(updated, overwrite=True)
-                self._log(f"Updated organization: {name}")
-                self._record_last_op(f"Updated org '{name}'")
-                dialog.accept()
-                self._refresh_orgs()
-            except Exception as exc:  # noqa: BLE001
-                QMessageBox.warning(dialog, "Save failed", f"Failed to update: {exc}")
-                self._log(f"Failed to update organization: {exc}")
 
         def _resolve_enroll_org(self) -> Organization | None:
             name = self.enroll_org_combo.currentText().strip()

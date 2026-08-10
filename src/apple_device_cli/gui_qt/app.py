@@ -214,9 +214,9 @@ def _require_pyside6() -> None:
     # Idempotency guard: once a Qt-using class has been materialized, the
     # names are bound as module globals and PySide6 is importable. Subsequent
     # calls don't need to re-define classes or re-import.
-    if "EnrollmentApp" in globals():
+    if "MainWindow" in globals():
         return
-    global WorkerThread, EnrollmentApp
+    global WorkerThread, MainWindow
     global QEvent, Qt, QThread, Signal, Slot
     global QApplication
     global QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout
@@ -294,7 +294,7 @@ def _require_pyside6() -> None:
     WorkerThread = _WorkerThread_delegate
 
 
-    class EnrollmentApp(QMainWindow):
+    class MainWindow(QMainWindow):
         """Main PySide6 application window."""
 
         log_signal = Signal(str)
@@ -1660,7 +1660,7 @@ def run_gui() -> None:
     """
     _require_pyside6()
     app = QApplication.instance() or QApplication(sys.argv)
-    window = EnrollmentApp()
+    window = MainWindow()
     window.show()
     app.exec()
 
@@ -1669,17 +1669,18 @@ def run_gui() -> None:
 # at module top-level) so ``import apple_device_cli.gui_qt`` succeeds on a
 # headless install. ``__getattr__`` materializes them on first access and
 # raises the friendly ``RuntimeError`` if PySide6 is missing.
-_LAZY_QT_NAMES = frozenset({"WorkerThread", "EnrollmentApp", "run_gui"})
+_LAZY_QT_NAMES = frozenset({"WorkerThread", "MainWindow", "run_gui"})
 
 
 def __getattr__(name: str) -> Any:
     """PEP 562: lazily materialize Qt-using names on first attribute access.
 
     Triggers ``_require_pyside6()`` (which imports PySide6 and defines the
-    Qt-using classes) when ``WorkerThread``, ``EnrollmentApp``, or
+    Qt-using classes) when ``WorkerThread``, ``MainWindow``, or
     ``run_gui`` is first accessed. This keeps ``from apple_device_cli.gui_qt
-    import EnrollmentApp`` working while still allowing the module to
-    import on a core-only install.
+    import MainWindow`` working while still allowing the module to
+    import on a core-only install. ``EnrollmentApp`` is also resolved as
+    a back-compat alias for the same class.
     """
     if name in _LAZY_QT_NAMES:
         _require_pyside6()
@@ -1687,6 +1688,9 @@ def __getattr__(name: str) -> Any:
         if value is None:
             raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
         return value
+    if name == "EnrollmentApp":
+        _require_pyside6()
+        return globals().get("MainWindow")
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

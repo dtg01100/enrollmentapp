@@ -3,7 +3,7 @@
 Public API (back-compat with the pre-refactor single-file layout).
 
 Lazy symbols (materialized by _require_pyside6 on first access):
-    EnrollmentApp, WorkerThread
+    MainWindow, EnrollmentApp (back-compat alias), WorkerThread
 
 Eagerly re-exported from app.py:
     Everything app.py imports + its own module-level definitions.
@@ -84,11 +84,12 @@ def __getattr__(name: str):  # PEP 562
     """Lazy attribute access for Qt-using symbols materialized by _require_pyside6().
 
     Called by Python when an attribute lookup falls through. For known Qt
-    symbols and for the top-level EnrollmentApp/WorkerThread names, triggers
-    _require_pyside6() on first access. Lets ``monkeypatch.setattr`` and normal
-    imports resolve symbols that only exist after the Qt runtime loads.
+    symbols and for the top-level MainWindow/EnrollmentApp/WorkerThread
+    names, triggers _require_pyside6() on first access. Lets
+    ``monkeypatch.setattr`` and normal imports resolve symbols that only
+    exist after the Qt runtime loads.
     """
-    if name in ("EnrollmentApp", "WorkerThread") or name in _QT_SYMBOLS:
+    if name in ("MainWindow", "EnrollmentApp", "WorkerThread") or name in _QT_SYMBOLS:
         from apple_device_cli.gui_qt import app as _app
         if not hasattr(_app, name):
             _require_pyside6()
@@ -97,7 +98,8 @@ def __getattr__(name: str):  # PEP 562
 
 
 __all__ = [
-    "EnrollmentApp",
+    "MainWindow",
+    "EnrollmentApp",  # back-compat alias for MainWindow
     "OrgValidationError",
     "WorkerThread",
     "run_gui",

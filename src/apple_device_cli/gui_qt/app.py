@@ -570,194 +570,30 @@ def _require_pyside6() -> None:
         def _create_restore_tab(self) -> QWidget:
             """Build the Restore tab.
 
-            Layout (top + bottom in a vertical QSplitter):
-
-              ┌── top: setup ──────────────────────────────────┐
-              │ Device groupbox:  Device / ProductType / Mode  │
-              │ Firmware groupbox: Cache / Version / IPSW / V  │
-              │ Actions row: primary Start + secondary recov  │
-              ├─────────────── splitter ────────────────────────┤
-              └── bottom: status (anchored, always visible) ──┘
-                Progress bar (fixed-height) + Activity log
+            RestoreTab owns the widgets; this method instantiates the
+            controller and mirrors its widgets onto self for back-compat.
             """
-            outer = QWidget()
-            outer_layout = QVBoxLayout(outer)
-            outer_layout.setContentsMargins(8, 8, 8, 8)
+            from apple_device_cli.gui_qt.restore_tab import RestoreTab
 
-            splitter = QSplitter(Qt.Orientation.Vertical)
-            outer_layout.addWidget(splitter, 1)
-
-            # ---------- TOP: setup ----------
-            setup_widget = QWidget()
-            setup_layout = QVBoxLayout(setup_widget)
-            setup_layout.setContentsMargins(0, 0, 0, 0)
-            setup_layout.setSpacing(8)
-
-            # ----- Device groupbox -----
-            device_box = QGroupBox("Device")
-            device_layout = QFormLayout(device_box)
-            device_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-
-            self.restore_device_combo = QComboBox()
-            self.restore_device_combo.currentIndexChanged.connect(
-                self._on_restore_device_changed
-            )
-            device_layout.addRow("Device:", self.restore_device_combo)
-
-            self.restore_product_type_label = QLabel("<select a device>")
-            device_layout.addRow("ProductType:", self.restore_product_type_label)
-
-            self.restore_device_mode_label = QLabel("—")
-            device_layout.addRow("Mode:", self.restore_device_mode_label)
-
-            setup_layout.addWidget(device_box)
-
-            # ----- Firmware groupbox -----
-            firmware_box = QGroupBox("Firmware")
-            firmware_layout = QFormLayout(firmware_box)
-            firmware_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-
-            cache_row = QHBoxLayout()
-            self.restore_cache_path_label = QLabel(str(resolve_cache_dir()))
-            self.restore_cache_path_label.setTextInteractionFlags(
-                Qt.TextInteractionFlag.TextSelectableByMouse
-            )
-            cache_row.addWidget(self.restore_cache_path_label, 1)
-            cache_folder_btn = QPushButton("Change...")
-            cache_folder_btn.clicked.connect(self._pick_cache_folder)
-            cache_row.addWidget(cache_folder_btn)
-            show_cache_btn = QPushButton("Show cache")
-            show_cache_btn.clicked.connect(self._show_cache)
-            cache_row.addWidget(show_cache_btn)
-            self.restore_clear_cache_btn = QPushButton("Clear cache")
-            self.restore_clear_cache_btn.clicked.connect(self._clear_restore_cache)
-            cache_row.addWidget(self.restore_clear_cache_btn)
-            firmware_layout.addRow("Cache:", cache_row)
-
-            version_row = QHBoxLayout()
-            self.restore_versions_combo = QComboBox()
-            version_row.addWidget(self.restore_versions_combo, 1)
-            self.restore_refresh_versions_btn = QPushButton("Refresh versions")
-            self.restore_refresh_versions_btn.clicked.connect(self._refresh_versions)
-            self.restore_refresh_versions_btn.setEnabled(False)
-            version_row.addWidget(self.restore_refresh_versions_btn)
-            firmware_layout.addRow("iOS version:", version_row)
-
-            ipsw_row = QHBoxLayout()
-            self.restore_ipsw_path_label = QLabel("<not selected>")
-            self.restore_ipsw_path_label.setTextInteractionFlags(
-                Qt.TextInteractionFlag.TextSelectableByMouse
-            )
-            ipsw_row.addWidget(self.restore_ipsw_path_label, 1)
-            browse_ipsw_btn = QPushButton("Browse...")
-            browse_ipsw_btn.clicked.connect(self._browse_ipsw)
-            ipsw_row.addWidget(browse_ipsw_btn)
-            self.restore_verify_btn = QPushButton("Verify (ipsw.me)")
-            self.restore_verify_btn.clicked.connect(self._verify_ipsw)
-            self.restore_verify_btn.setEnabled(False)
-            ipsw_row.addWidget(self.restore_verify_btn)
-            firmware_layout.addRow("IPSW:", ipsw_row)
-
-            setup_layout.addWidget(firmware_box)
-
-            # ----- Actions row (primary + secondary) -----
-            actions_row = QHBoxLayout()
-            actions_row.setSpacing(8)
-
-            # Primary action: bold + taller so it visually stands out from
-            # the secondary recovery buttons.
-            self.restore_start_btn = QPushButton("Start Restore")
-            self.restore_start_btn.setObjectName("restore_start_btn")
-            f = self.restore_start_btn.font()
-            f.setBold(True)
-            self.restore_start_btn.setFont(f)
-            self.restore_start_btn.setMinimumHeight(36)
-            self.restore_start_btn.clicked.connect(self._start_restore)
-            self.restore_start_btn.setEnabled(False)
-            actions_row.addWidget(self.restore_start_btn)
-
-            actions_row.addSpacing(16)
-
-            self.restore_refresh_devices_btn = QPushButton("Refresh Devices")
-            self.restore_refresh_devices_btn.clicked.connect(self._refresh_devices)
-            actions_row.addWidget(self.restore_refresh_devices_btn)
-
-            self.restore_enter_recovery_btn = QPushButton("Enter Recovery")
-            self.restore_enter_recovery_btn.clicked.connect(self._enter_recovery)
-            self.restore_enter_recovery_btn.setEnabled(False)
-            actions_row.addWidget(self.restore_enter_recovery_btn)
-
-            self.restore_exit_recovery_btn = QPushButton("Exit Recovery")
-            self.restore_exit_recovery_btn.clicked.connect(self._exit_recovery)
-            self.restore_exit_recovery_btn.setEnabled(False)
-            actions_row.addWidget(self.restore_exit_recovery_btn)
-
-            # Fallback: a recovery device on the bus but the selection box
-            # is empty (recovery devices are invisible to usbmuxd). The
-            # primary Exit Recovery needs a selected device.
-            self.restore_exit_recovery_any_btn = QPushButton("Exit Recovery (any)")
-            self.restore_exit_recovery_any_btn.clicked.connect(self._exit_recovery_any)
-            actions_row.addWidget(self.restore_exit_recovery_any_btn)
-
-            actions_row.addStretch()
-            setup_layout.addLayout(actions_row)
-
-            # ---------- BOTTOM: status (anchored) ----------
-            status_widget = QWidget()
-            status_layout = QVBoxLayout(status_widget)
-            status_layout.setContentsMargins(0, 4, 0, 0)
-            status_layout.setSpacing(4)
-
-            self.restore_progress_bar = QProgressBar()
-            self.restore_progress_bar.setObjectName("restore_progress_bar")
-            self.restore_progress_bar.setFixedHeight(22)
-            self.restore_progress_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.restore_progress_bar.setTextVisible(True)
-            # Empty-state hint — visible until the user selects a device,
-            # browses an IPSW, or picks a signed version. Helps new users
-            # find their footing on a tab that previously showed blank
-            # <select a device> / <not selected> placeholders with no guidance.
-            self.restore_empty_state_label = QLabel(
-                "Select a device, then either browse for a local IPSW "
-                "or refresh signed versions."
-            )
-            self.restore_empty_state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.restore_empty_state_label.setWordWrap(True)
-            self.restore_empty_state_label.setStyleSheet(
-                "color: palette(mid); font-size: 13px; padding: 12px;"
-                "border: 1px dashed palette(midlight); border-radius: 4px;"
-            )
-            status_layout.addWidget(self.restore_empty_state_label)
-            # Always visible so the layout doesn't reflow when a restore
-            # starts. Idle state: determinate 0% with a "Ready" label. On
-            # restore start the bar switches to indeterminate ("Working...")
-            # via _reset_restore_progress_bar, then to determinate on the
-            # first real progress event.
-            self.restore_progress_bar.setRange(0, 100)
-            self.restore_progress_bar.setValue(0)
-            self.restore_progress_bar.setFormat("Ready")
-            status_layout.addWidget(self.restore_progress_bar)
-
-            log_label = QLabel("Activity log")
-            log_label.setStyleSheet("color: palette(mid); font-weight: 600;")
-            status_layout.addWidget(log_label)
-
-            self.restore_log_text = QTextEdit()
-            self.restore_log_text.setReadOnly(True)
-            self.restore_log_text.setObjectName("restore_log_text")
-            status_layout.addWidget(self.restore_log_text, 1)
-
-            splitter.addWidget(setup_widget)
-            splitter.addWidget(status_widget)
-            # ~60/40 default split; user can drag. Status never collapses
-            # below 120 px so the bar + at least a few log lines stay
-            # visible.
-            splitter.setStretchFactor(0, 3)
-            splitter.setStretchFactor(1, 2)
-            splitter.setSizes([460, 280])
-            splitter.setChildrenCollapsible(False)
-
-            return outer
+            self.restore_tab_controller = RestoreTab(self)
+            self.restore_device_combo = self.restore_tab_controller.restore_device_combo
+            self.restore_product_type_label = self.restore_tab_controller.restore_product_type_label
+            self.restore_device_mode_label = self.restore_tab_controller.restore_device_mode_label
+            self.restore_cache_path_label = self.restore_tab_controller.restore_cache_path_label
+            self.restore_clear_cache_btn = self.restore_tab_controller.restore_clear_cache_btn
+            self.restore_versions_combo = self.restore_tab_controller.restore_versions_combo
+            self.restore_refresh_versions_btn = self.restore_tab_controller.restore_refresh_versions_btn
+            self.restore_ipsw_path_label = self.restore_tab_controller.restore_ipsw_path_label
+            self.restore_verify_btn = self.restore_tab_controller.restore_verify_btn
+            self.restore_start_btn = self.restore_tab_controller.restore_start_btn
+            self.restore_refresh_devices_btn = self.restore_tab_controller.restore_refresh_devices_btn
+            self.restore_enter_recovery_btn = self.restore_tab_controller.restore_enter_recovery_btn
+            self.restore_exit_recovery_btn = self.restore_tab_controller.restore_exit_recovery_btn
+            self.restore_exit_recovery_any_btn = self.restore_tab_controller.restore_exit_recovery_any_btn
+            self.restore_progress_bar = self.restore_tab_controller.restore_progress_bar
+            self.restore_empty_state_label = self.restore_tab_controller.restore_empty_state_label
+            self.restore_log_text = self.restore_tab_controller.restore_log_text
+            return self.restore_tab_controller.tab_widget()
 
         def _log(self, message: str) -> None:
             self.log_signal.emit(message)
@@ -766,16 +602,10 @@ def _require_pyside6() -> None:
             self.log_text.append(message)
 
         def _log_to_restore(self, message: str) -> None:
-            """Append ``message`` to the Restore tab's log panel.
-
-            Emits a signal (like ``_log``) so calls from a worker thread are
-            delivered on the GUI thread — direct ``QTextEdit`` access from a
-            QThread is unsafe.
-            """
-            self.restore_log_signal.emit(message)
+            self.restore_tab_controller._log_to_restore(message)
 
         def _append_restore_log(self, message: str) -> None:
-            self.restore_log_text.append(message)
+            self.restore_tab_controller._append_log(message)
 
         def _load_initial_state(self) -> None:
             self._refresh_devices()
@@ -1327,44 +1157,7 @@ def _require_pyside6() -> None:
                 self._log_to_restore(f"    - {name}")
 
         def _clear_restore_cache(self) -> None:
-            """Wipe the firmware cache after a confirmation prompt.
-
-            Removes the entire cache directory (all IPSW files + manifest)
-            and recreates it empty. Matches the CLI's
-            ``device restore --clear-cache`` flow.
-            """
-            cache_dir = resolve_cache_dir()
-            state = cache_state(cache_dir)
-            if state["ipsw_count"] == 0:
-                QMessageBox.information(
-                    self, "Cache empty", "No IPSW files to clear."
-                )
-                return
-            reply = QMessageBox.question(
-                self,
-                "Clear firmware cache?",
-                (
-                    f"Delete all {state['ipsw_count']} IPSW file(s) in {cache_dir}?\n\n"
-                    f"Total size: {state['size_bytes']:,} bytes.\n"
-                    "This cannot be undone."
-                ),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
-            try:
-                shutil.rmtree(cache_dir)
-                cache_dir.mkdir(parents=True, exist_ok=True)
-                self._log_to_restore(
-                    f"Cleared firmware cache: {state['ipsw_count']} file(s), "
-                    f"{state['size_bytes']:,} bytes freed."
-                )
-                self._record_last_op(
-                    f"Cleared cache ({state['ipsw_count']} file(s))"
-                )
-            except Exception as exc:  # noqa: BLE001
-                QMessageBox.warning(self, "Clear failed", str(exc))
-                self._log_to_restore(f"Clear cache failed: {exc}")
+            self.restore_tab_controller._clear_restore_cache()
 
         def _confirm_restore(
             self,

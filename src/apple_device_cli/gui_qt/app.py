@@ -102,6 +102,11 @@ SAFE_TOPIC_CHARS = re.compile(r"^[A-Za-z0-9._\-:]+$")
 MIN_IDENTITY_DAYS = 1
 MAX_IDENTITY_DAYS = 365 * 100  # ~100 years
 
+# Shared activity log starts collapsed so first-launch users see more of their
+# primary task content (device list, enrollment form). Persisted per-user via
+# QSettings("ios-enroll", "gui")["logExpanded"] once they toggle it.
+DEFAULT_LOG_EXPANDED = False
+
 
 class OrgValidationError(ValueError):
     """Raised when user-entered org metadata fails validation."""
@@ -223,6 +228,7 @@ def _require_pyside6() -> None:
     global QHBoxLayout
     global QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow
     global QMessageBox, QProgressBar, QPushButton, QSplitter, QStatusBar, QTabWidget, QTextEdit
+    global QToolButton
     global QVBoxLayout, QWidget
     global QGroupBox, QSettings
     try:
@@ -250,9 +256,10 @@ def _require_pyside6() -> None:
             QStyle,
             QTabWidget,
             QTextEdit,
+            QToolButton,
             QVBoxLayout,
             QWidget,
-        )
+    )
     except ImportError as exc:
         raise RuntimeError(
             "PySide6 is not available. Install with: uv pip install 'ios-enroll[gui]'"
@@ -403,9 +410,23 @@ def _require_pyside6() -> None:
             log_layout.setContentsMargins(8, 0, 8, 4)
             log_layout.setSpacing(2)
 
+            log_header_row = QHBoxLayout()
+            log_header_row.setContentsMargins(0, 0, 0, 0)
+            log_header_row.setSpacing(6)
             log_header = QLabel("Log")
-            log_header.setStyleSheet("color: palette(mid); font-weight: 600;")
-            log_layout.addWidget(log_header)
+            # Use the standard palette text color so the label reads well on
+            # both light and dark Qt themes (palette(mid) was too low-contrast
+            # on light backgrounds — the label was nearly invisible).
+            log_header.setStyleSheet("font-weight: 600;")
+            log_header_row.addWidget(log_header)
+            log_header_row.addStretch(1)
+            self.log_toggle_btn = QToolButton()
+            self.log_toggle_btn.setObjectName("log_toggle_btn")
+            self.log_toggle_btn.setCheckable(True)
+            self.log_toggle_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            self.log_toggle_btn.toggled.connect(self._on_log_toggle)
+            log_header_row.addWidget(self.log_toggle_btn)
+            log_layout.addLayout(log_header_row)
 
             self.log_text = QTextEdit()
             self.log_text.setReadOnly(True)
@@ -421,6 +442,10 @@ def _require_pyside6() -> None:
             self.log_text.setMinimumHeight(80)
             log_layout.addWidget(self.log_text)
             layout.addWidget(log_group)
+
+            expanded = self._load_log_expanded_pref()
+            self.log_toggle_btn.setChecked(expanded)
+            self._apply_log_expanded(expanded)
 
         def _create_devices_tab(self) -> QWidget:
             from apple_device_cli.gui_qt.devices_tab import DevicesTab
@@ -1639,6 +1664,28 @@ def _require_pyside6() -> None:
             settings = QSettings("ios-enroll", "gui")
             settings.setValue("geometry", self.saveGeometry())
             settings.setValue("windowState", self.saveState())
+
+        def _load_log_expanded_pref(self) -> bool:
+            """Read the user's log-collapsed preference from QSettings.
+
+            Falls back to ``DEFAULT_LOG_EXPANDED`` (collapsed) on first launch.
+            """
+            settings = QSettings("ios-enroll", "gui")
+            return settings.value("logExpanded", DEFAULT_LOG_EXPANDED, type=bool)
+
+        def _on_log_toggle(self, checked: bool) -> None:
+            """Slot for the log toggle button — apply state and persist."""
+            self._apply_log_expanded(checked)
+            settings = QSettings("ios-enroll", "gui")
+            settings.setValue("logExpanded", checked)
+
+        def _apply_log_expanded(self, expanded: bool) -> None:
+            """Show or hide the log widget and update the toggle button."""
+            self.log_text.setVisible(expanded)
+            self.log_toggle_btn.setArrowType(
+                Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+            )
+            self.log_toggle_btn.setText("Hide log" if expanded else "Show log")
 
 
 def _write_identity_atomic(org_dir: Path, cert_der: bytes, key_der: bytes) -> None:

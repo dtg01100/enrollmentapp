@@ -2411,3 +2411,40 @@ class TestRefreshFlows:
         # _update_enroll_orgs is called as part of the refresh
         assert app.enroll_org_combo.count() == 1
         assert app.enroll_org_combo.itemText(0) == sample_org.name
+
+
+class TestLogCollapsed:
+    """The shared activity log starts collapsed; toggling it persists."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_pref(self, monkeypatch):
+        from PySide6.QtCore import QSettings
+        QSettings("ios-enroll", "gui").setValue("logExpanded", False)
+        yield
+        QSettings("ios-enroll", "gui").setValue("logExpanded", False)
+
+    def test_default_is_collapsed(self, make_app):
+        app = make_app()
+        # isHidden() reflects the explicit setVisible() state, unlike
+        # isVisible() which also depends on parent visibility (the
+        # MainWindow is never shown in offscreen tests).
+        assert app.log_text.isHidden() is True
+        assert app.log_toggle_btn.isChecked() is False
+
+    def test_toggle_expands_and_collapses(self, make_app):
+        app = make_app()
+        app.log_toggle_btn.setChecked(True)
+        assert app.log_text.isHidden() is False
+        app.log_toggle_btn.setChecked(False)
+        assert app.log_text.isHidden() is True
+
+    def test_toggle_persists_via_qsettings(self, make_app):
+        app = make_app()
+        app.log_toggle_btn.setChecked(True)
+        from PySide6.QtCore import QSettings
+        stored = QSettings("ios-enroll", "gui").value("logExpanded", type=bool)
+        assert stored is True
+        # Next-launch path: a fresh app reads the persisted preference.
+        app2 = make_app()
+        assert app2.log_text.isHidden() is False
+        assert app2.log_toggle_btn.isChecked() is True

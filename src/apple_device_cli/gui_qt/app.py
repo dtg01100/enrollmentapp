@@ -408,54 +408,18 @@ def _require_pyside6() -> None:
             layout.addWidget(log_group)
 
         def _create_devices_tab(self) -> QWidget:
-            widget = QWidget()
-            layout = QVBoxLayout(widget)
-            layout.setContentsMargins(8, 8, 8, 8)
-            layout.setSpacing(6)
+            from apple_device_cli.gui_qt.devices_tab import DevicesTab
 
-            toolbar = QHBoxLayout()
-            toolbar.setSpacing(6)
-            self.refresh_devices_btn = QPushButton("Refresh Devices")
-            self.refresh_devices_btn.clicked.connect(self._refresh_devices)
-            toolbar.addWidget(self.refresh_devices_btn)
-
-            self.device_info_btn = QPushButton("Show Device Info")
-            self.device_info_btn.clicked.connect(self._show_device_info)
-            toolbar.addWidget(self.device_info_btn)
-
-            self.activate_btn = QPushButton("Activate")
-            self.activate_btn.clicked.connect(self._activate_device)
-            toolbar.addWidget(self.activate_btn)
-
-            self.pair_btn = QPushButton("Pair / Trust")
-            self.pair_btn.clicked.connect(self._pair_device)
-            toolbar.addWidget(self.pair_btn)
-
-            toolbar.addStretch()
-            layout.addLayout(toolbar)
-
-            # List takes the remaining vertical space; placeholder shown
-            # below it when the list is empty (so resizing the list
-            # doesn't require keeping the placeholder geometry in sync).
-            self.devices_list = QListWidget()
-            self.devices_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-            self.devices_list.customContextMenuRequested.connect(
-                self._show_devices_context_menu
-            )
-            layout.addWidget(self.devices_list, 1)
-
-            self.devices_empty_label = QLabel(
-                "No devices found. Connect an iOS device over USB and "
-                "click Refresh Devices."
-            )
-            self.devices_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.devices_empty_label.setStyleSheet(
-                "color: palette(mid); font-size: 13px; padding: 4px;"
-            )
-            layout.addWidget(self.devices_empty_label)
-            self.devices_empty_label.setVisible(self.devices_list.count() == 0)
-
-            return widget
+            self.devices_tab_controller = DevicesTab(self)
+            # Mirror the controller's widgets on self so the existing
+            # test suite that reads app.devices_list etc. keeps working.
+            self.devices_list = self.devices_tab_controller.devices_list
+            self.devices_empty_label = self.devices_tab_controller.devices_empty_label
+            self.refresh_devices_btn = self.devices_tab_controller.refresh_devices_btn
+            self.device_info_btn = self.devices_tab_controller.device_info_btn
+            self.activate_btn = self.devices_tab_controller.activate_btn
+            self.pair_btn = self.devices_tab_controller.pair_btn
+            return self.devices_tab_controller.tab_widget()
 
         def _create_orgs_tab(self) -> QWidget:
             widget = QWidget()
@@ -864,6 +828,11 @@ def _require_pyside6() -> None:
                 return None
             return self._devices[current]
 
+        def _warn_no_device(self) -> None:
+            """Show the standard 'no device selected' warning + log line."""
+            QMessageBox.warning(self, "No device", "Select a device first.")
+            self._log("No device selected.")
+
         def _selected_org(self) -> Organization | None:
             current = self.orgs_list.currentRow()
             if current < 0 or current >= len(self._orgs):
@@ -910,37 +879,11 @@ def _require_pyside6() -> None:
             self._worker_pool.submit(worker, on_finished, buttons_to_disable, token=token)
 
         def _refresh_devices(self) -> None:
-            self._log("Refreshing device list...")
-            token = self._next_token()
-            buttons = [self.refresh_devices_btn]
-            restore_btn = getattr(self, "restore_refresh_devices_btn", None)
-            if restore_btn is not None:
-                buttons.append(restore_btn)
-            worker = WorkerThread(list_devices)
-            self._run_worker(worker, self._on_devices_refreshed, buttons, token=token)
+            self.devices_tab_controller._refresh()
 
         @Slot(object, object)
         def _on_devices_refreshed(self, result: Any, error: Exception | None, token: int) -> None:
-            if not self._is_current_token(token):
-                return  # stale completion
-            if error:
-                self._log(f"Failed to list devices: {error}")
-                return
-            devices = result or []
-            self._devices = list(devices)
-            self.devices_list.clear()
-            for device in self._devices:
-                display = f"{device.device_name}  ({device.udid})"
-                QListWidgetItem(display, self.devices_list)
-            # Toggle the empty-state placeholder to match the list state.
-            self.devices_empty_label.setVisible(self.devices_list.count() == 0)
-            if self._devices:
-                self.devices_list.setCurrentRow(0)
-            self._update_enroll_udids()
-            self._populate_restore_device_combo()
-            self._update_mode_labels()
-            self._log(f"Found {len(self._devices)} device(s).")
-            self._update_status_bar()
+            self.devices_tab_controller._on_refreshed(result, error, token)
 
         def _next_token(self) -> int:
             self._request_token += 1
@@ -965,114 +908,34 @@ def _require_pyside6() -> None:
                 self._log("No device selected in the Devices tab.")
 
         def _show_device_info(self) -> None:
-            device = self._selected_device()
-            if not device:
-                QMessageBox.warning(self, "No device", "Select a device first.")
-                return
-            self._log(f"Fetching info for {device.device_name}...")
-            udid = device.udid
-            worker = WorkerThread(lambda: get_device_info(udid))
-            self._run_worker(worker, self._on_device_info, [self.device_info_btn])
+            self.devices_tab_controller._show_device_info()
 
         @Slot(object, object)
         def _on_device_info(self, result: Any, error: Exception | None) -> None:
-            if error:
-                self._log(f"Failed to get device info: {error}")
-                return
-            info = result
-            if not info:
-                self._log("Device info unavailable.")
-                return
-            self._log(f"UDID: {info.udid}")
-            self._log(f"Name: {info.device_name}")
-            self._log(f"Type: {info.device_type}")
-            self._log(f"iOS: {info.firmware_version} ({info.build_version})")
-            if info.ecid:
-                self._log(f"ECID: {info.ecid}")
+            self.devices_tab_controller._on_device_info(result, error)
 
         def _activate_device(self) -> None:
-            device = self._selected_device()
-            if not device:
-                QMessageBox.warning(self, "No device", "Select a device first.")
-                return
-            self._log(f"Activating {device.device_name}...")
-            udid = device.udid
-            worker = WorkerThread(lambda: activate_device(udid))
-            self._run_worker(worker, self._on_activation_result, [self.activate_btn])
+            self.devices_tab_controller._activate_device()
 
         @Slot(object, object)
         def _on_activation_result(self, result: Any, error: Exception | None) -> None:
-            if error:
-                self._log(f"Activation failed: {error}")
-            else:
-                self._log("Activation completed.")
+            self.devices_tab_controller._on_activation_result(result, error)
 
         def _pair_device(self) -> None:
-            device = self._selected_device()
-            if not device:
-                QMessageBox.warning(self, "No device", "Select a device first.")
-                return
-            self._log(f"Ensuring pairing with {device.device_name}...")
-            udid = device.udid
-            worker = WorkerThread(lambda: ensure_device_pairing(udid))
-            self._run_worker(worker, self._on_pair_result, [self.pair_btn])
+            self.devices_tab_controller._pair_device()
 
         @Slot(object, object)
         def _on_pair_result(self, result: Any, error: Exception | None) -> None:
-            if error:
-                self._log(f"Pairing failed: {error}")
-            else:
-                self._log("Device paired/trusted successfully.")
+            self.devices_tab_controller._on_pair_result(result, error)
 
         def _show_devices_context_menu(self, pos) -> None:
-            """Right-click context menu on the Devices list.
-
-            Mirrors the toolbar buttons but is right-click accessible.
-            Selects the row under the cursor first so subsequent
-            actions operate on the right device even when the user
-            hasn't clicked to select it. Bails when the click is on
-            empty space (no item at ``pos``).
-
-            Splits menu construction from menu display so tests can
-            inspect the actions without going through the modal
-            ``QMenu.exec`` (which is a C++ builtin that can't be
-            monkeypatched from Python and would hang the offscreen
-            test runner).
-            """
-            item = self.devices_list.itemAt(pos)
-            if item is None:
-                return
-            self.devices_list.setCurrentRow(self.devices_list.row(item))
-            menu = self._build_devices_context_menu()
-            menu.exec(self.devices_list.mapToGlobal(pos))
+            self.devices_tab_controller._show_context_menu(pos)
 
         def _build_devices_context_menu(self) -> Any:
-            """Construct the context menu. Tests call this directly."""
-            menu = QMenu(self.devices_list)
-            menu.addAction("Show Device Info", self._show_device_info)
-            menu.addAction("Activate", self._activate_device)
-            menu.addAction("Pair / Trust", self._pair_device)
-            # Make Supervised lives on the Enrollment tab; route there
-            # and trigger Guided Enroll if prerequisites are met.
-            menu.addAction("Make Supervised", self._make_supervised_from_context)
-            return menu
+            return self.devices_tab_controller._build_context_menu()
 
         def _make_supervised_from_context(self) -> None:
-            """Bridge from devices context menu → Enrollment tab's Guided Enroll.
-
-            Switches to the Enrollment tab so the user sees the action
-            take effect. If an org + UDID are both populated, fires
-            Guided Enroll; otherwise just lands them on the tab.
-            """
-            self.tabs.setCurrentWidget(self.enroll_tab)
-            self._update_enroll_action_gates()
-            if self.guided_enroll_btn.isEnabled():
-                self._guided_enroll()
-            else:
-                self._log(
-                    "Switched to Enrollment tab — pick an organization "
-                    "to start the workflow."
-                )
+            self.devices_tab_controller._make_supervised_from_context()
 
         def _refresh_orgs(self) -> None:
             self._log("Refreshing organizations...")

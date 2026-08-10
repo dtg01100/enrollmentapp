@@ -316,15 +316,16 @@ class TestWorkerSafety:
     def test_buttons_passed_to_run_worker_are_disabled(self, make_app):
         """The buttons listed in ``_run_worker`` are disabled while the worker runs.
 
-        Verified by inspection: ``_run_worker`` calls ``btn.setEnabled(False)``
-        on each button in ``buttons_to_disable`` before starting the worker,
-        and re-enables them in the completion handler. The completion handler
-        is exercised by ``test_button_re_enabled_after_worker_completes``.
+        Verified by inspection: the worker-pool ``submit`` method calls
+        ``btn.setEnabled(False)`` on each button in ``buttons_to_disable``
+        before starting the worker, and re-enables them in the completion
+        handler. The completion handler is exercised by
+        ``test_button_re_enabled_after_worker_completes``.
         """
         import inspect
-        from apple_device_cli import gui_qt
+        from apple_device_cli.gui_qt.worker import WorkerPool
 
-        source = inspect.getsource(gui_qt.EnrollmentApp._run_worker)
+        source = inspect.getsource(WorkerPool.submit)
         assert "setEnabled(False)" in source
         assert "setEnabled(True)" in source
 
@@ -1597,15 +1598,17 @@ class TestRunGui:
         monkeypatch.setitem(sys.modules, "PySide6.QtCore", None)
         monkeypatch.setitem(sys.modules, "PySide6.QtWidgets", None)
         # Force a fresh import. ``runpy`` runs the module body in a fresh
-        # namespace, just like a real ``python -m apple_device_cli.gui_qt``
-        # would at process start. It emits a RuntimeWarning if the module is
-        # already in sys.modules (which it now is, since earlier tests ran
-        # with real PySide6), so temporarily pop it.
+        # namespace, just like a real ``import apple_device_cli.gui_qt``
+        # would. ``runpy.run_module`` can't run a bare package without a
+        # ``__main__.py``, so target the package's ``__init__`` submodule to
+        # simulate the import.
         import runpy
 
         saved_gui_qt = sys.modules.pop("apple_device_cli.gui_qt", None)
         try:
-            ns = runpy.run_module("apple_device_cli.gui_qt", run_name="__not_main__")
+            ns = runpy.run_module(
+                "apple_device_cli.gui_qt.__init__", run_name="__not_main__"
+            )
         finally:
             if saved_gui_qt is not None:
                 sys.modules["apple_device_cli.gui_qt"] = saved_gui_qt

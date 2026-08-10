@@ -4,7 +4,11 @@ import plistlib
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch, MagicMock
-from apple_device_cli.orgs.manager import OrganizationManager
+from apple_device_cli.orgs.manager import OrganizationManager, _fcntl
+
+# POSIX-only test — the lock contract uses fcntl.flock on POSIX and
+# msvcrt.locking on Windows. Skip on platforms where _fcntl is None.
+pytestmark = pytest.mark.skipif(_fcntl is None, reason="POSIX fcntl.flock only")
 
 
 # Sample MDM payload for mocking - minimal valid structure
@@ -126,14 +130,12 @@ def test_import_mobileconfig_raises_on_missing_payload_organization(mock_mobilec
 
 def test_import_mobileconfig_acquires_lock(mock_mobileconfig):
     """import_mobileconfig must hold fcntl.flock during filesystem operations."""
-    import fcntl
-
     mobileconfig_path, tmp = mock_mobileconfig
     mgr = OrganizationManager(tmp)
 
     with patch('subprocess.run', side_effect=make_mock_subprocess(SAMPLE_MDM_PAYLOAD)), \
          patch('apple_device_cli.orgs.manager.pkcs7.load_der_pkcs7_certificates', return_value=[]), \
-         patch('apple_device_cli.orgs.manager.fcntl.flock') as mock_flock, \
+         patch('apple_device_cli.orgs.manager._fcntl.flock') as mock_flock, \
          patch('apple_device_cli.orgs.manager.os.open', return_value=42) as mock_open, \
          patch('apple_device_cli.orgs.manager.os.close') as mock_close:
         mgr.import_mobileconfig(mobileconfig_path)
@@ -147,8 +149,8 @@ def test_import_mobileconfig_acquires_lock(mock_mobileconfig):
     # flock must be called with LOCK_EX first (acquire) and LOCK_UN last (release)
     flock_calls = mock_flock.call_args_list
     assert len(flock_calls) >= 2
-    assert flock_calls[0].args[1] == fcntl.LOCK_EX
-    assert any(c.args[1] == fcntl.LOCK_UN for c in flock_calls)
+    assert flock_calls[0].args[1] == _fcntl.LOCK_EX
+    assert any(c.args[1] == _fcntl.LOCK_UN for c in flock_calls)
 
     # fd must be closed
     mock_close.assert_called_once_with(42)

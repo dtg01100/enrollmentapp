@@ -1,11 +1,13 @@
-import fcntl
 import os
 import pytest
 import tempfile
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch, MagicMock
-from apple_device_cli.orgs.manager import Organization, OrganizationManager
+from apple_device_cli.orgs.manager import Organization, OrganizationManager, _fcntl
+
+# POSIX-only test — skips on Windows where _fcntl is None.
+pytestmark = pytest.mark.skipif(_fcntl is None, reason="POSIX fcntl.flock only")
 
 
 def test_organization_to_dict():
@@ -418,7 +420,7 @@ def test_save_org_acquires_fcntl_lock():
         manager = OrganizationManager(Path(tmpdir))
         org = Organization(name="Test Org", org_id="com.test")
 
-        with patch("apple_device_cli.orgs.manager.fcntl.flock") as mock_flock, \
+        with patch("apple_device_cli.orgs.manager._fcntl.flock") as mock_flock, \
              patch("apple_device_cli.orgs.manager.os.open", return_value=42) as mock_open, \
              patch("apple_device_cli.orgs.manager.os.close") as mock_close:
             manager.save_org(org)
@@ -432,8 +434,8 @@ def test_save_org_acquires_fcntl_lock():
         # flock must be called with LOCK_EX first (acquire) and LOCK_UN last (release)
         flock_calls = mock_flock.call_args_list
         assert len(flock_calls) >= 2
-        assert flock_calls[0].args[1] == fcntl.LOCK_EX
-        assert any(c.args[1] == fcntl.LOCK_UN for c in flock_calls)
+        assert flock_calls[0].args[1] == _fcntl.LOCK_EX
+        assert any(c.args[1] == _fcntl.LOCK_UN for c in flock_calls)
 
         # fd must be closed
         mock_close.assert_called_once_with(42)
@@ -454,7 +456,7 @@ def test_concurrent_save_org_serialized_by_lock():
         # save_org call will block on fcntl.flock(LOCK_EX) until we release.
         lock_path = manager.orgs_dir / ".Test_Org.lock"
         fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        _fcntl.flock(fd, _fcntl.LOCK_EX)
 
         results = {}
         started = threading.Event()
@@ -475,7 +477,7 @@ def test_concurrent_save_org_serialized_by_lock():
         assert not results, "second save_org should block while first holds the lock"
 
         # Release the lock; second save should now complete
-        fcntl.flock(fd, fcntl.LOCK_UN)
+        _fcntl.flock(fd, _fcntl.LOCK_UN)
         os.close(fd)
         t.join(timeout=5)
         assert results.get("ok") is True
@@ -483,7 +485,7 @@ def test_concurrent_save_org_serialized_by_lock():
 
 
 def test_concurrent_save_and_import_serialized_by_lock():
-    """save_org and import_mobileconfig for same org must serialize via fcntl lock."""
+    """save_org and import_mobileconfig for same org must serialize via _fcntl lock."""
     import threading
     import time
     import plistlib
@@ -511,7 +513,7 @@ def test_concurrent_save_and_import_serialized_by_lock():
         # Pre-acquire the lock so import_mobileconfig blocks
         lock_path = manager.orgs_dir / ".Test_Org.lock"
         fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        _fcntl.flock(fd, _fcntl.LOCK_EX)
 
         results = {}
         started = threading.Event()
@@ -540,7 +542,7 @@ def test_concurrent_save_and_import_serialized_by_lock():
         assert not results, "import_mobileconfig should block while save_org holds the lock"
 
         # Release the lock; import should now complete
-        fcntl.flock(fd, fcntl.LOCK_UN)
+        _fcntl.flock(fd, _fcntl.LOCK_UN)
         os.close(fd)
         t.join(timeout=5)
         assert results.get("ok") is True

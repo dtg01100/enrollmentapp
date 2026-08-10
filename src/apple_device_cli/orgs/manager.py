@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import contextlib
-import fcntl
 import json
 import logging
 import os
@@ -19,6 +18,16 @@ from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import pkcs12, pkcs7
 from cryptography.hazmat.backends import default_backend
+
+# ``fcntl`` is POSIX-only; an unconditional ``import fcntl`` would crash
+# Windows Python at module load. The runtime branch in ``_acquire_org_lock``
+# uses ``msvcrt.locking`` on Windows instead. Set to ``None`` here so the
+# module imports cleanly on every platform — the branch keys off the symbol
+# actually available, not the OS name.
+try:
+    import fcntl as _fcntl
+except ImportError:
+    _fcntl = None  # type: ignore[assignment]
 
 DEFAULT_ORGS_DIR = Path.home() / ".config" / "apple_device_cli" / "orgs"
 
@@ -226,28 +235,31 @@ class OrganizationManager:
 
         Prevents races between concurrent save_org and import_mobileconfig
         calls for the same org name. Auto-releases on context exit (even
-        on exception). Uses POSIX fcntl.flock where available, with a
-        Windows msvcrt.locking fallback for cross-platform support.
+        on exception). Uses POSIX ``fcntl.flock`` where available, with a
+        Windows ``msvcrt.locking`` fallback. Branching on ``_fcntl is None``
+        (not ``sys.platform``) so the module imports cleanly on Windows —
+        an unconditional ``import fcntl`` would crash Windows Python before
+        the runtime branch ever runs.
         """
         lock_path = self.orgs_dir / f".{self._sanitize_name(name)}.lock"
         fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            if sys.platform == "win32":
+            if _fcntl is None:
                 import msvcrt
 
                 # Lock 1 byte at offset 0; cross-process via Windows lockfile semantics.
                 msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
             else:
-                fcntl.flock(fd, fcntl.LOCK_EX)
+                _fcntl.flock(fd, _fcntl.LOCK_EX)
             yield
         finally:
             try:
-                if sys.platform == "win32":
+                if _fcntl is None:
                     import msvcrt
 
                     msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
                 else:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
+                    _fcntl.flock(fd, _fcntl.LOCK_UN)
             except OSError:
                 pass
             os.close(fd)

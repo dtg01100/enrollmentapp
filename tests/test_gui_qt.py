@@ -1562,8 +1562,16 @@ def _fresh_gui_qt():
     gui_qt`` resolve through that attribute rather than ``sys.modules``, and
     other tests (e.g. ``runpy.run_module``) can leave it pointing at a
     superseded module object.
+
+    Note: ``apple_device_cli.gui_qt.app`` is dropped too — otherwise the
+    ``_require_pyside6`` idempotency guard sees ``MainWindow`` in the
+    submodule's globals (from a prior successful import) and returns early,
+    which makes a later ``monkeypatch.setitem(sys.modules, "PySide6.QtWidgets",
+    None)`` invisible to ``run_gui`` and the test hangs on ``app.exec()``
+    instead of raising ``RuntimeError``.
     """
     sys.modules.pop("apple_device_cli.gui_qt", None)
+    sys.modules.pop("apple_device_cli.gui_qt.app", None)
     import apple_device_cli.gui_qt as mod
 
     import apple_device_cli as pkg

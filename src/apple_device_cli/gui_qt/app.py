@@ -543,170 +543,29 @@ def _require_pyside6() -> None:
             self.enroll_wifi_enc.setCurrentText(enc)
             self._update_enroll_cert_banner(org)
 
-        def _update_enroll_cert_banner(self, org: Organization | None) -> None:
-            label = self.enroll_cert_warning_label
-            if org is None or not (org.cert_path and org.key_path):
-                label.setVisible(False)
-                return
-            expiry = _cert_expiry(org.cert_path)
-            if expiry is None:
-                label.setText(
-                    "⚠  Cert file is missing or unreadable — "
-                    "regenerate identity before enrolling."
-                )
-                label.setStyleSheet(
-                    "padding: 6px 8px; border-radius: 4px; font-weight: 600;"
-                    "background: #fdecea; color: #b71c1c;"
-                )
-                label.setVisible(True)
-                return
-            if expiry.tzinfo is None:
-                expiry = expiry.replace(tzinfo=timezone.utc)
-            now = datetime.now(timezone.utc)
-            days_left = (expiry - now).days
-            if days_left < 0:
-                label.setText(
-                    f"🔴  Cert expired {-days_left} day(s) ago — "
-                    "regenerate identity before enrolling."
-                )
-                label.setStyleSheet(
-                    "padding: 6px 8px; border-radius: 4px; font-weight: 600;"
-                    "background: #fdecea; color: #b71c1c;"
-                )
-                label.setVisible(True)
-            elif days_left <= 30:
-                label.setText(
-                    f"🟡  Cert expires in {days_left} day(s) — "
-                    "consider regenerating identity."
-                )
-                label.setStyleSheet(
-                    "padding: 6px 8px; border-radius: 4px; font-weight: 600;"
-                    "background: #fff8e1; color: #8d6e00;"
-                )
-                label.setVisible(True)
-            elif days_left <= 90:
-                label.setText(f"🟢  Cert valid for {days_left} more days.")
-                label.setStyleSheet(
-                    "padding: 6px 8px; border-radius: 4px;"
-                    "background: #e8f5e9; color: #2e7d32;"
-                )
-                label.setVisible(True)
-            else:
-                label.setVisible(False)
-
         def _create_enroll_tab(self) -> QWidget:
             """Build the Enrollment tab.
 
-            Mirrors the Restore tab's groupbox pattern: three logical sections
-            (Organization & device / WiFi / Actions), with the primary action
-            (Make Supervised) visually distinct from the secondary ones.
+            EnrollTab owns all the enroll widgets; this method just
+            instantiates the controller and mirrors its widgets onto
+            self for back-compat with tests.
             """
-            widget = QWidget()
-            layout = QVBoxLayout(widget)
-            layout.setContentsMargins(8, 8, 8, 8)
-            layout.setSpacing(8)
+            from apple_device_cli.gui_qt.enroll_tab import EnrollTab
 
-            # ----- Organization & device groupbox -----
-            org_box = QGroupBox("Organization & device")
-            org_form = QFormLayout(org_box)
-            org_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-
-            self.enroll_org_combo = QComboBox()
-            org_form.addRow("Organization:", self.enroll_org_combo)
-
-            self.enroll_preset_combo = QComboBox()
-            self.enroll_preset_combo.addItems(list(PRESETS.keys()))
-            self.enroll_preset_combo.setCurrentText("standard")
-            org_form.addRow("Skip preset:", self.enroll_preset_combo)
-
-            udid_row = QHBoxLayout()
-            self.enroll_udid_combo = QComboBox()
-            udid_row.addWidget(self.enroll_udid_combo, 1)
-            use_device_btn = QPushButton("Use Selected Device")
-            use_device_btn.clicked.connect(self._use_selected_device)
-            udid_row.addWidget(use_device_btn)
-            org_form.addRow("Device UDID:", udid_row)
-
-            layout.addWidget(org_box)
-
-            # Cert-expiry banner — shown when the selected org's cert is
-            # expiring (yellow), expired (red), or unreadable (red). Hidden
-            # when there's no org selected, no identity, or the cert is
-            # healthy (>90 days remaining).
-            self.enroll_cert_warning_label = QLabel("")
-            self.enroll_cert_warning_label.setWordWrap(True)
-            self.enroll_cert_warning_label.setStyleSheet(
-                "padding: 6px 8px; border-radius: 4px; font-weight: 600;"
-            )
-            self.enroll_cert_warning_label.setVisible(False)
-            layout.addWidget(self.enroll_cert_warning_label)
-
-            # ----- WiFi groupbox -----
-            wifi_box = QGroupBox("WiFi (optional)")
-            wifi_form = QFormLayout(wifi_box)
-            wifi_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-
-            self.enroll_wifi_ssid = QLineEdit()
-            wifi_form.addRow("SSID:", self.enroll_wifi_ssid)
-
-            self.enroll_wifi_password = QLineEdit()
-            self.enroll_wifi_password.setEchoMode(QLineEdit.EchoMode.Password)
-            wifi_form.addRow("Password:", self.enroll_wifi_password)
-
-            self.enroll_wifi_enc = QComboBox()
-            self.enroll_wifi_enc.addItems(["WPA", "WEP", "None"])
-            self.enroll_wifi_enc.setCurrentText("WPA")
-            wifi_form.addRow("Encryption:", self.enroll_wifi_enc)
-
-            layout.addWidget(wifi_box)
-
-            # ----- Actions row (primary + secondary) -----
-            actions_row = QHBoxLayout()
-            actions_row.setSpacing(8)
-
-            # Primary action — bold + taller so the eye lands on it.
-            self.guided_enroll_btn = QPushButton("Guided Enroll")
-            self.guided_enroll_btn.setObjectName("guided_enroll_btn")
-            f = self.guided_enroll_btn.font()
-            f.setBold(True)
-            self.guided_enroll_btn.setFont(f)
-            self.guided_enroll_btn.setMinimumHeight(36)
-            self.guided_enroll_btn.setToolTip(
-                "Validate prerequisites, then enroll the selected device "
-                "with the selected org in one click."
-            )
-            self.guided_enroll_btn.clicked.connect(self._guided_enroll)
-            actions_row.addWidget(self.guided_enroll_btn)
-
-            self.make_supervised_btn = QPushButton("Make Supervised")
-            self.make_supervised_btn.setObjectName("make_supervised_btn")
-            f = self.make_supervised_btn.font()
-            f.setBold(True)
-            self.make_supervised_btn.setFont(f)
-            self.make_supervised_btn.setMinimumHeight(36)
-            self.make_supervised_btn.clicked.connect(self._make_supervised)
-            actions_row.addWidget(self.make_supervised_btn)
-
-            actions_row.addSpacing(16)
-
-            self.validate_btn = QPushButton("Validate Prerequisites")
-            self.validate_btn.clicked.connect(self._validate_prereqs)
-            actions_row.addWidget(self.validate_btn)
-
-            self.check_status_btn = QPushButton("Check Status")
-            self.check_status_btn.clicked.connect(self._check_status)
-            actions_row.addWidget(self.check_status_btn)
-
-            self.prepare_reenroll_btn = QPushButton("Prepare Re-Enrollment")
-            self.prepare_reenroll_btn.clicked.connect(self._prepare_reenroll)
-            actions_row.addWidget(self.prepare_reenroll_btn)
-
-            actions_row.addStretch()
-            layout.addLayout(actions_row)
-
-            layout.addStretch(1)
-
-            return widget
+            self.enroll_tab_controller = EnrollTab(self)
+            self.enroll_org_combo = self.enroll_tab_controller.enroll_org_combo
+            self.enroll_preset_combo = self.enroll_tab_controller.enroll_preset_combo
+            self.enroll_udid_combo = self.enroll_tab_controller.enroll_udid_combo
+            self.enroll_cert_warning_label = self.enroll_tab_controller.enroll_cert_warning_label
+            self.enroll_wifi_ssid = self.enroll_tab_controller.enroll_wifi_ssid
+            self.enroll_wifi_password = self.enroll_tab_controller.enroll_wifi_password
+            self.enroll_wifi_enc = self.enroll_tab_controller.enroll_wifi_enc
+            self.guided_enroll_btn = self.enroll_tab_controller.guided_enroll_btn
+            self.make_supervised_btn = self.enroll_tab_controller.make_supervised_btn
+            self.validate_btn = self.enroll_tab_controller.validate_btn
+            self.check_status_btn = self.enroll_tab_controller.check_status_btn
+            self.prepare_reenroll_btn = self.enroll_tab_controller.prepare_reenroll_btn
+            return self.enroll_tab_controller.tab_widget()
 
         def _create_restore_tab(self) -> QWidget:
             """Build the Restore tab.
@@ -1032,288 +891,44 @@ def _require_pyside6() -> None:
             self.devices_tab_controller._make_supervised_from_context()
 
         def _resolve_enroll_org(self) -> Organization | None:
-            name = self.enroll_org_combo.currentText().strip()
-            if not name:
-                QMessageBox.warning(self, "No organization", "Select an organization.")
-                return None
-            org = OrganizationManager().get_org(name)
-            if not org:
-                QMessageBox.warning(self, "Unknown organization", f"Organization not found: {name}")
-                return None
-            return org
+            return self.enroll_tab_controller._resolve_enroll_org()
+
+        def _update_enroll_action_gates(self) -> None:
+            self.enroll_tab_controller._update_enroll_action_gates()
+
+        def _update_enroll_cert_banner(self, org: Organization | None) -> None:
+            self.enroll_tab_controller._update_enroll_cert_banner(org)
 
         def _validate_prereqs(self) -> None:
-            org = self._resolve_enroll_org()
-            if not org:
-                return
-            self._log(f"Validating prerequisites for {org.name}...")
-
-            def work() -> list[str]:
-                return validate_enrollment_prerequisites(
-                    cert_path=org.cert_path,
-                    key_path=org.key_path,
-                    org_name=org.name,
-                    mdm_url=org.mdm_url,
-                    check_mdm_reachability=False,
-                )
-
-            worker = WorkerThread(work)
-            self._run_worker(worker, self._on_validation_result, [self.validate_btn])
+            self.enroll_tab_controller._validate_prereqs()
 
         @Slot(object, object)
         def _on_validation_result(self, result: Any, error: Exception | None) -> None:
-            if error:
-                self._log(f"Validation failed: {error}")
-                return
-            errors = result or []
-            if errors:
-                self._log("Validation failed:")
-                for err in errors:
-                    self._log(f"  - {err}")
-            else:
-                self._log("All prerequisites valid.")
+            self.enroll_tab_controller._on_validation_result(result, error)
 
         def _make_supervised(self) -> None:
-            org = self._resolve_enroll_org()
-            if not org:
-                return
-            if not org.cert_path or not org.key_path:
-                QMessageBox.warning(
-                    self,
-                    "Missing identity",
-                    f"Organization '{org.name}' needs a supervising certificate and key. "
-                    "Generate one in the Organizations tab first.",
-                )
-                return
-            udid = self.enroll_udid_combo.currentText().strip()
-            if not udid:
-                QMessageBox.warning(self, "No device", "Select a device UDID.")
-                return
-
-            try:
-                skip_list = resolve_skip_panes(self.enroll_preset_combo.currentText(), None)
-            except ValueError as exc:
-                QMessageBox.warning(self, "Invalid preset", f"Invalid skip preset: {exc}")
-                return
-
-            wifi_ssid = self.enroll_wifi_ssid.text().strip() or None
-            wifi_password = self.enroll_wifi_password.text() or None  # keep; never log
-            wifi_encryption = self.enroll_wifi_enc.currentText()
-
-            self._log(f"Starting supervised enrollment for {udid}...")
-
-            def progress(msg: str) -> None:
-                # Scrub the WiFi password from any progress message before logging.
-                masked = sanitize_text(_redact_in_text(msg, wifi_password))
-                self._log(f"  {masked}")
-
-            def work() -> Any:
-                return make_supervised(
-                    cert_path=org.cert_path,
-                    key_path=org.key_path,
-                    org_name=org.name,
-                    org_uuid=org.org_id,
-                    skip_list=skip_list,
-                    mdm_url=org.mdm_url,
-                    mdm_checkin_url=org.checkin_url,
-                    mdm_topic=org.mdm_topic,
-                    wifi_ssid=wifi_ssid,
-                    wifi_password=wifi_password,
-                    wifi_encryption=wifi_encryption,
-                    udid=udid,
-                    progress_callback=progress,
-                )
-
-            worker = WorkerThread(work)
-            self._run_worker(worker, self._on_make_supervised_result, [self.make_supervised_btn])
+            self.enroll_tab_controller._make_supervised()
 
         @Slot(object, object)
         def _on_make_supervised_result(self, result: Any, error: Exception | None) -> None:
-            if error:
-                self._log(f"Enrollment failed: {error}")
-                return
-            if result is None:
-                self._log("Enrollment completed with no result.")
-                return
-            self._log(f"Enrollment result: supervised={result.supervised}, MDM={result.mdm_enrolled}, WiFi={result.wifi_installed}")
-            if result.errors:
-                self._log("Errors:")
-                for err in result.errors:
-                    self._log(f"  - {err}")
-
-        def _update_enroll_action_gates(self) -> None:
-            """Enable Guided Enroll + Make Supervised only when org + UDID are present.
-
-            Disabling the buttons (vs warning + bailing) prevents the
-            'five dialogs in a row' UX trap where the user clicks the
-            primary action and gets walked through every missing-input
-            guard sequentially.
-            """
-            has_org = self.enroll_org_combo.count() > 0 and bool(
-                self.enroll_org_combo.currentText().strip()
-            )
-            has_device = self.enroll_udid_combo.count() > 0 and bool(
-                self.enroll_udid_combo.currentText().strip()
-            )
-            enabled = has_org and has_device
-            self.guided_enroll_btn.setEnabled(enabled)
-            self.make_supervised_btn.setEnabled(enabled)
-            if not has_org:
-                tip = "Select an organization in the Organizations tab, then a device here."
-            elif not has_device:
-                tip = "Connect an iOS device and click Refresh Devices, then select one here."
-            else:
-                tip = (
-                    "Validate prerequisites, then enroll the selected device "
-                    "with the selected org in one click."
-                )
-            self.guided_enroll_btn.setToolTip(tip)
-            self.make_supervised_btn.setToolTip(
-                tip if enabled else "Same prerequisites as Guided Enroll."
-            )
+            self.enroll_tab_controller._on_make_supervised_result(result, error)
 
         def _guided_enroll(self) -> None:
-            """Single-click enrollment: validate → confirm → run.
-
-            The single highest-value workflow in the GUI — pick an org,
-            pick a device, fill WiFi (optional), click Guided Enroll.
-            Shows a confirm dialog summarizing the resolved parameters
-            before kicking off ``make_supervised`` on a worker thread.
-
-            Differs from ``_make_supervised`` only in UX: same engine call,
-            but with a confirmation step that mirrors the CLI's
-            ``guided-enroll`` interactive flow.
-            """
-            org = self._resolve_enroll_org()
-            if not org:
-                return
-            if not org.cert_path or not org.key_path:
-                QMessageBox.warning(
-                    self,
-                    "Missing identity",
-                    (
-                        f"Organization '{org.name}' needs a supervising "
-                        "certificate and key. Generate one in the "
-                        "Organizations tab first."
-                    ),
-                )
-                return
-            udid = self.enroll_udid_combo.currentText().strip()
-            if not udid:
-                QMessageBox.warning(self, "No device", "Select a device UDID.")
-                return
-            try:
-                skip_list = resolve_skip_panes(
-                    self.enroll_preset_combo.currentText(), None
-                )
-            except ValueError as exc:
-                QMessageBox.warning(self, "Invalid preset", str(exc))
-                return
-
-            wifi_ssid = self.enroll_wifi_ssid.text().strip() or None
-            wifi_password = self.enroll_wifi_password.text() or None
-            wifi_encryption = self.enroll_wifi_enc.currentText()
-
-            summary = (
-                f"Enroll {udid} with '{org.name}'\n\n"
-                f"  Preset: {self.enroll_preset_combo.currentText()}\n"
-                f"  WiFi: {wifi_ssid or '(none)'}\n"
-                f"  MDM URL: {org.mdm_url or '(none)'}\n\n"
-                "This will activate, supervise, and install the MDM profile."
-            )
-            reply = QMessageBox.question(
-                self,
-                "Confirm Guided Enrollment",
-                summary,
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
-
-            self._log(f"Guided enrollment starting for {udid}...")
-
-            def progress(msg: str) -> None:
-                masked = sanitize_text(_redact_in_text(msg, wifi_password))
-                self._log(f"  {masked}")
-
-            def work() -> Any:
-                return make_supervised(
-                    cert_path=org.cert_path,
-                    key_path=org.key_path,
-                    org_name=org.name,
-                    org_uuid=org.org_id,
-                    skip_list=skip_list,
-                    mdm_url=org.mdm_url,
-                    mdm_checkin_url=org.checkin_url,
-                    mdm_topic=org.mdm_topic,
-                    wifi_ssid=wifi_ssid,
-                    wifi_password=wifi_password,
-                    wifi_encryption=wifi_encryption,
-                    udid=udid,
-                    progress_callback=progress,
-                )
-
-            worker = WorkerThread(work)
-            self._run_worker(
-                worker,
-                self._on_make_supervised_result,
-                [self.guided_enroll_btn, self.make_supervised_btn],
-            )
+            self.enroll_tab_controller._guided_enroll()
 
         def _check_status(self) -> None:
-            udid = self.enroll_udid_combo.currentText().strip()
-            if not udid:
-                QMessageBox.warning(self, "No device", "Select a device UDID.")
-                return
-            self._log(f"Checking status for {udid}...")
-            worker = WorkerThread(lambda: get_device_enrollment_state(udid))
-            self._run_worker(worker, self._on_status_result, [self.check_status_btn])
+            self.enroll_tab_controller._check_status()
 
         @Slot(object, object)
         def _on_status_result(self, result: Any, error: Exception | None) -> None:
-            if error:
-                self._log(f"Status check failed: {error}")
-                return
-            state = result
-            if not isinstance(state, dict):
-                self._log(f"Status check returned unexpected data: {state!r}")
-                return
-            if "error" in state:
-                self._log(f"Could not get state: {state['error']}")
-                return
-            self._log(f"Activation: {state.get('activation_state', 'Unknown')}")
-            self._log(f"Supervised: {state.get('is_supervised', False)}")
-            self._log(f"Cloud Config: {state.get('cloud_config_applied', False)}")
+            self.enroll_tab_controller._on_status_result(result, error)
 
         def _prepare_reenroll(self) -> None:
-            udid = self.enroll_udid_combo.currentText().strip()
-            if not udid:
-                QMessageBox.warning(self, "No device", "Select a device UDID.")
-                return
-            device = next((d for d in self._devices if d.udid == udid), None)
-            device_label = f"{device.device_name} ({device.udid})" if device else udid
-            reply = QMessageBox.question(
-                self,
-                "Confirm Re-Enrollment",
-                (
-                    f"Erase cloud configuration on {device_label}?\n\n"
-                    "This removes the supervised configuration so the device can be "
-                    "re-enrolled. The device will need to be re-trusted."
-                ),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
-            self._log(f"Preparing {udid} for re-enrollment...")
-            worker = WorkerThread(lambda: erase_device_for_reenrollment(udid))
-            self._run_worker(worker, self._on_reenroll_result, [self.prepare_reenroll_btn])
+            self.enroll_tab_controller._prepare_reenroll()
 
         @Slot(object, object)
         def _on_reenroll_result(self, result: Any, error: Exception | None) -> None:
-            if error:
-                self._log(f"Re-enrollment preparation failed: {error}")
-            else:
-                self._log("Device cloud config erased. Ready for fresh enrollment.")
+            self.enroll_tab_controller._on_reenroll_result(result, error)
 
         def _populate_restore_device_combo(self) -> None:
             """Fill the Restore tab's device dropdown from ``self._devices``.

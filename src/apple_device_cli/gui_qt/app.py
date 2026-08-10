@@ -327,6 +327,18 @@ def _require_pyside6() -> None:
 
             self._setup_ui()
             self.setStatusBar(QStatusBar())
+            # Auto-refresh timer: poll devices/orgs on a slow cadence so
+            # a freshly-attached device or edited org file shows up
+            # without the user clicking Refresh. Disabled while workers
+            # are running (the worker would race the timer).
+            from PySide6.QtCore import QTimer, QSettings as _QS
+
+            settings = _QS("ios-enroll", "gui")
+            interval_ms = int(settings.value("autoRefreshSeconds", 5)) * 1000
+            self._auto_refresh_timer = QTimer(self)
+            self._auto_refresh_timer.setInterval(max(1000, interval_ms))
+            self._auto_refresh_timer.timeout.connect(self._auto_refresh_tick)
+            self._auto_refresh_timer.start()
             # Keyboard shortcuts — work regardless of which tab is visible.
             # _start_restore already confirms before wiping, so Ctrl+S is safe.
             from PySide6.QtGui import QKeySequence, QShortcut
@@ -613,6 +625,22 @@ def _require_pyside6() -> None:
         def _load_initial_state(self) -> None:
             self._refresh_devices()
             self._refresh_orgs()
+
+        def _auto_refresh_tick(self) -> None:
+            """QTimer callback: poll device list + org list.
+
+            Skips while workers are running so we don't race an
+            in-flight refresh.
+            """
+            if self._worker_pool:
+                return
+            try:
+                self._refresh_devices()
+                self._refresh_orgs()
+            except Exception:  # noqa: BLE001
+                # Auto-refresh failures are non-fatal — the user can
+                # still click Refresh manually.
+                pass
 
         def _selected_device(self) -> DeviceInfo | None:
             current = self.devices_list.currentRow()

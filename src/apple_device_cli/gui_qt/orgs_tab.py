@@ -98,6 +98,9 @@ class OrgsTab:
 
     def __init__(self, shell: "EnrollmentApp") -> None:
         self._shell = shell
+        # Per-tab OrganizationManager — removes the implicit coupling
+        # where one shared manager served all tabs.
+        self._manager = _organization_manager()
         self.widget = self._build()
 
     # -- TabController protocol ------------------------------------------
@@ -202,7 +205,7 @@ class OrgsTab:
         token = self._shell._next_token()
         from apple_device_cli.gui_qt.app import WorkerThread
 
-        worker = WorkerThread(lambda: _organization_manager().list_orgs())
+        worker = WorkerThread(lambda: self._manager.list_orgs())
         self._shell._run_worker(
             worker, self._on_refreshed, [self.refresh_orgs_btn], token=token
         )
@@ -283,7 +286,7 @@ class OrgsTab:
                 mdm_topic=mdm_topic,
             )
             try:
-                _organization_manager().save_org(org)
+                self._manager.save_org(org)
                 self._shell._log(f"Created organization: {name}")
                 dialog.accept()
                 self._refresh()
@@ -357,7 +360,7 @@ class OrgsTab:
             self._shell._log("Identity generation returned an unexpected result.")
             return
         cert_der, key_der = result
-        manager = _organization_manager()
+        manager = self._manager
         org_dir = manager.org_dir_for(org.name)
         try:
             _write_identity_atomic(org_dir, cert_der, key_der)
@@ -398,7 +401,7 @@ class OrgsTab:
         if reply != QMessageBox.StandardButton.Yes:
             return
         try:
-            _organization_manager().delete_org(org.name)
+            self._manager.delete_org(org.name)
             self._shell._log(f"Deleted organization: {org.name}")
             self._shell._record_last_op(f"Deleted org '{org.name}'")
             self._refresh()
@@ -439,7 +442,7 @@ class OrgsTab:
         from pathlib import Path
 
         path = Path(path_str)
-        manager = _organization_manager()
+        manager = self._manager
 
         def work() -> Organization:
             if path.suffix.lower() == ".mobileconfig":
@@ -479,7 +482,7 @@ class OrgsTab:
         dest = Path(path_str)
 
         def work() -> bool:
-            return _organization_manager().export_org(org.name, dest)
+            return self._manager.export_org(org.name, dest)
 
         def on_done(result: bool, error: Exception | None) -> None:
             if error:
@@ -529,7 +532,7 @@ class OrgsTab:
             )
             if reply != QMessageBox.StandardButton.Yes:
                 return
-        manager = _organization_manager()
+        manager = self._manager
 
         def work() -> Any:
             return _set_org_wifi(manager, org.name, str(wifi_path))
@@ -633,7 +636,7 @@ class OrgsTab:
             wifi_config_path=org.wifi_config_path,
         )
         try:
-            _organization_manager().save_org(updated, overwrite=True)
+            self._manager.save_org(updated, overwrite=True)
             self._shell._log(f"Updated organization: {name}")
             self._shell._record_last_op(f"Updated org '{name}'")
             dialog.accept()

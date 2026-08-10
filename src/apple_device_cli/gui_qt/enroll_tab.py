@@ -102,6 +102,7 @@ class EnrollTab:
 
     def __init__(self, shell: "EnrollmentApp") -> None:
         self._shell = shell
+        self._manager = _organization_manager()
         self.widget = self._build()
 
     # -- TabController protocol ------------------------------------------
@@ -231,6 +232,8 @@ class EnrollTab:
         if not name:
             QMessageBox.warning(self._shell, "No organization", "Select an organization.")
             return None
+        # Defer to package-level lookup so tests can monkeypatch
+        # ``apple_device_cli.gui_qt.OrganizationManager`` per-call.
         org = _organization_manager().get_org(name)
         if not org:
             QMessageBox.warning(self._shell, "Unknown organization", f"Organization not found: {name}")

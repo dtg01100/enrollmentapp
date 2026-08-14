@@ -906,7 +906,7 @@ def restore_device(
 
 
 def restore_device_via_pymd3(
-    udid: str,
+    udid: str | None,
     ipsw_path: Path,
     cache_dir: Path,
     progress_callback: Callable[[ProgressEvent], None],

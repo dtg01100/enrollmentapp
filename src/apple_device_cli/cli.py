@@ -100,7 +100,7 @@ def _guard_non_interactive_destructive(yes: bool, what: str) -> None:
 def _confirm_destructive_action(
     yes: bool,
     what: str,
-    warning_lines: list[tuple[str, str | None, bool | None]] = (),
+    warning_lines: list[tuple[str, str | None, bool | None]] | None = None,
     prompt: str = "Continue?",
 ) -> None:
     """Gate a destructive CLI action behind user confirmation.
@@ -111,6 +111,8 @@ def _confirm_destructive_action(
     or a refused non-interactive run, exits 1. Used by every destructive
     command so the confirmation behaves identically everywhere.
     """
+    if warning_lines is None:
+        warning_lines = []
     _guard_non_interactive_destructive(yes, what)
     if yes or not sys.stdin.isatty():
         return
@@ -900,7 +902,8 @@ def device_restore(
     product_type: str | None = None
     if not ipsw and udid:
         try:
-            product_type = get_product_type_for_udid(udid)
+            # get_product_type_for_udid is async; bridge to sync via asyncio.run.
+            product_type = asyncio.run(get_product_type_for_udid(udid))
         except RestoreEngineError as exc:
             typer.secho(str(exc), fg=typer.colors.RED, err=True)
             raise typer.Exit(1) from exc

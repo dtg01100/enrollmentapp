@@ -179,29 +179,22 @@ def mock_pymobiledevice3():
                 sys.modules[name] = original_modules[name]
             else:
                 sys.modules.pop(name, None)
-"""Shared fixtures for GUI tests.
 
-Extracted from tests/test_gui_qt.py so per-tab test files
-(test_gui_devices_tab.py, test_gui_orgs_tab.py, etc.) can reuse the
-same ``make_app``, ``sample_org``, and ``sample_devices`` fixtures
-without duplicating the SyncWorker plumbing.
 
-Round 3 step 12: the test split. Each tab's tests live in their own
-file; this module is the single source of truth for GUI test fixtures.
-"""
+# --- GUI test fixtures ---------------------------------------------------------
+#
+# Extracted from tests/test_gui_qt.py so per-tab test files
+# (test_gui_devices_tab.py, test_gui_orgs_tab.py, etc.) can reuse the
+# same ``make_app``, ``sample_org``, and ``sample_devices`` fixtures
+# without duplicating the SyncWorker plumbing.
+#
+# Round 3 step 12: the test split. Each tab's tests live in their own
+# file; this module is the single source of truth for GUI test fixtures.
 
-import os
-import sys
-from unittest.mock import patch
 
-import pytest
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-_SRC = os.path.join(os.path.dirname(__file__), "..", "src")
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
-
+# PySide6 is required for the GUI fixtures below. Imports live here (not
+# at module top) so the pymobiledevice3-specific fixtures above stay
+# importable on a headless CI run that only exercises CLI logic.
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from apple_device_cli.device.info import DeviceInfo  # noqa: E402

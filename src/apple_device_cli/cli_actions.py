@@ -135,7 +135,7 @@ def set_org_field(
     name: str,
     field_name: str,
     value: str,
-    label: str,  # noqa: ARG001 — reserved for future label-aware presentation
+    label: str = "",
 ) -> None:
     """Update one field on an existing org and save it.
 
@@ -144,12 +144,15 @@ def set_org_field(
         name: Org name to update.
         field_name: Attribute on Organization to set (e.g. "mdm_url").
         value: String value to assign.
-        label: Human-readable label for the field (used by callers, not here).
+        label: Reserved for label-aware presentation. Currently unused
+            (kept in the signature so existing callers don't break when
+            we add label-aware logging or events).
 
     Raises:
         OrgNotFoundError: If no org with ``name`` exists.
         ValueError: Re-raised from ``manager.save_org`` (e.g. lock failure).
     """
+    del label
     org = manager.get_org(name)
     if not org:
         raise OrgNotFoundError(name)
@@ -367,6 +370,9 @@ def generate_org(
     (org_dir / "cert.der").write_bytes(cert_der)
     (org_dir / "key.der").write_bytes(key_der)
 
+    cert_path = str(org_dir / "cert.der")
+    key_path = str(org_dir / "key.der")
+
     org = Organization(
         name=name,
         org_id=org_id,
@@ -374,11 +380,16 @@ def generate_org(
         checkin_url=checkin_url,
         mdm_topic=mdm_topic,
         mdm_description=mdm_description,
-        cert_path=str(org_dir / "cert.der"),
-        key_path=str(org_dir / "key.der"),
+        cert_path=cert_path,
+        key_path=key_path,
     )
     org.save(org_dir, skip_copy=True)
 
+    # ``cert_path`` / ``key_path`` are guaranteed non-None here (just set
+    # above), but the ``Organization`` dataclass types them as ``str | None``
+    # because they round-trip through ``org.json``. Read them from the
+    # locals instead of the dataclass so the types align with
+    # ``GenerateOrgResult``'s required ``str`` fields.
     return GenerateOrgResult(
         name=org.name,
         org_id=org.org_id,
@@ -386,6 +397,6 @@ def generate_org(
         checkin_url=org.checkin_url,
         mdm_topic=org.mdm_topic,
         mdm_description=org.mdm_description,
-        cert_path=org.cert_path,
-        key_path=org.key_path,
+        cert_path=cert_path,
+        key_path=key_path,
     )

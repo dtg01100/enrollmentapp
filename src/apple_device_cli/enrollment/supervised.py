@@ -1219,7 +1219,18 @@ def get_device_enrollment_state(udid: str) -> dict[str, Any]:
             "was_mandatorily_unpaired": bool(was_mandatorily_unpaired),
         }
 
-    from pymobiledevice3.exceptions import MissingValueError, DeviceNotFoundError
+    try:
+        from pymobiledevice3.exceptions import MissingValueError, DeviceNotFoundError
+    except ImportError:
+        # pymobiledevice3.exceptions missing — surface as a generic error rather
+        # than an ImportError traceback that hides the user's real problem
+        # (the device probably isn't connected).
+        return {
+            "error": "pymobiledevice3.exceptions unavailable",
+            "activation_state": "Unknown",
+            "is_supervised": False,
+            "cloud_config_applied": False,
+        }
 
     try:
         return asyncio.run(_get())

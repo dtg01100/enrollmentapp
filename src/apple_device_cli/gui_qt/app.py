@@ -182,7 +182,12 @@ def _cert_expiry(cert_path: str | None) -> datetime | None:
         with open(path, "rb") as f:
             cert = load_der_x509_certificate(f.read())
         # cryptography >= 42 has not_valid_after_utc; fall back for older.
-        return getattr(cert, "not_valid_after_utc", None) or cert.not_valid_after
+        # Use an explicit None check rather than `or`: not_valid_after_utc is
+        # always truthy when present (it's a datetime), so the `or` form
+        # silently coerces a real aware datetime into a naive one if the
+        # attribute exists but happens to be falsy in some future version.
+        utc_expiry = getattr(cert, "not_valid_after_utc", None)
+        return utc_expiry if utc_expiry is not None else cert.not_valid_after
     except Exception:  # noqa: BLE001
         return None
 

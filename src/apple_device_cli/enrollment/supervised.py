@@ -201,6 +201,7 @@ def _create_keybag_file_from_identity(path: Path, cert_path: str | Path, key_pat
     key_der = Path(key_path).read_bytes()
     cert = load_der_x509_certificate(cert_der)
     key = load_der_private_key(key_der, password=None)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(
         key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
         + cert.public_bytes(Encoding.PEM)
@@ -431,6 +432,50 @@ def _is_transient_mobileconfig_network_error(error: Exception) -> bool:
 
     text = " ".join(descriptions) if descriptions else str(error)
     return bool(re.search(r"offline|network error|internet connection", text, re.IGNORECASE))
+
+
+def _is_signed_request_rejected(error: Exception) -> bool:
+    """Return True when the device rejected the escalation challenge-response.
+
+    pymobiledevice3 raises ``ProfileError("invalid response {'Status': "
+    "'SignedRequestRejected'}")`` when the PKCS7-signed escalation challenge
+    is rejected. This is intermittent and a retry usually succeeds.
+    """
+    for arg in getattr(error, "args", ()):
+        if isinstance(arg, dict) and arg.get("Status") == "SignedRequestRejected":
+            return True
+    return bool(re.search(r"SignedRequestRejected", str(error), re.IGNORECASE))
+
+
+async def _install_profile_silent_with_retry(
+    lockdown: Any,
+    keybag_path: Path,
+    payload: bytes,
+    max_attempts: int = 3,
+    retry_delay: float = 5.0,
+    progress_callback: Callable[[str], None] | None = None,
+) -> None:
+    """Install a profile via InstallProfileSilent, retrying signed-request rejections.
+
+    The escalation challenge-response is intermittently rejected by the device
+    (``SignedRequestRejected``); retrying the full escalate + install sequence
+    usually succeeds. Other errors propagate immediately.
+    """
+    MobileConfigService = _get_mobile_config_service()
+    for attempt in range(1, max_attempts + 1):
+        try:
+            async with MobileConfigService(lockdown) as svc:
+                await _maybe_await(svc.install_profile_silent(keybag_path, payload))
+            return
+        except Exception as e:
+            if attempt < max_attempts and _is_signed_request_rejected(e):
+                if progress_callback:
+                    progress_callback(
+                        f"Profile install rejected by device, retrying ({attempt}/{max_attempts})..."
+                    )
+                await asyncio.sleep(retry_delay)
+                continue
+            raise
 
 
 def _format_exception_message(prefix: str, error: Exception) -> str:
@@ -762,10 +807,15 @@ async def do_supervised_pairing(
                             "Password": wifi_password,
                         }],
                     })
-                    async with MobileConfigService(lockdown) as svc:
-                        if keybag_path and keybag_path.exists():
-                            await _maybe_await(svc.install_profile_silent(keybag_path, wifi_payload))
-                        else:
+                    if keybag_path and keybag_path.exists():
+                        await _install_profile_silent_with_retry(
+                            lockdown,
+                            keybag_path,
+                            wifi_payload,
+                            progress_callback=_progress,
+                        )
+                    else:
+                        async with MobileConfigService(lockdown) as svc:
                             await _maybe_await(svc.install_wifi_profile(
                                 encryption_type=wifi_encryption,
                                 ssid=wifi_ssid,
@@ -795,7 +845,12 @@ async def do_supervised_pairing(
                                     if meta.get("PayloadType") == "com.apple.wifi.managed":
                                         _progress(f"Removing existing WiFi profile: {meta.get('PayloadDisplayName', ident)}...")
                                         await _maybe_await(svc.remove_profile(ident))
-                            await _maybe_await(svc.install_profile_silent(keybag_path, payload_bytes))
+                        await _install_profile_silent_with_retry(
+                            lockdown,
+                            keybag_path,
+                            payload_bytes,
+                            progress_callback=_progress,
+                        )
                         wifi_installed = True
                         _progress(f"WiFi mobileconfig installed: {wifi_config_path.name}")
                     except Exception as e:
@@ -815,15 +870,20 @@ async def do_supervised_pairing(
                     max_attempts = 3
                     for attempt in range(1, max_attempts + 1):
                         try:
-                            async with MobileConfigService(lockdown) as svc:
-                                # Use install_profile_silent with escalation for immediate enrollment.
-                                # This works AFTER WiFi is installed so device can reach MDM server.
-                                # Fall back to store_profile if escalation fails.
-                                if keybag_path and keybag_path.exists():
-                                    _progress("Installing MDM profile with escalation (privileged mode)...")
-                                    await _maybe_await(svc.install_profile_silent(keybag_path, payload_bytes))
-                                else:
-                                    _progress("Storing MDM enrollment profile for Setup Assistant...")
+                            # Use install_profile_silent with escalation for immediate enrollment.
+                            # This works AFTER WiFi is installed so device can reach MDM server.
+                            # Fall back to store_profile if escalation fails.
+                            if keybag_path and keybag_path.exists():
+                                _progress("Installing MDM profile with escalation (privileged mode)...")
+                                await _install_profile_silent_with_retry(
+                                    lockdown,
+                                    keybag_path,
+                                    payload_bytes,
+                                    progress_callback=_progress,
+                                )
+                            else:
+                                _progress("Storing MDM enrollment profile for Setup Assistant...")
+                                async with MobileConfigService(lockdown) as svc:
                                     await _maybe_await(svc.store_profile(payload_bytes, Purpose.PostSetupInstallation))
                             # When escalating, the install call alone doesn't prove the
                             # profile actually landed — verify it's visible to

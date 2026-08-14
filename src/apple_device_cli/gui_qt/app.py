@@ -695,6 +695,7 @@ def _require_pyside6() -> None:
                 f"MDM URL: {org.mdm_url or '(none)'}",
                 f"Check-in URL: {org.checkin_url or '(none)'}",
                 f"MDM Topic: {org.mdm_topic or '(none)'}",
+                f"MDM profile: {org.mdm_mobileconfig_path or '(Setup Assistant)'}",
                 f"Identity: {'yes' if has_identity else 'no'}",
                 f"WiFi config: {org.wifi_config_path or '(none)'}",
                 f"Created: {org.created_at}",

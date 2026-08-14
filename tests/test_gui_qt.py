@@ -583,8 +583,16 @@ class TestOrgDetailsPane:
         text = app.orgs_details_label.text()
         assert sample_org.name in text
         assert "MDM URL:" in text
+        assert "MDM profile:" in text
         assert "Identity:" in text
         assert "Created:" in text
+
+    def test_details_shows_direct_mdm_install(self, make_app, sample_org):
+        """Org with a bundled MDM mobileconfig → details show the direct-install path."""
+        sample_org.mdm_mobileconfig_path = "/tmp/mdm.mobileconfig"
+        app = make_app(orgs=[sample_org])
+        text = app.orgs_details_label.text()
+        assert "/tmp/mdm.mobileconfig" in text
 
     def test_details_empty_when_no_org(self, make_app):
         """No org selected → details show a placeholder."""
@@ -960,8 +968,10 @@ def _make_real_cert(tmp_path, days_until_expiry: int):
 
 
 class TestCertExpiryBanner:
-    def test_banner_hidden_when_org_has_no_cert(self, make_app, sample_org, monkeypatch):
-        """No cert on selected org → banner stays hidden."""
+    def test_banner_shows_identity_warning_when_org_has_no_cert(
+        self, make_app, sample_org, monkeypatch
+    ):
+        """No cert on selected org → banner warns about identity + MDM status."""
         sample_org.name = "CapitalCandy"
         sample_org.cert_path = None
         sample_org.key_path = None
@@ -973,7 +983,10 @@ class TestCertExpiryBanner:
         app.enroll_org_combo.addItem(sample_org.name)
         idx = app.enroll_org_combo.findText(sample_org.name)
         app._on_enroll_org_changed(idx)
-        assert app.enroll_cert_warning_label.isHidden()
+        assert not app.enroll_cert_warning_label.isHidden()
+        text = app.enroll_cert_warning_label.text()
+        assert "identity" in text.lower()
+        assert "Setup Assistant" in text
 
     def test_banner_hidden_when_no_org(self, make_app):
         """No org selected → banner hidden."""
@@ -1063,6 +1076,28 @@ class TestCertExpiryBanner:
         assert not app.enroll_cert_warning_label.isHidden()
         text = app.enroll_cert_warning_label.text()
         assert "unreadable" in text.lower() or "missing" in text.lower() or "regenerat" in text.lower()
+
+    def test_banner_shows_direct_mdm_install(
+        self, make_app, sample_org, monkeypatch, tmp_path
+    ):
+        """Bundled MDM mobileconfig → banner shows direct install + path."""
+        sample_org.name = "CapitalCandy"
+        cert_path, key_path = _make_real_cert(tmp_path, days_until_expiry=60)
+        sample_org.cert_path = cert_path
+        sample_org.key_path = key_path
+        sample_org.mdm_mobileconfig_path = "/tmp/mdm.mobileconfig"
+        app = make_app(orgs=[sample_org])
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.get_org",
+            lambda self, name: sample_org,
+        )
+        app.enroll_org_combo.addItem(sample_org.name)
+        idx = app.enroll_org_combo.findText(sample_org.name)
+        app._on_enroll_org_changed(idx)
+        text = app.enroll_cert_warning_label.text()
+        assert not app.enroll_cert_warning_label.isHidden()
+        assert "direct install" in text
+        assert "/tmp/mdm.mobileconfig" in text
 
 
 class TestDevicesContextMenu:
@@ -1455,6 +1490,7 @@ class TestGuidedEnroll:
 
         sample_org.name = "CapitalCandy"
         sample_org.org_id = "com.capitalcandy"
+        sample_org.mdm_mobileconfig_path = "/tmp/mdm.mobileconfig"
 
         app = make_app(orgs=[sample_org])
         monkeypatch.setattr(
@@ -1483,6 +1519,7 @@ class TestGuidedEnroll:
         assert captured["org_name"] == "CapitalCandy"
         assert captured["wifi_ssid"] == "CorpNet"
         assert captured["wifi_password"] == "supersecret"
+        assert captured["mdm_mobileconfig"] == "/tmp/mdm.mobileconfig"
         assert callable(captured["progress_callback"])
 
     def test_guided_enroll_progress_scrubs_wifi_password(
@@ -2126,6 +2163,7 @@ class TestEnrollmentActionEntryGuards:
         self, make_app, sample_org, monkeypatch
     ):
         """All guards pass → make_supervised() called with form values, result logged."""
+        sample_org.mdm_mobileconfig_path = "/tmp/mdm.mobileconfig"
         app = make_app(orgs=[sample_org])
         fake = _FakeOrgManager(get_org_return=sample_org)
         monkeypatch.setattr(
@@ -2158,6 +2196,7 @@ class TestEnrollmentActionEntryGuards:
         assert captured["cert_path"] == sample_org.cert_path
         assert captured["key_path"] == sample_org.key_path
         assert captured["org_name"] == sample_org.name
+        assert captured["mdm_mobileconfig"] == "/tmp/mdm.mobileconfig"
         assert callable(captured["progress_callback"])
 
         # Result handler logged the result attributes (log format abbreviates MDM/WiFi)

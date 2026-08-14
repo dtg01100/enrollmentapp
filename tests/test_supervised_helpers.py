@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from cryptography import x509
@@ -17,6 +19,8 @@ from apple_device_cli.enrollment.supervised import (
     _extract_mobileconfig_error_payload,
     _format_exception_message,
     _format_mobileconfig_error,
+    _install_profile_silent_with_retry,
+    _is_signed_request_rejected,
     _is_transient_mobileconfig_network_error,
     _load_cert_public_bytes_from_keybag,
     _map_skip_setup,
@@ -270,7 +274,6 @@ class TestCreateKeybagFileFromIdentity:
         assert serialization.load_pem_private_key(data, password=None)
         assert x509.load_pem_x509_certificate(data[data.index(b"-----BEGIN CERTIFICATE-----"):])
 
-    @pytest.mark.xfail(reason="Current helper does not create parent directories", strict=True)
     def test_creates_parent_directories(self, tmp_path, der_identity):
         cert_path, key_path, _ = der_identity
         output = tmp_path / "nested" / "identity.pem"
@@ -304,3 +307,87 @@ class TestLoadCertPublicBytesFromKeybag:
         keybag.write_bytes(b"")
         with pytest.raises(ValueError, match="Certificate not found"):
             _load_cert_public_bytes_from_keybag(keybag)
+
+
+class TestIsSignedRequestRejected:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "invalid response {'Status': 'SignedRequestRejected'}",
+            "SignedRequestRejected",
+        ],
+    )
+    def test_matching_exception_text(self, text):
+        assert _is_signed_request_rejected(Exception(text))
+
+    def test_matching_dict_arg(self):
+        assert _is_signed_request_rejected(Exception({"Status": "SignedRequestRejected"}))
+
+    def test_nonmatching_text(self):
+        assert not _is_signed_request_rejected(Exception("boom"))
+
+    def test_other_status_dict_is_not_rejected(self):
+        assert not _is_signed_request_rejected(Exception({"Status": "Error"}))
+
+
+class TestInstallProfileSilentWithRetry:
+    def _run(self, results, **kwargs):
+        from apple_device_cli.enrollment import supervised
+
+        shared_results = list(results)
+        call_count = {"n": 0}
+
+        class FakeService:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args, **kwargs):
+                return False
+
+            async def install_profile_silent(self, keybag_path, payload):
+                call_count["n"] += 1
+                result = shared_results.pop(0)
+                if isinstance(result, Exception):
+                    raise result
+                return result
+
+        raised = None
+        with patch(
+            "apple_device_cli.enrollment.supervised._get_mobile_config_service",
+            return_value=lambda lockdown: FakeService(),
+        ), patch(
+            "apple_device_cli.enrollment.supervised.asyncio.sleep", new=AsyncMock()
+        ) as mock_sleep:
+            try:
+                asyncio.run(
+                    supervised._install_profile_silent_with_retry(
+                        lockdown=None,
+                        keybag_path=Path("/tmp/keybag"),
+                        payload=b"payload",
+                        **kwargs,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                raised = exc
+        return call_count["n"], mock_sleep, raised
+
+    def test_retries_signed_request_rejected_then_succeeds(self):
+        rejected = Exception("invalid response {'Status': 'SignedRequestRejected'}")
+        calls, mock_sleep, raised = self._run([rejected, None])
+        assert calls == 2
+        assert raised is None
+        mock_sleep.assert_awaited_once()
+
+    def test_does_not_retry_other_errors(self):
+        calls, mock_sleep, raised = self._run([ValueError("boom")])
+        assert calls == 1
+        assert isinstance(raised, ValueError)
+        mock_sleep.assert_not_awaited()
+
+    def test_exhausts_retries_and_raises_last_error(self):
+        rejected = Exception("invalid response {'Status': 'SignedRequestRejected'}")
+        calls, mock_sleep, raised = self._run([rejected, rejected, rejected], max_attempts=3)
+        assert calls == 3
+        assert raised is not None
+        assert "SignedRequestRejected" in str(raised)
+        assert mock_sleep.await_count == 2

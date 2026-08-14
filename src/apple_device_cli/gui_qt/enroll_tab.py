@@ -269,14 +269,20 @@ class EnrollTab:
 
     def _update_enroll_cert_banner(self, org: Organization | None) -> None:
         label = self.enroll_cert_warning_label
-        if org is None or not (org.cert_path and org.key_path):
+        if org is None:
             label.setVisible(False)
             return
-        expiry = _cert_expiry(org.cert_path)
-        if expiry is None:
+
+        mdm_line = (
+            f"MDM profile: direct install ({org.mdm_mobileconfig_path})"
+            if org.mdm_mobileconfig_path
+            else "MDM profile: Setup Assistant (no bundled profile)"
+        )
+
+        if not (org.cert_path and org.key_path):
             label.setText(
-                "⚠  Cert file is missing or unreadable — "
-                "regenerate identity before enrolling."
+                "⚠  No supervising identity — generate a certificate and key.\n"
+                + mdm_line
             )
             label.setStyleSheet(
                 "padding: 6px 8px; border-radius: 4px; font-weight: 600;"
@@ -284,6 +290,20 @@ class EnrollTab:
             )
             label.setVisible(True)
             return
+
+        expiry = _cert_expiry(org.cert_path)
+        if expiry is None:
+            label.setText(
+                "⚠  Cert file is missing or unreadable — "
+                "regenerate identity before enrolling.\n" + mdm_line
+            )
+            label.setStyleSheet(
+                "padding: 6px 8px; border-radius: 4px; font-weight: 600;"
+                "background: #fdecea; color: #b71c1c;"
+            )
+            label.setVisible(True)
+            return
+
         from datetime import datetime, timezone
 
         if expiry.tzinfo is None:
@@ -293,7 +313,7 @@ class EnrollTab:
         if days_left < 0:
             label.setText(
                 f"🔴  Cert expired {-days_left} day(s) ago — "
-                "regenerate identity before enrolling."
+                "regenerate identity before enrolling.\n" + mdm_line
             )
             label.setStyleSheet(
                 "padding: 6px 8px; border-radius: 4px; font-weight: 600;"
@@ -303,7 +323,7 @@ class EnrollTab:
         elif days_left <= 30:
             label.setText(
                 f"🟡  Cert expires in {days_left} day(s) — "
-                "consider regenerating identity."
+                "consider regenerating identity.\n" + mdm_line
             )
             label.setStyleSheet(
                 "padding: 6px 8px; border-radius: 4px; font-weight: 600;"
@@ -311,14 +331,19 @@ class EnrollTab:
             )
             label.setVisible(True)
         elif days_left <= 90:
-            label.setText(f"🟢  Cert valid for {days_left} more days.")
+            label.setText(f"🟢  Cert valid for {days_left} more days.\n" + mdm_line)
             label.setStyleSheet(
                 "padding: 6px 8px; border-radius: 4px;"
                 "background: #e8f5e9; color: #2e7d32;"
             )
             label.setVisible(True)
         else:
-            label.setVisible(False)
+            label.setText("🟢  Cert valid.\n" + mdm_line)
+            label.setStyleSheet(
+                "padding: 6px 8px; border-radius: 4px;"
+                "background: #e8f5e9; color: #2e7d32;"
+            )
+            label.setVisible(True)
 
     # -- Validate / Make Supervised / Guided Enroll ---------------------
 
@@ -397,6 +422,7 @@ class EnrollTab:
                 mdm_url=org.mdm_url,
                 mdm_checkin_url=org.checkin_url,
                 mdm_topic=org.mdm_topic,
+                mdm_mobileconfig=org.mdm_mobileconfig_path,
                 wifi_ssid=wifi_ssid,
                 wifi_password=wifi_password,
                 wifi_encryption=wifi_encryption,
@@ -458,8 +484,9 @@ class EnrollTab:
             f"Enroll {udid} with '{org.name}'\n\n"
             f"  Preset: {self.enroll_preset_combo.currentText()}\n"
             f"  WiFi: {wifi_ssid or '(none)'}\n"
-            f"  MDM URL: {org.mdm_url or '(none)'}\n\n"
-            "This will activate, supervise, and install the MDM profile."
+            f"  MDM URL: {org.mdm_url or '(none)'}\n"
+            f"  MDM profile: {org.mdm_mobileconfig_path or '(Setup Assistant)'}\n\n"
+            "This will activate, supervise, and install the MDM profile when one is bundled."
         )
         reply = QMessageBox.question(
             self._shell,
@@ -486,6 +513,7 @@ class EnrollTab:
                 mdm_url=org.mdm_url,
                 mdm_checkin_url=org.checkin_url,
                 mdm_topic=org.mdm_topic,
+                mdm_mobileconfig=org.mdm_mobileconfig_path,
                 wifi_ssid=wifi_ssid,
                 wifi_password=wifi_password,
                 wifi_encryption=wifi_encryption,

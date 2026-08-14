@@ -655,6 +655,89 @@ class TestCloudConfigBugFix:
         assert svc.install_profile_silent.await_count == 2
         mock_sleep.assert_awaited_once()
 
+    def test_make_supervised_retries_signed_request_rejected(self, mock_pymobiledevice3):
+        """Test: SignedRequestRejected escalation failures are retried and can recover."""
+        from apple_device_cli.enrollment import supervised
+
+        lockdown = MagicMock(spec=LockdownClient)
+        mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
+
+        activation_svc = MagicMock(spec=MobileActivationService)
+        activation_svc.state = AsyncMock(return_value="Activated")
+        activation_svc.activate = AsyncMock()
+        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
+            activation_svc
+        )
+
+        rejected = Exception("invalid response {'Status': 'SignedRequestRejected'}")
+
+        svc = MagicMock(spec=MobileConfigService)
+        svc.set_cloud_configuration = AsyncMock()
+        svc.install_profile_silent = AsyncMock(side_effect=[rejected, None])
+        svc.get_profile_list = AsyncMock(return_value={
+            "ProfileMetadata": {
+                "mdm-profile": {"PayloadType": "com.apple.mdm", "PayloadDisplayName": "MDM"},
+            }
+        })
+        svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
+        svc.__aenter__ = AsyncMock(return_value=svc)
+        svc.__aexit__ = AsyncMock(return_value=False)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cert_path = Path(tmpdir) / "cert.der"
+            key_path = Path(tmpdir) / "key.der"
+            mdm_profile_path = Path(tmpdir) / "mdm.mobileconfig"
+            mdm_profile_path.write_bytes(b"fake-mdm-profile")
+
+            private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            subject = issuer = x509.Name(
+                [
+                    x509.NameAttribute(NameOID.COMMON_NAME, "Test Org"),
+                ]
+            )
+            certificate = (
+                x509.CertificateBuilder()
+                .subject_name(subject)
+                .issuer_name(issuer)
+                .public_key(private_key.public_key())
+                .serial_number(1)
+                .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
+                .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365))
+                .sign(private_key, hashes.SHA256())
+            )
+
+            cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.DER))
+            key_path.write_bytes(
+                private_key.private_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                )
+            )
+
+            with (
+                patch(
+                    "pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc
+                ),
+                patch(
+                    "apple_device_cli.enrollment.supervised.asyncio.sleep", new=AsyncMock()
+                ) as mock_sleep,
+            ):
+                result = supervised.make_supervised(
+                    cert_path=str(cert_path),
+                    key_path=str(key_path),
+                    org_name="Test Org",
+                    skip_list=["passcode"],
+                    mdm_url="https://mdm.example.com/mdm",
+                    mdm_mobileconfig=str(mdm_profile_path),
+                )
+
+        assert result.success is True
+        assert result.mdm_enrolled is True
+        assert result.errors == []
+        assert svc.install_profile_silent.await_count == 2
+        mock_sleep.assert_awaited_once()
+
     def test_mdm_verification_fails_when_profile_not_on_device(
         self, mock_pymobiledevice3
     ):

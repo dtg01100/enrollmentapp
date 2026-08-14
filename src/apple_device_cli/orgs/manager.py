@@ -8,7 +8,6 @@ import os
 import plistlib
 import shutil
 import subprocess
-import sys
 import tempfile
 import warnings
 from dataclasses import dataclass, field
@@ -177,7 +176,13 @@ class OrganizationManager:
                 )
                 if result.returncode != 0:
                     return None
-                payload = plistlib.loads(result.stdout)
+                # ``openssl`` succeeded but the payload may still be empty
+                # or unparseable — guard against plistlib crashes leaking
+                # out of this "best-effort" helper.
+                try:
+                    payload = plistlib.loads(result.stdout)
+                except Exception:
+                    return None
         except OSError:
             return None
         for item in payload.get("PayloadContent", []):
@@ -227,7 +232,13 @@ class OrganizationManager:
         return dest_dir
 
     def _sanitize_name(self, name: str) -> str:
-        return "".join(c if c.isalnum() or c in ".-_" else "_" for c in name)
+        # Strip anything outside the safe character set, then collapse any
+        # resulting ``.`` or ``..`` so a hostile name cannot escape
+        # ``self.orgs_dir`` via ``orgs_dir / sanitize(name)``.
+        sanitized = "".join(c if c.isalnum() or c in ".-_" else "_" for c in name)
+        if sanitized in ("", ".", ".."):
+            return "_"
+        return sanitized
 
     @contextlib.contextmanager
     def _acquire_org_lock(self, name: str):
@@ -314,46 +325,49 @@ class OrganizationManager:
         if certificate is None or private_key is None:
             raise ValueError("PKCS12 blob missing certificate or private key")
 
-        dest_dir = self._prepare_dest_dir(name)
+        # Lock around directory prep + writes to keep concurrent imports
+        # for the same org name from racing each other.
+        with self._acquire_org_lock(name):
+            dest_dir = self._prepare_dest_dir(name)
 
-        cert_der = certificate.public_bytes(serialization.Encoding.DER)
-        key_der = private_key.private_bytes(
-            serialization.Encoding.DER,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
-        )
-
-        with open(dest_dir / "org.json", "w") as f:
-            json.dump(
-                {
-                    "name": name,
-                    "org_id": data.get("UUID"),
-                    "address": data.get("address"),
-                    "phone": data.get("phone"),
-                    "email": data.get("email"),
-                    "mdm_url": data.get("mdmServer"),
-                    "created_at": datetime.now().isoformat(),
-                },
-                f,
-                indent=2,
+            cert_der = certificate.public_bytes(serialization.Encoding.DER)
+            key_der = private_key.private_bytes(
+                serialization.Encoding.DER,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
             )
 
-        with open(dest_dir / "cert.der", "wb") as f:
-            f.write(cert_der)
+            with open(dest_dir / "org.json", "w") as f:
+                json.dump(
+                    {
+                        "name": name,
+                        "org_id": data.get("UUID"),
+                        "address": data.get("address"),
+                        "phone": data.get("phone"),
+                        "email": data.get("email"),
+                        "mdm_url": data.get("mdmServer"),
+                        "created_at": datetime.now().isoformat(),
+                    },
+                    f,
+                    indent=2,
+                )
 
-        with open(dest_dir / "key.der", "wb") as f:
-            f.write(key_der)
+            with open(dest_dir / "cert.der", "wb") as f:
+                f.write(cert_der)
 
-        return Organization(
-            name=name,
-            org_id=data.get("UUID"),
-            address=data.get("address"),
-            phone=data.get("phone"),
-            email=data.get("email"),
-            mdm_url=data.get("mdmServer"),
-            cert_path=str(dest_dir / "cert.der"),
-            key_path=str(dest_dir / "key.der"),
-        )
+            with open(dest_dir / "key.der", "wb") as f:
+                f.write(key_der)
+
+            return Organization(
+                name=name,
+                org_id=data.get("UUID"),
+                address=data.get("address"),
+                phone=data.get("phone"),
+                email=data.get("email"),
+                mdm_url=data.get("mdmServer"),
+                cert_path=str(dest_dir / "cert.der"),
+                key_path=str(dest_dir / "key.der"),
+            )
 
     def _import_from_dir(self, src_dir: Path, overwrite: bool = False) -> Organization:
         """Import org from directory."""
@@ -369,14 +383,18 @@ class OrganizationManager:
 
         org = Organization.from_dict(data)
 
-        dest_dir = self.orgs_dir / self._sanitize_name(name)
-        if dest_dir.exists():
-            if not overwrite:
-                raise ValueError(f"Organization '{name}' already exists")
-            shutil.rmtree(dest_dir)
+        # Lock around the existence check + rmtree + save so concurrent
+        # imports for the same name don't both pass the check and clobber
+        # each other's writes.
+        with self._acquire_org_lock(name):
+            dest_dir = self.orgs_dir / self._sanitize_name(name)
+            if dest_dir.exists():
+                if not overwrite:
+                    raise ValueError(f"Organization '{name}' already exists")
+                shutil.rmtree(dest_dir)
 
-        org.save(org_dir=dest_dir, skip_copy=False)
-        return org
+            org.save(org_dir=dest_dir, skip_copy=False)
+            return org
 
     def import_mobileconfig(self, path: str | Path) -> Organization:
         """Import org from MDM .mobileconfig file (PKCS7-signed DER).
@@ -417,11 +435,14 @@ class OrganizationManager:
         if not name:
             raise ValueError("Missing PayloadOrganization in mobileconfig")
 
-        existing_org = self.get_org(name)
-        if existing_org:
-            raise ValueError(f"Organization '{name}' already exists")
-
+        # Existence check MUST happen inside the lock — checking before
+        # ``_acquire_org_lock`` lets two concurrent imports for the same
+        # ``PayloadOrganization`` both pass the check and then race to write
+        # the same org directory.
         with self._acquire_org_lock(name):
+            if self.get_org(name) is not None:
+                raise ValueError(f"Organization '{name}' already exists")
+
             mdm_url = None
             checkin_url = None
             mdm_topic = None
@@ -475,9 +496,28 @@ class OrganizationManager:
         dest_path = Path(dest_path)
         org_dir = self.orgs_dir / self._sanitize_name(name)
 
-        if dest_path.suffix == ".zip":
+        if dest_path.suffix.lower() == ".zip":
+            # ``make_archive`` produces ``<dest_path without .zip suffix>.zip``.
+            # When ``dest_path`` already exists as a *file*, this would silently
+            # overwrite it — refuse up front so users can't accidentally clobber
+            # unrelated data.
+            if dest_path.exists():
+                raise FileExistsError(
+                    f"Export destination already exists: {dest_path}"
+                )
             shutil.make_archive(str(dest_path.with_suffix("")), "zip", org_dir)
         else:
+            # Refuse to export if the destination path is already a file
+            # (mkdir would raise FileExistsError, but checking first gives a
+            # clearer error message).
+            if dest_path.exists() and not dest_path.is_dir():
+                raise FileExistsError(
+                    f"Export destination exists and is not a directory: {dest_path}"
+                )
             dest_path.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(org_dir, dest_path / self._sanitize_name(org.name), dirs_exist_ok=True)
+            shutil.copytree(
+                org_dir,
+                dest_path / self._sanitize_name(org.name),
+                dirs_exist_ok=True,
+            )
         return True

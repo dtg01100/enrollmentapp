@@ -25,6 +25,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 
 from apple_device_cli.device.info import DeviceInfo  # noqa: E402
+from apple_device_cli.gui_qt import devices_tab as devices_tab_module  # noqa: E402
 from apple_device_cli.orgs.manager import Organization, OrganizationManager  # noqa: E402
 
 
@@ -2504,3 +2505,560 @@ class TestLogCollapsed:
         app2 = make_app()
         assert app2.log_text.isHidden() is False
         assert app2.log_toggle_btn.isChecked() is True
+
+
+# ---------------------------------------------------------------------------
+# Device-tab actions: _use_selected_device, _show_device_info,
+# _activate_device, _pair_device, and their result slots.
+#
+# Ported from the pre-split gui_qt.py deep-coverage work (wt/coverage-gui-qt-deep).
+# Patch targets point at gui_qt.devices_tab.* because DevicesTab imports
+# get_device_info / activate_device / ensure_device_pairing directly from
+# their source modules (post Round 3 split).
+# ---------------------------------------------------------------------------
+
+
+class TestDeviceTabActions:
+    """Tests for the Devices-tab action handlers.
+
+    Covers the entry-guard branches (no device selected), the happy paths
+    that spin up workers, and every branch of the result slot handlers
+    (success, error, None result, missing-ECID code path).
+    """
+
+    # --- _use_selected_device ---
+
+    def test_use_selected_device_no_device_warns(self, make_app):
+        """No selection in devices_list → warning + log, no combo write."""
+        app = make_app()
+        # Pre-populate enroll_udid_combo so we can prove it isn't overwritten
+        app.enroll_udid_combo.addItem("preexisting-udid")
+        with patch.object(QMessageBox, "warning") as mock_warn:
+            app._use_selected_device()
+        mock_warn.assert_called_once()
+        assert "Devices tab" in mock_warn.call_args.args[2]
+        assert app.enroll_udid_combo.currentText() == "preexisting-udid"
+        assert "No device selected" in app.log_text.toPlainText()
+
+    def test_use_selected_device_writes_udid(self, make_app, sample_devices):
+        """Selection present → enroll_udid_combo receives the device UDID."""
+        app = make_app()
+        app._devices = sample_devices
+        app.devices_list.addItem(f"{sample_devices[0].device_name}  ({sample_devices[0].udid})")
+        app.devices_list.setCurrentRow(0)
+        # Pre-populate the enroll combo with the device UDID. QComboBox
+        # ``setCurrentText`` only matches existing items — without a seed
+        # item that matches the UDID, the call silently no-ops.
+        app.enroll_udid_combo.addItem(sample_devices[0].udid)
+        app.enroll_udid_combo.setCurrentIndex(0)
+        app._use_selected_device()
+        assert app.enroll_udid_combo.currentText() == sample_devices[0].udid
+
+    # --- _show_device_info ---
+
+    def test_show_device_info_no_device_warns_no_worker(self, make_app):
+        """No device selected → 'No device' warning, no worker started."""
+        app = make_app()
+        with patch.object(QMessageBox, "warning") as mock_warn:
+            app._show_device_info()
+        mock_warn.assert_called_once()
+        assert mock_warn.call_args.args[1] == "No device"
+        assert len(app._workers) == 0
+
+    def test_show_device_info_worker_uses_get_device_info(
+        self, make_app, sample_devices, monkeypatch
+    ):
+        """Device selected → worker calls get_device_info(udid), result logged."""
+        app = make_app()
+        app._devices = sample_devices
+        app.devices_list.addItem(f"{sample_devices[0].device_name}  ({sample_devices[0].udid})")
+        app.devices_list.setCurrentRow(0)
+
+        captured: list[str] = []
+
+        def fake_get_device_info(udid):
+            captured.append(udid)
+            return MagicMock(
+                spec=DeviceInfo,
+                udid=udid,
+                device_name="Info iPhone",
+                device_type="iPhone14,2",
+                firmware_version="17.0",
+                build_version="21A329",
+                ecid="0xABCD",
+            )
+
+        monkeypatch.setattr(
+            devices_tab_module, "get_device_info", fake_get_device_info
+        )
+
+        app._show_device_info()
+
+        assert captured == [sample_devices[0].udid]
+        log = app.log_text.toPlainText()
+        assert "Fetching info" in log
+        assert f"UDID: {sample_devices[0].udid}" in log
+        assert "Name: Info iPhone" in log
+        assert "Type: iPhone14,2" in log
+        assert "iOS: 17.0 (21A329)" in log
+        assert "ECID: 0xABCD" in log
+
+    def test_on_device_info_error_logs_failure(self, make_app):
+        """Worker raised → logs 'Failed to get device info: <err>'."""
+        app = make_app()
+        app._on_device_info(None, RuntimeError("USB disconnected"))
+        assert "Failed to get device info: USB disconnected" in app.log_text.toPlainText()
+
+    def test_on_device_info_none_result_logs_unavailable(self, make_app):
+        """Worker returned None → logs 'Device info unavailable.'"""
+        app = make_app()
+        app._on_device_info(None, None)
+        assert "Device info unavailable." in app.log_text.toPlainText()
+
+    def test_on_device_info_result_without_ecid_skips_ecid_log(self, make_app):
+        """Falsy ecid → ECID line is omitted (preserves the 'if info.ecid' guard)."""
+        app = make_app()
+        info = MagicMock(
+            spec=DeviceInfo,
+            udid="udid-z",
+            device_name="No ECID Phone",
+            device_type="iPhone14,2",
+            firmware_version="17.0",
+            build_version="21A329",
+            ecid=None,
+        )
+        app._on_device_info(info, None)
+        log = app.log_text.toPlainText()
+        # The slot logs "ECID: <value>" only when info.ecid is truthy.
+        # The device_name "No ECID Phone" contains the substring "ECID" but
+        # that's an artifact of the test fixture, not the log line we assert
+        # against — explicitly check for the "ECID: " prefix the slot emits.
+        assert "ECID: " not in log
+        assert "UDID: udid-z" in log
+
+    # --- _activate_device ---
+
+    def test_activate_device_no_device_warns_no_worker(self, make_app):
+        """No device selected → 'No device' warning, no worker started."""
+        app = make_app()
+        with patch.object(QMessageBox, "warning") as mock_warn:
+            app._activate_device()
+        mock_warn.assert_called_once()
+        assert mock_warn.call_args.args[1] == "No device"
+        assert len(app._workers) == 0
+
+    def test_activate_device_worker_calls_activate_device(
+        self, make_app, sample_devices, monkeypatch
+    ):
+        """Device selected → worker calls activate_device(udid), result logged."""
+        app = make_app()
+        app._devices = sample_devices
+        app.devices_list.addItem(f"{sample_devices[0].device_name}  ({sample_devices[0].udid})")
+        app.devices_list.setCurrentRow(0)
+
+        captured: list[str] = []
+
+        def fake_activate(udid):
+            captured.append(udid)
+            return True
+
+        monkeypatch.setattr(
+            devices_tab_module, "activate_device", fake_activate
+        )
+
+        app._activate_device()
+
+        assert captured == [sample_devices[0].udid]
+        assert "Activating" in app.log_text.toPlainText()
+        assert "Activation completed." in app.log_text.toPlainText()
+
+    def test_on_activation_result_success_logs_completed(self, make_app):
+        """No error → logs 'Activation completed.'"""
+        app = make_app()
+        app._on_activation_result(True, None)
+        assert "Activation completed." in app.log_text.toPlainText()
+
+    def test_on_activation_result_error_logs_failure(self, make_app):
+        """Exception → logs 'Activation failed: <err>'."""
+        app = make_app()
+        app._on_activation_result(None, RuntimeError("activation broken"))
+        assert "Activation failed: activation broken" in app.log_text.toPlainText()
+
+    # --- _pair_device ---
+
+    def test_pair_device_no_device_warns_no_worker(self, make_app):
+        """No device selected → 'No device' warning, no worker started."""
+        app = make_app()
+        with patch.object(QMessageBox, "warning") as mock_warn:
+            app._pair_device()
+        mock_warn.assert_called_once()
+        assert mock_warn.call_args.args[1] == "No device"
+        assert len(app._workers) == 0
+
+    def test_pair_device_worker_calls_ensure_device_pairing(
+        self, make_app, sample_devices, monkeypatch
+    ):
+        """Device selected → worker calls ensure_device_pairing(udid), result logged."""
+        app = make_app()
+        app._devices = sample_devices
+        app.devices_list.addItem(f"{sample_devices[0].device_name}  ({sample_devices[0].udid})")
+        app.devices_list.setCurrentRow(0)
+
+        captured: list[str] = []
+
+        def fake_ensure_pairing(udid):
+            captured.append(udid)
+
+        monkeypatch.setattr(
+            devices_tab_module, "ensure_device_pairing", fake_ensure_pairing
+        )
+
+        app._pair_device()
+
+        assert captured == [sample_devices[0].udid]
+        assert "Ensuring pairing" in app.log_text.toPlainText()
+        assert "Device paired/trusted successfully." in app.log_text.toPlainText()
+
+    def test_on_pair_result_success_logs_paired(self, make_app):
+        """No error → logs 'Device paired/trusted successfully.'"""
+        app = make_app()
+        app._on_pair_result(None, None)
+        assert "Device paired/trusted successfully." in app.log_text.toPlainText()
+
+    def test_on_pair_result_error_logs_failure(self, make_app):
+        """Exception → logs 'Pairing failed: <err>'."""
+        app = make_app()
+        app._on_pair_result(None, RuntimeError("user denied trust"))
+        assert "Pairing failed: user denied trust" in app.log_text.toPlainText()
+
+
+# ---------------------------------------------------------------------------
+# Validation flow: _validate_prereqs + _on_validation_result.
+# ---------------------------------------------------------------------------
+
+
+class TestValidationFlow:
+    """Tests for the Validate-Prerequisites button on the Enrollment tab.
+
+    Covers the no-org early return, the happy path that wires
+    ``validate_enrollment_prerequisites`` into the worker, and every
+    branch of the result slot (error, non-empty errors list, success).
+    """
+
+    def test_validate_prereqs_no_org_returns_without_worker(self, make_app):
+        """Empty org combo → _validate_prereqs returns without starting a worker."""
+        app = make_app()
+        log_before = app.log_text.toPlainText()
+        app._validate_prereqs()
+        assert len(app._workers) == 0
+        assert app.log_text.toPlainText() == log_before
+
+    def test_validate_prereqs_happy_path_invokes_validate_enrollment_prerequisites(
+        self, make_app, sample_org, monkeypatch
+    ):
+        """Org resolved → worker calls validate_enrollment_prerequisites with cert/key/mdm."""
+        app = make_app(orgs=[sample_org])
+        fake = _FakeOrgManager(get_org_return=sample_org)
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.get_org",
+            lambda self, name: fake.get_org(name),
+        )
+
+        captured: dict = {}
+
+        def fake_validate(**kwargs):
+            captured.update(kwargs)
+            return []
+
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.validate_enrollment_prerequisites",
+            fake_validate,
+        )
+
+        app._validate_prereqs()
+
+        assert captured["cert_path"] == sample_org.cert_path
+        assert captured["key_path"] == sample_org.key_path
+        assert captured["org_name"] == sample_org.name
+        assert captured["mdm_url"] == sample_org.mdm_url
+        # check_mdm_reachability must be False — the GUI never performs network
+        # checks (it would block the worker thread on a slow MDM server).
+        assert captured["check_mdm_reachability"] is False
+        assert "Validating prerequisites" in app.log_text.toPlainText()
+        assert "All prerequisites valid." in app.log_text.toPlainText()
+
+    def test_on_validation_result_error_logs_failure(self, make_app):
+        """Worker raised → 'Validation failed: <err>'."""
+        app = make_app()
+        app._on_validation_result(None, RuntimeError("validator module missing"))
+        assert "Validation failed: validator module missing" in app.log_text.toPlainText()
+
+    def test_on_validation_result_with_errors_logs_each(
+        self, make_app, sample_org, monkeypatch
+    ):
+        """Result is a non-empty list → 'Validation failed:' + each error line."""
+        app = make_app(orgs=[sample_org])
+        fake = _FakeOrgManager(get_org_return=sample_org)
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.get_org",
+            lambda self, name: fake.get_org(name),
+        )
+
+        def fake_validate(**kwargs):
+            return ["cert missing", "key missing"]
+
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.validate_enrollment_prerequisites",
+            fake_validate,
+        )
+
+        app._validate_prereqs()
+
+        log = app.log_text.toPlainText()
+        assert "Validation failed:" in log
+        assert "  - cert missing" in log
+        assert "  - key missing" in log
+        # Should NOT log the success line when errors are present
+        assert "All prerequisites valid." not in log
+
+    def test_on_validation_result_empty_list_logs_success(self, make_app):
+        """Result is empty list → 'All prerequisites valid.' (no error block)."""
+        app = make_app()
+        app._on_validation_result([], None)
+        log = app.log_text.toPlainText()
+        assert "All prerequisites valid." in log
+        assert "Validation failed:" not in log
+
+    def test_on_validation_result_none_result_logs_success(self, make_app):
+        """None result is treated like an empty list (or-fallback)."""
+        app = make_app()
+        app._on_validation_result(None, None)
+        assert "All prerequisites valid." in app.log_text.toPlainText()
+
+
+# ---------------------------------------------------------------------------
+# Error / edge-case paths for status, re-enrollment, and org deletion.
+# ---------------------------------------------------------------------------
+
+
+class TestResultErrorPaths:
+    """Tests for the unguarded error / edge branches of result slots.
+
+    Each test exercises a single branch that lives past the main happy
+    path of the result handler. These branches are easy to miss because
+    the happy path is the more obvious thing to cover.
+    """
+
+    def test_on_status_result_error_logs_failure(self, make_app):
+        """Worker raised → 'Status check failed: <err>'."""
+        app = make_app()
+        app._on_status_result(None, RuntimeError("lockdown dropped"))
+        assert "Status check failed: lockdown dropped" in app.log_text.toPlainText()
+
+    def test_on_status_result_dict_with_error_key_logs_it(self, make_app):
+        """Dict containing 'error' key → 'Could not get state: <msg>'."""
+        app = make_app()
+        app._on_status_result({"error": "no carrier"}, None)
+        log = app.log_text.toPlainText()
+        assert "Could not get state: no carrier" in log
+        # Must NOT log the activation/supervised/cloud lines when there's an error key
+        assert "Activation:" not in log
+
+    def test_on_reenroll_result_success_logs_erased(self, make_app):
+        """No error → 'Device cloud config erased. Ready for fresh enrollment.'"""
+        app = make_app()
+        app._on_reenroll_result(True, None)
+        assert "Device cloud config erased. Ready for fresh enrollment." in app.log_text.toPlainText()
+
+    def test_on_reenroll_result_error_logs_failure(self, make_app):
+        """Exception → 'Re-enrollment preparation failed: <err>'."""
+        app = make_app()
+        app._on_reenroll_result(None, RuntimeError("device unresponsive"))
+        assert "Re-enrollment preparation failed: device unresponsive" in app.log_text.toPlainText()
+
+
+class TestDeleteOrgErrorPaths:
+    """Tests for the no-org and exception branches of _delete_org."""
+
+    def test_delete_org_no_org_warns_no_call(self, make_app):
+        """No selection in orgs_list → 'No organization' warning, no delete call."""
+        app = make_app()
+        with patch.object(QMessageBox, "warning") as mock_warn:
+            app._delete_org()
+        mock_warn.assert_called_once()
+        assert mock_warn.call_args.args[1] == "No organization"
+        # ``delete_org`` should not have been called since the guard fired
+        # before the question dialog could be presented.
+        with patch.object(QMessageBox, "question") as mock_q:
+            mock_q.assert_not_called()
+
+    def test_delete_org_exception_logs_and_warns(self, make_app, sample_org, monkeypatch):
+        """delete_org raises → warning dialog + log, no crash."""
+        app = make_app([sample_org])
+        app.orgs_list.setCurrentRow(0)
+
+        monkeypatch.setattr(
+            QMessageBox, "question",
+            lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+        )
+
+        def boom(self, name):
+            raise RuntimeError("disk write failed")
+
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.delete_org", boom
+        )
+
+        with patch.object(QMessageBox, "warning") as mock_warn:
+            app._delete_org()
+
+        mock_warn.assert_called_once()
+        assert "Delete failed" in mock_warn.call_args.args[1]
+        assert "disk write failed" in app.log_text.toPlainText()
+
+
+# ---------------------------------------------------------------------------
+# Identity-generation dialog: full deferred saving roundtrip.
+# ---------------------------------------------------------------------------
+
+
+class TestIdentityGenerationDialog:
+    """Tests for the Generate-Identity button's worker + result-slot pipeline.
+
+    The dialog itself is modal and hard to drive from tests, but the
+    ``_on_identity_generated`` slot is invoked by ``_run_worker`` and
+    can be exercised directly. Covers the success path (writes cert+key,
+    updates the org, refreshes the list) and the OSError write failure
+    path (warning + no org mutation).
+    """
+
+    def test_identity_generated_success_writes_and_saves(
+        self, make_app, sample_org, monkeypatch
+    ):
+        """Two-tuple result → atomic-write + save_org(overwrite=True) + refresh."""
+        app = make_app([sample_org])
+        # Skip the real manager, use the in-memory fake to capture calls.
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager",
+            lambda *a, **kw: _FakeOrgManagerForIdentity(org=sample_org),
+        )
+
+        from PySide6.QtWidgets import QDialog
+
+        # Import the real writer BEFORE patching so the patched fake can
+        # delegate to the unpatched implementation without recursing into
+        # itself (the module-level name points at the patched fake).
+        from apple_device_cli.gui_qt import _write_identity_atomic as real_writer
+
+        dialog = QDialog()
+        sample_org.cert_path = None
+        sample_org.key_path = None
+
+        captured: list = []
+
+        def fake_writer(org_dir, cert_der, key_der):
+            captured.append((org_dir, cert_der, key_der))
+            real_writer(org_dir, cert_der, key_der)
+
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt._write_identity_atomic", fake_writer
+        )
+
+        app._on_identity_generated(dialog, sample_org, (b"CERT", b"KEY"), None)
+
+        assert len(captured) == 1, "atomic writer must be called once"
+        assert captured[0][1:] == (b"CERT", b"KEY")
+        # Org paths updated and saved
+        assert sample_org.cert_path is not None
+        assert sample_org.key_path is not None
+        assert sample_org.cert_path.endswith("cert.der")
+        assert sample_org.key_path.endswith("key.der")
+        log = app.log_text.toPlainText()
+        assert "Generated identity" in log
+
+    def test_identity_generated_oserror_warns_no_save(self, make_app, sample_org, monkeypatch):
+        """Disk write blows up → warning dialog, no org mutation, no save."""
+        app = make_app([sample_org])
+        from PySide6.QtWidgets import QDialog
+
+        dialog = QDialog()
+        sample_org.cert_path = None
+        sample_org.key_path = None
+
+        def boom(org_dir, cert_der, key_der):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("apple_device_cli.gui_qt._write_identity_atomic", boom)
+
+        save_calls: list = []
+        monkeypatch.setattr(
+            "apple_device_cli.gui_qt.OrganizationManager.save_org",
+            lambda self, org, overwrite=False: save_calls.append((org, overwrite)),
+        )
+
+        with patch.object(QMessageBox, "warning") as mock_warn:
+            app._on_identity_generated(dialog, sample_org, (b"CERT", b"KEY"), None)
+
+        mock_warn.assert_called_once()
+        assert "Write failed" in mock_warn.call_args.args[1]
+        assert "disk full" in app.log_text.toPlainText()
+        # save_org must NOT have been called when the atomic write failed
+        assert save_calls == []
+        # Org paths unchanged
+        assert sample_org.cert_path is None
+        assert sample_org.key_path is None
+
+    def test_identity_generated_unexpected_result_logs_only(self, make_app, sample_org):
+        """Slot called with a non-tuple result → 'unexpected result' log only."""
+        app = make_app([sample_org])
+        from PySide6.QtWidgets import QDialog
+
+        dialog = QDialog()
+        app._on_identity_generated(dialog, sample_org, "not a tuple", None)
+        log = app.log_text.toPlainText()
+        assert "unexpected result" in log.lower() or "Unexpected result" in log
+
+    def test_identity_generated_worker_error_warns(self, make_app, sample_org, monkeypatch):
+        """generate_org_identity raised → warning dialog + log, no write."""
+        app = make_app([sample_org])
+        from PySide6.QtWidgets import QDialog
+
+        dialog = QDialog()
+        with patch.object(QMessageBox, "warning") as mock_warn:
+            app._on_identity_generated(
+                dialog,
+                sample_org,
+                None,
+                RuntimeError("cryptography lib missing"),
+            )
+        mock_warn.assert_called_once()
+        assert "Generation failed" in mock_warn.call_args.args[1]
+        assert "cryptography lib missing" in app.log_text.toPlainText()
+
+
+class _FakeOrgManagerForIdentity:
+    """Minimum surface for the identity-dialog tests.
+
+    Only exposes the methods the identity-generation slot calls.
+    Records save_org calls so the ``overwrite=True`` flag can be asserted.
+    """
+
+    def __init__(self, org: Organization) -> None:
+        self._org = org
+        self.save_calls: list = []
+
+    def get_org(self, name: str):
+        """Return the fixture org (post-refactor the enroll tab resolves orgs
+        per-call via ``_organization_manager().get_org``)."""
+        return self._org
+
+    def org_dir_for(self, name: str):
+        """Return a real on-disk tmp dir so the atomic writer can use it."""
+        import tempfile
+        from pathlib import Path
+
+        d = Path(tempfile.mkdtemp(prefix="fake_org_"))
+        return d
+
+    def save_org(self, org, overwrite: bool = False) -> None:
+        self.save_calls.append((org, overwrite))

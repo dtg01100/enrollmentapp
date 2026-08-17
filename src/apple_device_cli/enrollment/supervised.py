@@ -23,7 +23,6 @@ from cryptography.hazmat.primitives.serialization import (
 )
 from cryptography.x509 import load_der_x509_certificate, load_pem_x509_certificate
 
-from pymobiledevice3.ca import create_keybag_file
 from pymobiledevice3.services.mobile_config import Purpose
 
 from apple_device_cli.core.redaction import (
@@ -688,10 +687,9 @@ async def do_supervised_pairing(
     device_disconnected = False
 
     keybag_path = Path(tempfile.gettempdir()) / f"ios_enroll_keybag_{uuid4().hex[:8]}"
-    if Path(cert_path).exists() and Path(key_path).exists():
-        _create_keybag_file_from_identity(keybag_path, cert_path, key_path)
-    else:
-        create_keybag_file(keybag_path, org_name)
+    # cert/key existence is validated earlier (early-return error results), so
+    # the identity-derived keybag is the only reachable path.
+    _create_keybag_file_from_identity(keybag_path, cert_path, key_path)
 
     try:
         # Build cloud configuration payload
@@ -855,10 +853,10 @@ async def do_supervised_pairing(
                     _progress(f"WiFi profile install failed: {e}")
             elif wifi_config:
                 wifi_config_path = _normalize_optional_path(wifi_config)
-                if wifi_config_path is None:
-                    errors.append("WiFi config file not found")
-                    _progress("WiFi config file not found")
-                elif wifi_config_path.exists():
+                # ``_normalize_optional_path`` yields None only for a
+                # degenerate quoted-empty input (e.g. ``''``); fold that
+                # into the same not-found error as a missing file.
+                if wifi_config_path is not None and wifi_config_path.exists():
                     _progress(f"Installing WiFi mobileconfig: {wifi_config_path.name}...")
                     try:
                         payload_bytes = wifi_config_path.read_bytes()

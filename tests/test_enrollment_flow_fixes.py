@@ -1316,7 +1316,6 @@ class TestKeybagCleanupOnException:
 
         with (
             patch("pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc),
-            patch.object(supervised, "create_keybag_file", spec=True) as mock_keybag,
             patch.object(supervised, "_create_keybag_file_from_identity", spec=True) as mock_id_keybag,
             patch.object(
                 supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake-bytes"
@@ -1333,7 +1332,6 @@ class TestKeybagCleanupOnException:
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("fake-cert-material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             with pytest.raises(RuntimeError, match="reconnect failed"):
@@ -1371,7 +1369,6 @@ class TestKeybagCleanupOnCertLoadException:
 
         with (
             patch("pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc),
-            patch.object(supervised, "create_keybag_file", spec=True) as mock_keybag,
             patch.object(supervised, "_create_keybag_file_from_identity", spec=True) as mock_id_keybag,
             patch.object(
                 supervised, "_load_cert_public_bytes_from_keybag", side_effect=ValueError("boom")
@@ -1383,7 +1380,6 @@ class TestKeybagCleanupOnCertLoadException:
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("fake-cert-material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             with pytest.raises(ValueError, match="boom"):

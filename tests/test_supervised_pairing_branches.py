@@ -14,9 +14,9 @@ patches ``pymobiledevice3.ca`` AFTER pytest collects this module, so any
 ``from pymobiledevice3.ca import ...`` in supervised.py must be triggered
 by an import that happens BEFORE the fixture activates. Importing
 ``supervised`` at module level (below) achieves this: supervised is loaded
-when pytest first scans this file, capturing the real ``create_keybag_file``
+when pytest first scans this file, capturing the real module-level names
 in its module namespace. Subsequent ``patch.object(supervised, ...)`` calls
-inside test bodies then have a real function to spec against.
+inside test bodies then have real functions to spec against.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
-from apple_device_cli.enrollment import supervised  # module-level so create_keybag_file is bound to the real function
+from apple_device_cli.enrollment import supervised  # module-level so real names are bound
 
 from tests.conftest import (
     MockCloudConfigurationAlreadyPresentError as CloudConfigurationAlreadyPresentError,
@@ -126,8 +126,6 @@ class TestWaitForCloudConfig:
         with patch.object(
             supervised, "_wait_for_cloud_config", new=AsyncMock(return_value=None)
         ), patch.object(
-            supervised, "create_keybag_file", spec=True
-        ) as mock_keybag, patch.object(
             supervised, "_create_keybag_file_from_identity", spec=True
         ) as mock_id_keybag, patch.object(
             supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake"
@@ -136,7 +134,6 @@ class TestWaitForCloudConfig:
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             result = asyncio.run(supervised.do_supervised_pairing(
@@ -165,8 +162,6 @@ class TestWaitForCloudConfig:
         ), patch.object(
             supervised, "_wait_for_device_reconnect", new=AsyncMock(return_value=None)
         ), patch.object(
-            supervised, "create_keybag_file", spec=True
-        ) as mock_keybag, patch.object(
             supervised, "_create_keybag_file_from_identity", spec=True
         ) as mock_id_keybag, patch.object(
             supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake"
@@ -175,7 +170,6 @@ class TestWaitForCloudConfig:
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             result = asyncio.run(supervised.do_supervised_pairing(
@@ -215,8 +209,6 @@ class TestStep4ReconnectVerification:
         ), patch.object(
             supervised, "_wait_for_device_reconnect", new=AsyncMock(return_value=fresh_lockdown)
         ), patch.object(
-            supervised, "create_keybag_file", spec=True
-        ) as mock_keybag, patch.object(
             supervised, "_create_keybag_file_from_identity", spec=True
         ) as mock_id_keybag, patch.object(
             supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake"
@@ -225,7 +217,6 @@ class TestStep4ReconnectVerification:
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             result = asyncio.run(supervised.do_supervised_pairing(
@@ -260,8 +251,6 @@ class TestStep4ReconnectVerification:
         ), patch.object(
             supervised, "_wait_for_device_reconnect", new=AsyncMock(return_value=fresh_lockdown)
         ), patch.object(
-            supervised, "create_keybag_file", spec=True
-        ) as mock_keybag, patch.object(
             supervised, "_create_keybag_file_from_identity", spec=True
         ) as mock_id_keybag, patch.object(
             supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake"
@@ -270,7 +259,6 @@ class TestStep4ReconnectVerification:
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             # The verify call after reconnect also raises BrokenPipeError → falls through to Step 7.
@@ -340,8 +328,6 @@ class TestStep7FinalVerify:
         ), patch.object(
             supervised, "_wait_for_device_reconnect", new=AsyncMock(return_value=fresh_lockdown)
         ), patch.object(
-            supervised, "create_keybag_file", spec=True
-        ) as mock_keybag, patch.object(
             supervised, "_create_keybag_file_from_identity", spec=True
         ) as mock_id_keybag, patch.object(
             supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake"
@@ -350,7 +336,6 @@ class TestStep7FinalVerify:
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             result = asyncio.run(supervised.do_supervised_pairing(
@@ -387,8 +372,6 @@ class TestAlreadyPresentCheckError:
         svc.get_cloud_configuration.side_effect = raise_on_get
 
         with patch.object(
-            supervised, "create_keybag_file", spec=True
-        ) as mock_keybag, patch.object(
             supervised, "_create_keybag_file_from_identity", spec=True
         ) as mock_id_keybag, patch.object(
             supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake"
@@ -397,7 +380,6 @@ class TestAlreadyPresentCheckError:
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             result = asyncio.run(supervised.do_supervised_pairing(
@@ -441,8 +423,6 @@ class TestWifiMobileconfigInstall:
         })
 
         with patch.object(
-            supervised, "create_keybag_file", spec=True
-        ) as mock_keybag, patch.object(
             supervised, "_create_keybag_file_from_identity", spec=True
         ) as mock_id_keybag, patch.object(
             supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake"
@@ -451,7 +431,6 @@ class TestWifiMobileconfigInstall:
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             result = asyncio.run(supervised.do_supervised_pairing(
@@ -492,8 +471,6 @@ class TestWifiMobileconfigInstall:
         svc.get_profile_list = AsyncMock(return_value={"ProfileMetadata": {}})
 
         with patch.object(
-            supervised, "create_keybag_file", spec=True
-        ) as mock_keybag, patch.object(
             supervised, "_create_keybag_file_from_identity", spec=True
         ) as mock_id_keybag, patch.object(
             supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake"
@@ -502,7 +479,6 @@ class TestWifiMobileconfigInstall:
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             result = asyncio.run(supervised.do_supervised_pairing(
@@ -522,7 +498,7 @@ class TestWifiMobileconfigInstall:
 
 
 # Skipped: triggering the keybag-missing path requires making both
-# _create_keybag_file_from_identity AND create_keybag_file fail, which is
+# _create_keybag_file_from_identity fails, which is
 # brittle and not the highest-value coverage gain. The lines 773-774
 # (store_profile call) are covered indirectly by the existing
 # test_make_supervised_installs_mdm_profile test which exercises the
@@ -563,8 +539,6 @@ class TestAlreadyPresentMismatch:
         })
 
         with patch.object(
-            supervised, "create_keybag_file", spec=True
-        ) as mock_keybag, patch.object(
             supervised, "_create_keybag_file_from_identity", spec=True
         ) as mock_id_keybag, patch.object(
             supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake"
@@ -573,7 +547,6 @@ class TestAlreadyPresentMismatch:
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             result = asyncio.run(supervised.do_supervised_pairing(
@@ -606,8 +579,6 @@ class TestWifiMobileconfigNotFound:
         missing_wifi_path = tmp_path / "nonexistent.mobileconfig"
 
         with patch.object(
-            supervised, "create_keybag_file", spec=True
-        ) as mock_keybag, patch.object(
             supervised, "_create_keybag_file_from_identity", spec=True
         ) as mock_id_keybag, patch.object(
             supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake"
@@ -616,7 +587,6 @@ class TestWifiMobileconfigNotFound:
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             result = asyncio.run(supervised.do_supervised_pairing(
@@ -647,8 +617,6 @@ class TestMdmMobileconfigNotFound:
         lockdown, svc = _wire_basic_supervised_mocks(mock_pymobiledevice3)
 
         with patch.object(
-            supervised, "create_keybag_file", spec=True
-        ) as mock_keybag, patch.object(
             supervised, "_create_keybag_file_from_identity", spec=True
         ) as mock_id_keybag, patch.object(
             supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake"
@@ -657,7 +625,6 @@ class TestMdmMobileconfigNotFound:
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             result = asyncio.run(supervised.do_supervised_pairing(
@@ -703,8 +670,6 @@ class TestFinalVerifyGenericError:
         with patch.object(
             supervised, "_wait_for_cloud_config", new=AsyncMock(return_value={"IsSupervised": True})
         ), patch.object(
-            supervised, "create_keybag_file", spec=True
-        ) as mock_keybag, patch.object(
             supervised, "_create_keybag_file_from_identity", spec=True
         ) as mock_id_keybag, patch.object(
             supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake"
@@ -713,7 +678,6 @@ class TestFinalVerifyGenericError:
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             result = asyncio.run(supervised.do_supervised_pairing(
@@ -845,8 +809,6 @@ class TestDoSupervisedPairingEarlyReturns:
             "apple_device_cli.device.connection.wait_for_udid_in_usbmux",
             side_effect=fake_wait,
         ), patch.object(
-            supervised, "create_keybag_file", spec=True
-        ) as mock_keybag, patch.object(
             supervised, "_create_keybag_file_from_identity", spec=True
         ) as mock_id_keybag, patch.object(
             supervised,
@@ -857,7 +819,6 @@ class TestDoSupervisedPairingEarlyReturns:
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             result = asyncio.run(supervised.do_supervised_pairing(
@@ -892,8 +853,6 @@ class TestDoSupervisedPairingUnactivated:
         )
 
         with patch.object(
-            supervised, "create_keybag_file", spec=True
-        ) as mock_keybag, patch.object(
             supervised, "_create_keybag_file_from_identity", spec=True
         ) as mock_id_keybag, patch.object(
             supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake"
@@ -902,7 +861,6 @@ class TestDoSupervisedPairingUnactivated:
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             asyncio.run(supervised.do_supervised_pairing(
@@ -924,8 +882,6 @@ class TestDoSupervisedPairingMdmUnremovable:
         lockdown, svc = _wire_basic_supervised_mocks(mock_pymobiledevice3)
 
         with patch.object(
-            supervised, "create_keybag_file", spec=True
-        ) as mock_keybag, patch.object(
             supervised, "_create_keybag_file_from_identity", spec=True
         ) as mock_id_keybag, patch.object(
             supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake"
@@ -934,7 +890,6 @@ class TestDoSupervisedPairingMdmUnremovable:
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             asyncio.run(supervised.do_supervised_pairing(
@@ -951,24 +906,26 @@ class TestDoSupervisedPairingMdmUnremovable:
         assert payload.get("IsMDMUnremovable") is True
 
 
-class TestDoSupervisedPairingFallbackKeybag:
-    """When the cert/key identity keybag creation path is unavailable,
-    the wrapper falls back to create_keybag_file(keybag_path, org_name).
+class TestIdentityKeybagFailure:
+    """The identity-derived keybag is the only keybag path (the cert/key
+    existence early return makes a fallback unreachable), so a failure in
+    ``_create_keybag_file_from_identity`` propagates as a hard error.
     """
 
-    def test_falls_back_to_create_keybag_file_when_helper_missing(
+    def test_identity_keybag_helper_error_propagates(
         self, mock_pymobiledevice3, tmp_path
     ):
-        """Force _create_keybag_file_from_identity to raise; the wrapper
-        calls create_keybag_file as a fallback (line 569)."""
+        """A failure in _create_keybag_file_from_identity propagates.
+
+        The cert/key-existence early return means the identity-derived
+        keybag is the only reachable path; a helper failure therefore
+        surfaces as a hard error rather than falling back."""
         from apple_device_cli.enrollment import supervised
 
         cert_path, key_path = _make_der_identity(tmp_path)
         lockdown, svc = _wire_basic_supervised_mocks(mock_pymobiledevice3)
 
         with patch.object(
-            supervised, "create_keybag_file", spec=True
-        ) as mock_keybag, patch.object(
             supervised,
             "_create_keybag_file_from_identity",
             side_effect=RuntimeError("identity load failed"),
@@ -977,8 +934,6 @@ class TestDoSupervisedPairingFallbackKeybag:
             "_load_cert_public_bytes_from_keybag",
             return_value=b"fake",
         ), _patch_supervised_io(mock_pymobiledevice3, svc):
-
-            mock_keybag.return_value = None
 
             # The identity helper raises BEFORE we reach set_cloud_configuration
             # → the exception propagates from supervised.py and asyncio.run raises.
@@ -1019,8 +974,6 @@ class TestStep7ReconnectTimeout:
         ), patch.object(
             supervised, "_wait_for_device_reconnect", new=AsyncMock(return_value=None)
         ), patch.object(
-            supervised, "create_keybag_file", spec=True
-        ) as mock_keybag, patch.object(
             supervised, "_create_keybag_file_from_identity", spec=True
         ) as mock_id_keybag, patch.object(
             supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake"
@@ -1029,7 +982,6 @@ class TestStep7ReconnectTimeout:
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             result = asyncio.run(supervised.do_supervised_pairing(

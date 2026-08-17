@@ -354,7 +354,6 @@ class TestDoSupervisedPairingWiring:
     def _keybag_patches(self):
         """Patches that write a real keybag file (existing test convention)."""
         return (
-            patch.object(supervised, "create_keybag_file", spec=True),
             patch.object(supervised, "_create_keybag_file_from_identity", spec=True),
             patch.object(supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake"),
         )
@@ -365,11 +364,10 @@ class TestDoSupervisedPairingWiring:
         lockdown, svc = _wire_basic_supervised_mocks(mock_pymobiledevice3)
         msgs: list[str] = []
 
-        with self._keybag_patches()[0] as mock_keybag, self._keybag_patches()[1] as mock_id_keybag, self._keybag_patches()[2], _patch_supervised_io(mock_pymobiledevice3, svc):
+        with self._keybag_patches()[0] as mock_id_keybag, self._keybag_patches()[1], _patch_supervised_io(mock_pymobiledevice3, svc):
             def make_fake(path, *_args, **_kwargs):
                 path.write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             result = asyncio.run(supervised.do_supervised_pairing(
@@ -405,11 +403,10 @@ class TestDoSupervisedPairingWiring:
             set_cloud_configuration_side_effect=RuntimeError("boom"),
         )
 
-        with self._keybag_patches()[0] as mock_keybag, self._keybag_patches()[1] as mock_id_keybag, self._keybag_patches()[2], _patch_supervised_io(mock_pymobiledevice3, svc):
+        with self._keybag_patches()[0] as mock_id_keybag, self._keybag_patches()[1], _patch_supervised_io(mock_pymobiledevice3, svc):
             def make_fake(path, *_args, **_kwargs):
                 path.write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             result = asyncio.run(supervised.do_supervised_pairing(
@@ -421,16 +418,35 @@ class TestDoSupervisedPairingWiring:
         assert result.success is False
         assert any("Failed to configure" in e for e in result.errors)
 
+    def test_wifi_config_quoted_empty_recorded(self, mock_pymobiledevice3, tmp_path):
+        """wifi_config="''" normalizes to None → folded into the not-found error."""
+        cert_path, key_path = _make_der_identity(tmp_path)
+        lockdown, svc = _wire_basic_supervised_mocks(mock_pymobiledevice3)
+
+        with self._keybag_patches()[0] as mock_id_keybag, self._keybag_patches()[1], _patch_supervised_io(mock_pymobiledevice3, svc):
+            def make_fake(path, *_args, **_kwargs):
+                path.write_text("material")
+
+            mock_id_keybag.side_effect = make_fake
+
+            result = asyncio.run(supervised.do_supervised_pairing(
+                cert_path=str(cert_path),
+                key_path=str(key_path),
+                org_name="Test Org",
+                wifi_config="''",
+            ))
+
+        assert any("WiFi config file not found" in e for e in result.errors)
+
     def test_wifi_config_missing_file_recorded(self, mock_pymobiledevice3, tmp_path):
         """wifi_config pointing at a missing file → 'not found' error (888-889)."""
         cert_path, key_path = _make_der_identity(tmp_path)
         lockdown, svc = _wire_basic_supervised_mocks(mock_pymobiledevice3)
 
-        with self._keybag_patches()[0] as mock_keybag, self._keybag_patches()[1] as mock_id_keybag, self._keybag_patches()[2], _patch_supervised_io(mock_pymobiledevice3, svc):
+        with self._keybag_patches()[0] as mock_id_keybag, self._keybag_patches()[1], _patch_supervised_io(mock_pymobiledevice3, svc):
             def make_fake(path, *_args, **_kwargs):
                 path.write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             missing = tmp_path / "nope.mobileconfig"
@@ -446,7 +462,6 @@ class TestDoSupervisedPairingWiring:
     def _no_keybag_patches(self):
         """Patches that create NO keybag file (keybag_path.exists() is False)."""
         return (
-            patch.object(supervised, "create_keybag_file", spec=True),
             patch.object(supervised, "_create_keybag_file_from_identity", spec=True),
             patch.object(supervised, "_load_cert_public_bytes_from_keybag", return_value=b"fake"),
         )
@@ -457,7 +472,7 @@ class TestDoSupervisedPairingWiring:
         lockdown, svc = _wire_basic_supervised_mocks(mock_pymobiledevice3)
         svc.install_wifi_profile = AsyncMock()
 
-        with self._no_keybag_patches()[0], self._no_keybag_patches()[1], self._no_keybag_patches()[2], _patch_supervised_io(mock_pymobiledevice3, svc):
+        with self._no_keybag_patches()[0], self._no_keybag_patches()[1], _patch_supervised_io(mock_pymobiledevice3, svc):
             result = asyncio.run(supervised.do_supervised_pairing(
                 cert_path=str(cert_path),
                 key_path=str(key_path),
@@ -476,7 +491,7 @@ class TestDoSupervisedPairingWiring:
         lockdown, svc = _wire_basic_supervised_mocks(mock_pymobiledevice3)
         svc.install_wifi_profile = AsyncMock(side_effect=RuntimeError("wifi failed"))
 
-        with self._no_keybag_patches()[0], self._no_keybag_patches()[1], self._no_keybag_patches()[2], _patch_supervised_io(mock_pymobiledevice3, svc):
+        with self._no_keybag_patches()[0], self._no_keybag_patches()[1], _patch_supervised_io(mock_pymobiledevice3, svc):
             result = asyncio.run(supervised.do_supervised_pairing(
                 cert_path=str(cert_path),
                 key_path=str(key_path),
@@ -496,7 +511,7 @@ class TestDoSupervisedPairingWiring:
         mdm = tmp_path / "mdm.mobileconfig"
         mdm.write_bytes(b"<plist version='1.0'/>")
 
-        with self._no_keybag_patches()[0], self._no_keybag_patches()[1], self._no_keybag_patches()[2], _patch_supervised_io(mock_pymobiledevice3, svc):
+        with self._no_keybag_patches()[0], self._no_keybag_patches()[1], _patch_supervised_io(mock_pymobiledevice3, svc):
             result = asyncio.run(supervised.do_supervised_pairing(
                 cert_path=str(cert_path),
                 key_path=str(key_path),
@@ -523,11 +538,10 @@ class TestDoSupervisedPairingWiring:
 
         with patch.object(
             supervised, "_wait_for_device_reconnect", new=AsyncMock(return_value=fresh)
-        ), self._keybag_patches()[0] as mock_keybag, self._keybag_patches()[1] as mock_id_keybag, self._keybag_patches()[2], _patch_supervised_io(mock_pymobiledevice3, svc):
+        ), self._keybag_patches()[0] as mock_id_keybag, self._keybag_patches()[1], _patch_supervised_io(mock_pymobiledevice3, svc):
             def make_fake(path, *_args, **_kwargs):
                 path.write_text("material")
 
-            mock_keybag.side_effect = make_fake
             mock_id_keybag.side_effect = make_fake
 
             result = asyncio.run(supervised.do_supervised_pairing(

@@ -804,49 +804,46 @@ class TestDoSupervisedPairingEarlyReturns:
         assert result.success is False
         assert any("Private key not found" in e for e in result.errors)
 
-    def test_udid_specific_connect_fails_falls_back_to_any_device(
+    def test_udid_connect_failure_pairs_and_retries_same_udid(
         self, mock_pymobiledevice3, tmp_path
     ):
-        """If create_using_usbmux(serial=udid) raises ConnectionError,
-        the wrapper retries without the serial arg to fall back to any device.
+        """udid-specific ConnectionError triggers pair-then-retry on the SAME udid.
+
+        main (a78b62a) deliberately does NOT fall back to "any device" when
+        the user names a specific UDID — silently operating on a different
+        device would enroll the wrong iPad. ``_pair_then_retry_connect``
+        pairs the named udid, waits for it to reappear in usbmux, and
+        retries the same-udid connect exactly once.
         """
         cert_path, key_path = _make_der_identity(tmp_path)
+        lockdown, svc = _wire_basic_supervised_mocks(mock_pymobiledevice3)
 
         call_log = []
 
         async def create_side_effect(*args, **kwargs):
             call_log.append(kwargs)
-            if "serial" in kwargs:
+            if len(call_log) == 1:
                 raise ConnectionError("serial failed")
-            # Second call: no serial, return a fresh lockdown
-            lockdown = MagicMock(spec=LockdownClient)
-            lockdown.udid = "different-udid"
             return lockdown
-
-        # Need activation_svc and config_svc to satisfy the rest of the flow.
-        activation_svc = MagicMock(spec=MobileActivationService)
-        activation_svc.state = AsyncMock(return_value="Activated")
-        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
-            activation_svc
-        )
-
-        svc = MagicMock(spec=MobileConfigService)
-        svc.set_cloud_configuration = AsyncMock()
-        svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
-        svc.__aenter__ = AsyncMock(return_value=svc)
-        svc.__aexit__ = AsyncMock(return_value=False)
-        svc.install_profile_silent = AsyncMock()
-        svc.get_profile_list = AsyncMock(return_value={
-            "ProfileMetadata": {"mdm-1": {"PayloadType": "com.apple.mdm"}}
-        })
 
         mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(
             side_effect=create_side_effect
         )
 
+        pair_log = []
+
+        def fake_pair(udid):
+            pair_log.append(udid)
+
+        def fake_wait(udid):
+            return True
+
         with patch(
-            "pymobiledevice3.services.mobile_config.MobileConfigService",
-            return_value=svc,
+            "apple_device_cli.device.connection.ensure_device_pairing",
+            side_effect=fake_pair,
+        ), patch(
+            "apple_device_cli.device.connection.wait_for_udid_in_usbmux",
+            side_effect=fake_wait,
         ), patch.object(
             supervised, "create_keybag_file", spec=True
         ) as mock_keybag, patch.object(
@@ -855,7 +852,7 @@ class TestDoSupervisedPairingEarlyReturns:
             supervised,
             "_load_cert_public_bytes_from_keybag",
             return_value=b"fake",
-        ):
+        ), _patch_supervised_io(mock_pymobiledevice3, svc):
 
             def make_fake(path, *_args, **_kwargs):
                 Path(path).write_text("material")
@@ -871,13 +868,11 @@ class TestDoSupervisedPairingEarlyReturns:
                 mdm_url="https://mdm.example.com/mdm",
             ))
 
-        # We saw two create_using_usbmux calls (serial, then no-serial)
-        assert len(call_log) >= 2
-        # First call has serial=udid, second has no serial
-        assert call_log[0].get("serial") == "target-udid"
-        assert "serial" not in call_log[1]
-        # The fallback returned a different udid — recorded as device_udid
-        assert result.device_udid == "different-udid"
+        # Both attempts targeted the named udid — never a no-serial fallback
+        assert call_log == [{"serial": "target-udid"}, {"serial": "target-udid"}]
+        # The device was paired and its udid confirmed visible before retry
+        assert pair_log == ["target-udid"]
+        assert result.device_udid == "target-udid"
 
 
 class TestDoSupervisedPairingUnactivated:
@@ -1280,7 +1275,9 @@ class TestGetDeviceEnrollmentState:
         from pymobiledevice3.exceptions import MissingValueError
 
         mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(
-            side_effect=MissingValueError("missing key")
+            side_effect=MissingValueError(
+                "missing key", identifier=None, product_version=""
+            )
         )
 
         state = supervised.get_device_enrollment_state("test-udid")

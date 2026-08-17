@@ -30,11 +30,20 @@ from apple_device_cli.orgs.manager import Organization, OrganizationManager  # n
 
 @pytest.fixture(scope="session")
 def qapp() -> QApplication:
-    """Single QApplication for the whole test session."""
+    """Single QApplication for the whole test session.
+
+    Finalizer quits the application and drains pending events so pytest
+    can exit cleanly when this file is run in isolation. The matching
+    fixture in ``tests/conftest.py`` has the same finalizer for the same
+    reason; the duplicate is here for backward-compat with the pre-split
+    ``test_gui_qt.py`` layout.
+    """
     app = QApplication.instance()
     if app is None:
         app = QApplication(sys.argv)
-    return app
+    yield app
+    app.quit()
+    app.processEvents()
 
 
 @pytest.fixture(autouse=True)

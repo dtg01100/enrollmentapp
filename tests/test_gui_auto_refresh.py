@@ -26,10 +26,20 @@ from apple_device_cli.orgs.manager import OrganizationManager  # noqa: E402
 
 @pytest.fixture(scope="session")
 def qapp() -> QApplication:
+    """Single QApplication for the whole test session.
+
+    Finalizer quits the application and drains pending events so pytest
+    can exit cleanly when this file is run in isolation. Without it,
+    ``pytest tests/test_gui_auto_refresh.py`` hangs after the test
+    summary line because the auto-refresh QTimer keeps firing on the
+    QApplication's pending-event queue.
+    """
     app = QApplication.instance()
     if app is None:
         app = QApplication(sys.argv)
-    return app
+    yield app
+    app.quit()
+    app.processEvents()
 
 
 @pytest.fixture

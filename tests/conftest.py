@@ -203,11 +203,20 @@ from apple_device_cli.orgs.manager import Organization, OrganizationManager  # n
 
 @pytest.fixture(scope="session")
 def qapp() -> QApplication:
-    """Single QApplication for the whole test session."""
+    """Single QApplication for the whole test session.
+
+    The finalizer calls ``app.quit()`` and drains pending events so pytest
+    can exit cleanly under the offscreen Qt platform plugin. Without it,
+    ``pytest tests/test_gui_qt.py`` (running this file in isolation) hangs
+    after the test summary line because QApplication keeps the interpreter
+    alive on its pending-event queue.
+    """
     app = QApplication.instance()
     if app is None:
         app = QApplication(sys.argv)
-    return app
+    yield app
+    app.quit()
+    app.processEvents()
 
 
 @pytest.fixture(autouse=True)

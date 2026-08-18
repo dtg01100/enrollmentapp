@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import sys
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -58,7 +57,6 @@ def sample_devices() -> list[DeviceInfo]:
 
 @pytest.fixture
 def make_app(qapp, tmp_path, monkeypatch):
-    from apple_device_cli.gui_qt import EnrollmentApp
 
     def _factory(orgs=None):
         from apple_device_cli import gui_qt

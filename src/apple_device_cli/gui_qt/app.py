@@ -6,36 +6,57 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
-import subprocess
+# ``shutil`` is re-exported for the test monkeypatch surface — see the
+# block comment below the ``from apple_device_cli import __version__``
+# import. ``patch("apple_device_cli.gui_qt.shutil.rmtree")`` only works
+# if the name resolves on the package namespace.
+import shutil  # noqa: F401
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable
 
 from apple_device_cli import __version__
-from apple_device_cli.core.redaction import redact_name, sanitize_text
-from apple_device_cli.device.connection import (
+# Re-exports for the test monkeypatch surface — names like ``list_devices``,
+# ``make_supervised``, ``set_org_wifi`` are looked up at runtime on the
+# ``apple_device_cli.gui_qt`` package (see ``gui_qt.__init__.__setattr__``).
+# Tests do ``monkeypatch.setattr(gui_qt, "list_devices", lambda)`` to swap
+# the production symbol with a fixture; that pattern needs the names bound
+# on this module so the mirror in ``__init__.py`` finds them. Marked
+# ``noqa: F401`` because the production code in this module no longer uses
+# them after the per-tab extraction (Round 3 GUI refactor).
+from apple_device_cli.core.redaction import (  # noqa: F401
+    redact_name,
+    sanitize_text,
+)
+from apple_device_cli.device.connection import (  # noqa: F401
     ensure_device_pairing,
     get_device_info,
     list_devices,
 )
 from apple_device_cli.device.info import DeviceInfo
-from apple_device_cli.enrollment.activation import activate_device
-from apple_device_cli.enrollment.skip_panes import PRESETS, resolve_skip_panes
-from apple_device_cli.enrollment.supervised import (
+from apple_device_cli.enrollment.activation import (  # noqa: F401
+    activate_device,
+)
+from apple_device_cli.enrollment.skip_panes import (  # noqa: F401
+    PRESETS,
+    resolve_skip_panes,
+)
+from apple_device_cli.enrollment.supervised import (  # noqa: F401
     erase_device_for_reenrollment,
     get_device_enrollment_state,
     make_supervised,
     validate_enrollment_prerequisites,
 )
-from apple_device_cli.cli_actions import (
+from apple_device_cli.cli_actions import (  # noqa: F401
     OrgNotFoundError,
     WifiConfigInvalidError,
     WifiConfigNotFoundError,
     set_org_wifi,
 )
-from apple_device_cli.orgs.identity import generate_org_identity
+from apple_device_cli.orgs.identity import (  # noqa: F401
+    generate_org_identity,
+)
 from apple_device_cli.orgs.manager import Organization, OrganizationManager
 from apple_device_cli.gui_qt.worker import WorkerPool
 from apple_device_cli.restore.cache import (

@@ -40,7 +40,6 @@ from apple_device_cli.cli_actions import (
     WifiConfigInvalidError,
     WifiConfigNotFoundError,
 )
-from apple_device_cli.core.redaction import redact_name
 from apple_device_cli.orgs.identity import generate_org_identity
 from apple_device_cli.orgs.manager import Organization
 

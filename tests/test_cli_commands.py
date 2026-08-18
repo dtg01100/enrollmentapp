@@ -451,7 +451,12 @@ class TestOrgGenerate:
 
         mock_mgr = _build_mock_manager()
         mock_mgr.orgs_dir = orgs_dir
-        mock_mgr._sanitize_name = lambda n: "".join(c for c in n if c.isalnum() or c in "-_") or "x"
+
+        def sanitized(n: str) -> str:
+            return "".join(c for c in n if c.isalnum() or c in "-_") or "x"
+
+        mock_mgr._sanitize_name = sanitized
+        mock_mgr.org_dir_for = lambda n: orgs_dir / sanitized(n)
         mock_mgr.get_org.return_value = None
         mock_mgr_class.return_value = mock_mgr
         mock_gen_id.return_value = (b"cert-der", b"key-der")

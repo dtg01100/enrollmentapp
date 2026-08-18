@@ -150,7 +150,7 @@ if (
     self_module.__class__ = _PackageModule
 
 
-__all__ = [
+__all__ = [  # noqa: F405 — PEP 562 lazy __getattr__ resolves these via _app module
     "MainWindow",
     "EnrollmentApp",  # back-compat alias for MainWindow
     "OrgValidationError",

@@ -14,7 +14,6 @@ class-shaped mocks needed because the functions take primitives.
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock
 
 import pytest
 

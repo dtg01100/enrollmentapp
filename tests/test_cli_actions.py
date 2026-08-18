@@ -395,7 +395,7 @@ class TestSetOrgWifi:
         manager = _build_manager()
         org = _build_org(name="Acme")
         manager.get_org.return_value = org
-        manager._sanitize_name = lambda n: "Acme"
+        manager.org_dir_for = lambda n: tmp_path / "Acme"
         manager.orgs_dir = tmp_path
 
         # Real Apple plist (empty PayloadContent is valid).
@@ -474,7 +474,7 @@ class TestGenerateOrg:
     def test_happy_path_creates_files_and_saves(self, mock_gen_id, tmp_path):
         manager = _build_manager()
         manager.orgs_dir = tmp_path
-        manager._sanitize_name = lambda n: "Acme"
+        manager.org_dir_for = lambda n: tmp_path / "Acme"
         manager.get_org.return_value = None
         mock_gen_id.return_value = (b"cert-bytes", b"key-bytes")
 
@@ -508,7 +508,7 @@ class TestGenerateOrg:
     def test_existing_org_dir_is_replaced(self, mock_gen_id, tmp_path):
         manager = _build_manager()
         manager.orgs_dir = tmp_path
-        manager._sanitize_name = lambda n: "Acme"
+        manager.org_dir_for = lambda n: tmp_path / "Acme"
         manager.get_org.return_value = None
         mock_gen_id.return_value = (b"cert", b"key")
 

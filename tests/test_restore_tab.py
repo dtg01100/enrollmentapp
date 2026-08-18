@@ -238,7 +238,6 @@ class TestRestoreDeviceCombo:
         self, make_app, sample_devices, tmp_path, monkeypatch
     ):
         """The signed-version list and Verify state belong to the old device."""
-        import apple_device_cli.gui_qt as gui_qt
 
         devices = list(sample_devices)
         devices.append(

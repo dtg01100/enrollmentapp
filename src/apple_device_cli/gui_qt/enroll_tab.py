@@ -37,12 +37,6 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 
 from apple_device_cli.core.redaction import sanitize_text
-from apple_device_cli.enrollment.supervised import (
-    erase_device_for_reenrollment,
-    get_device_enrollment_state,
-    make_supervised,
-    validate_enrollment_prerequisites,
-)
 from apple_device_cli.orgs.manager import Organization
 
 if TYPE_CHECKING:

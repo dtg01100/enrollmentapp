@@ -423,7 +423,7 @@ def interactive_enroll():
                 valid_days = 365 * 5
 
             cert_der, key_der = generate_org_identity(name, valid_days)
-            org_dir = manager.orgs_dir / manager._sanitize_name(name)
+            org_dir = manager.orgs_dir / manager.org_dir_for(name).name
             if org_dir.exists():
                 existing_org = manager.get_org(name)
                 if existing_org:

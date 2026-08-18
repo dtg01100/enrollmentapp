@@ -317,7 +317,7 @@ def set_org_wifi(
     except (OSError, plistlib.InvalidFileException) as exc:
         raise WifiConfigInvalidError(str(wifi_path)) from exc
 
-    org_dir = manager.orgs_dir / manager._sanitize_name(name)
+    org_dir = manager.orgs_dir / manager.org_dir_for(name).name
     dest_wifi = org_dir / "wifi.mobileconfig"
     shutil.copy(wifi_path, dest_wifi)
 
@@ -362,7 +362,7 @@ def generate_org(
 
     cert_der, key_der = factory(name, valid_days)
 
-    org_dir = mgr.orgs_dir / mgr._sanitize_name(name)
+    org_dir = mgr.orgs_dir / mgr.org_dir_for(name).name
     if org_dir.exists():
         shutil.rmtree(org_dir)
     org_dir.mkdir(parents=True, exist_ok=True)

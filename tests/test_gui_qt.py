@@ -789,7 +789,6 @@ class TestAttachWifi:
         self, make_app, sample_org, monkeypatch, tmp_path
     ):
         """Selected org + wifi file → set_org_wifi called with name + path."""
-        from pathlib import Path
         from apple_device_cli.cli_actions import SetOrgWifiResult
 
         app = make_app(orgs=[sample_org])

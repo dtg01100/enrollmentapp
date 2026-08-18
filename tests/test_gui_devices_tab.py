@@ -12,9 +12,8 @@ uses.
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 
 from apple_device_cli.device.info import DeviceInfo
 
@@ -26,7 +25,6 @@ class TestDevicesContextMenu:
         """No org selected → 'Make Supervised' is hidden (gating)."""
         app = make_app()
         app.devices_list.setCurrentRow(0)
-        from PySide6.QtWidgets import QMenu
 
         menu = app._build_devices_context_menu()
         labels = [a.text() for a in menu.actions()]
@@ -41,7 +39,6 @@ class TestDevicesContextMenu:
     ):
         """With an org → 'Make Supervised' is visible."""
         app = make_app(orgs=[sample_org])
-        from PySide6.QtWidgets import QMenu
 
         # Force gating state to reflect org presence
         app._gating.set_org(sample_org)

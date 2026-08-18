@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -40,7 +40,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from apple_device_cli.restore.cache import cache_state, resolve_cache_dir
 
 if TYPE_CHECKING:
     from apple_device_cli.gui_qt.app import EnrollmentApp

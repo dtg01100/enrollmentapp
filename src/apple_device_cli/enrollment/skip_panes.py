@@ -18,7 +18,7 @@ VALID_PANES = {
     "wifi", "display", "tone",
     "filevault", "icloud-storage", "icloud-diagnostics",
     "registration", "device-to-device-migration",
-    "unlock-with-watch", "all",
+    "unlock-with-watch",
     "avatar", "device-protection", "lockdown-mode",
     "wallpaper", "web-content-filtering",
     "age-based-safety", "tips",
@@ -52,6 +52,14 @@ def resolve_skip_panes(preset: str | None, extra_panes: list[str] | None) -> lis
 
     invalid = set(extra_panes) - VALID_PANES
     if invalid:
+        # ``"all"`` is a preset keyword, not a pane name. Users who pass it via
+        # ``--skip all`` almost always meant the ``--skip-preset all`` shortcut;
+        # guide them rather than silently producing a 1-pane list.
+        if invalid == {"all"}:
+            raise ValueError(
+                "'all' is a skip-preset keyword, not a pane name. "
+                "Pass --skip-preset all to skip every pane."
+            )
         raise ValueError(f"Invalid panes: {', '.join(sorted(invalid))}")
 
     result = set()

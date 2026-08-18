@@ -18,6 +18,19 @@ def test_presets_contain_expected():
     assert "all" in PRESETS
 
 
+def test_valid_panes_excludes_all_keyword():
+    """``all`` is a preset keyword, not a pane name — must NOT appear in
+    ``VALID_PANES`` so ``--skip all`` is rejected with a helpful hint
+    rather than silently producing a 1-pane skip list."""
+    assert "all" not in VALID_PANES
+
+
+def test_resolve_skip_panes_all_keyword_raises_with_hint():
+    """``--skip all`` should error with a hint pointing to ``--skip-preset all``."""
+    with pytest.raises(ValueError, match="--skip-preset all"):
+        resolve_skip_panes(None, ["all"])
+
+
 def test_resolve_skip_panes_with_preset():
     result = resolve_skip_panes("minimal", [])
     assert "restore-completed" in result
@@ -146,6 +159,10 @@ def test_presets_all_contains_all_valid():
 
 
 def test_valid_panes_count():
-    """VALID_PANES should contain expected number of panes."""
-    # This is a regression test - if panes are added/removed, this test will catch it
-    assert len(VALID_PANES) == 66
+    """VALID_PANES should contain expected number of panes.
+
+    ``"all"`` is reserved as a preset keyword (see ``test_valid_panes_excludes_all_keyword``),
+    so it is counted here indirectly — bumping the count below means a real pane
+    was added or removed.
+    """
+    assert len(VALID_PANES) == 65

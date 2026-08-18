@@ -489,6 +489,60 @@ def _format_exception_message(prefix: str, error: Exception) -> str:
     return f"{prefix}: {detail}"
 
 
+def _profile_list_contains_mdm(
+    profiles: dict[str, Any] | None,
+    expected_topic: str | None = None,
+) -> bool:
+    """Return True if any installed profile looks like an MDM enrollment.
+
+    Some MDM vendors (SimpleMDM, etc.) wrap the ``com.apple.mdm`` payload
+    inside a Configuration outer envelope. In that case the outer
+    ``PayloadType`` and ``PayloadIdentifier`` are not ``com.apple.mdm``,
+    so a naïve top-level check misses them. We validate by inspecting the
+    identifier (the dict key) and walking the nested ``PayloadContent``
+    if the caller provides the expected MDM topic.
+
+    Args:
+        profiles: The dict returned by ``MobileConfigService.get_profile_list``.
+        expected_topic: Optional MDM topic from the org's ``mdm_topic`` field;
+            when provided, also matches the nested MDM payload's ``Topic``
+            or ``PayloadIdentifier`` (iOS surfaces the inner MDM payload's
+            identifier as the envelope's identifier for some vendors).
+    """
+    if not isinstance(profiles, dict):
+        return False
+    profile_meta = profiles.get("ProfileMetadata") or {}
+    if not isinstance(profile_meta, dict):
+        return False
+
+    def _payload_is_mdm(payload: Any) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        if payload.get("PayloadType") == "com.apple.mdm":
+            return True
+        if expected_topic:
+            if payload.get("Topic") == expected_topic:
+                return True
+            if payload.get("PayloadIdentifier") == expected_topic:
+                return True
+        # Recurse into nested payloads (Configuration envelopes)
+        for nested in payload.get("PayloadContent") or []:
+            if _payload_is_mdm(nested):
+                return True
+        return False
+
+    for ident, meta in profile_meta.items():
+        if not isinstance(meta, dict):
+            continue
+        if _payload_is_mdm(meta):
+            return True
+        # MDM-vendor identifiers typically contain "mdm"
+        # (e.g. "com.unwiredmdm.mobileconfig.profile-service").
+        if isinstance(ident, str) and "mdm" in ident.lower():
+            return True
+    return False
+
+
 def _cloud_config_matches(existing: dict[str, Any], desired: dict[str, Any]) -> bool:
     """Return True when the existing cloud config already matches the desired state."""
     boolean_keys_with_false_default = {
@@ -917,12 +971,7 @@ async def do_supervised_pairing(
                             if keybag_path and keybag_path.exists():
                                 async with MobileConfigService(lockdown) as verify_svc:
                                     profiles = await _maybe_await(verify_svc.get_profile_list())
-                                profile_meta = profiles.get("ProfileMetadata") or {} if isinstance(profiles, dict) else {}
-                                has_mdm = any(
-                                    isinstance(meta, dict) and meta.get("PayloadType") == "com.apple.mdm"
-                                    for meta in profile_meta.values()
-                                )
-                                if not has_mdm:
+                                if not _profile_list_contains_mdm(profiles, expected_topic=mdm_topic):
                                     raise RuntimeError("MDM profile not found on device after install")
                             mdm_enrolled = True
                             _progress("MDM enrollment profile installed")

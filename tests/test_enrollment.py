@@ -364,6 +364,103 @@ class TestSupervisedPairing:
             == "MDM profile install failed: The Internet connection appears to be offline."
         )
 
+    def test_make_supervised_recognizes_nested_mdm_envelope(self, mock_pymobiledevice3):
+        """End-to-end regression: SimpleMDM-style nested MDM profile.
+
+        The MDM profile is installed via install_profile_silent and the
+        device's get_profile_list returns a Configuration envelope whose
+        identifier contains 'mdm' (no PayloadType exposed). The pre-fix
+        verification returned False for this case and falsely reported
+        "MDM profile not found on device after install" — preventing
+        otherwise-successful enrollments from being recorded as success.
+        """
+        from apple_device_cli.enrollment import supervised
+
+        lockdown = MagicMock(spec=LockdownClient)
+        mock_pymobiledevice3.lockdown.create_using_usbmux = AsyncMock(return_value=lockdown)
+
+        activation_svc = MagicMock(spec=MobileActivationService)
+        activation_svc.state = AsyncMock(return_value="Activated")
+        activation_svc.activate = AsyncMock()
+        mock_pymobiledevice3.services.mobile_activation.MobileActivationService.return_value = (
+            activation_svc
+        )
+
+        mdm_topic = "com.apple.mgmt.External.205e2f7b-f2e8-4a33-8f11-097496bec56f"
+        # iOS 26 metadata: no PayloadType, just display fields.
+        nested_envelope_metadata = {
+            "ProfileMetadata": {
+                "com.unwiredmdm.mobileconfig.profile-service": {
+                    "PayloadDisplayName": "Capital Candy Company Profile",
+                    "PayloadOrganization": "Capital Candy Company",
+                    "PayloadUUID": "ddb4c3b5-8357-4b2c-8b23-4e75dfdf78a1",
+                    "PayloadVersion": 1,
+                    "PayloadRemovalDisallowed": False,
+                }
+            }
+        }
+
+        svc = MagicMock(spec=MobileConfigService)
+        svc.install_profile_silent = AsyncMock()
+        svc.get_profile_list = AsyncMock(return_value=nested_envelope_metadata)
+        svc.get_cloud_configuration = AsyncMock(return_value={"IsSupervised": True})
+        svc.__aenter__ = AsyncMock(return_value=svc)
+        svc.__aexit__ = AsyncMock(return_value=False)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cert_path = Path(tmpdir) / "cert.der"
+            key_path = Path(tmpdir) / "key.der"
+            mdm_config_path = Path(tmpdir) / "mdm.mobileconfig"
+            mdm_config_path.write_bytes(b"fake-mdm-mobileconfig-content")
+
+            private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            subject = issuer = x509.Name(
+                [x509.NameAttribute(NameOID.COMMON_NAME, "Test Org")]
+            )
+            certificate = (
+                x509.CertificateBuilder()
+                .subject_name(subject)
+                .issuer_name(issuer)
+                .public_key(private_key.public_key())
+                .serial_number(1)
+                .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
+                .not_valid_after(datetime.now(timezone.utc) + timedelta(days=365))
+                .sign(private_key, hashes.SHA256())
+            )
+
+            cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.DER))
+            key_path.write_bytes(
+                private_key.private_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                )
+            )
+
+            with patch(
+                "pymobiledevice3.services.mobile_config.MobileConfigService", return_value=svc
+            ):
+                result = supervised.make_supervised(
+                    str(cert_path),
+                    str(key_path),
+                    "Test Org",
+                    None,
+                    ["passcode"],
+                    "https://mdm.example.com/mdm",
+                    None,
+                    None,
+                    "WPA",
+                    "https://mdm.example.com/checkin",
+                    mdm_topic,
+                    False,
+                    None,
+                    str(mdm_config_path),
+                )
+
+        assert result.success is True, f"Expected success, got errors: {result.errors}"
+        assert result.mdm_enrolled is True
+        assert result.errors == []
+
 
 class TestActivation:
     def test_module_imports(self, mock_pymobiledevice3):
@@ -383,3 +480,169 @@ class TestActivation:
         ):
             with pytest.raises(ActivationError):
                 activation.activate_device()
+
+
+class TestProfileListContainsMdm:
+    """Tests for the helper that detects MDM enrollment in get_profile_list output.
+
+    The original check looked only at top-level ``PayloadType == "com.apple.mdm"``
+    and returned False for nested payloads (SimpleMDM-style Configuration envelopes).
+    These tests pin down the new behavior so the regression cannot return.
+    """
+
+    def test_returns_false_for_none(self):
+        from apple_device_cli.enrollment.supervised import _profile_list_contains_mdm
+
+        assert _profile_list_contains_mdm(None) is False
+
+    def test_returns_false_for_non_dict(self):
+        from apple_device_cli.enrollment.supervised import _profile_list_contains_mdm
+
+        assert _profile_list_contains_mdm([]) is False
+        assert _profile_list_contains_mdm("string") is False
+
+    def test_returns_false_for_empty_profiles(self):
+        from apple_device_cli.enrollment.supervised import _profile_list_contains_mdm
+
+        assert _profile_list_contains_mdm({}) is False
+        assert _profile_list_contains_mdm({"ProfileMetadata": {}}) is False
+
+    def test_returns_false_when_only_wifi_profile(self):
+        from apple_device_cli.enrollment.supervised import _profile_list_contains_mdm
+
+        profiles = {
+            "ProfileMetadata": {
+                "com.apple.wifi.managed": {
+                    "PayloadDisplayName": "Test WiFi",
+                    "PayloadUUID": "00000000-0000-0000-0000-000000000001",
+                    "PayloadVersion": 1,
+                }
+            }
+        }
+        assert _profile_list_contains_mdm(profiles) is False
+
+    def test_returns_true_for_top_level_mdm_payload(self):
+        """A profile with PayloadType com.apple.mdm at the top level."""
+        from apple_device_cli.enrollment.supervised import _profile_list_contains_mdm
+
+        profiles = {
+            "ProfileMetadata": {
+                "com.apple.mdm": {
+                    "PayloadType": "com.apple.mdm",
+                    "PayloadDisplayName": "MDM",
+                    "PayloadUUID": "00000000-0000-0000-0000-000000000002",
+                    "PayloadVersion": 1,
+                }
+            }
+        }
+        assert _profile_list_contains_mdm(profiles) is True
+
+    def test_returns_true_for_nested_mdm_payload_in_simplemdm_envelope(self):
+        """SimpleMDM and similar vendors wrap com.apple.mdm in a Configuration envelope.
+
+        This is the case that broke in production: the outer profile's
+        PayloadType is 'Configuration', and the inner com.apple.mdm payload
+        is only visible if the iOS metadata includes PayloadContent. When
+        PayloadContent is present, the helper walks it.
+        """
+        from apple_device_cli.enrollment.supervised import _profile_list_contains_mdm
+
+        profiles = {
+            "ProfileMetadata": {
+                "com.unwiredmdm.mobileconfig.profile-service": {
+                    "PayloadType": "Configuration",
+                    "PayloadDisplayName": "Capital Candy Company Profile",
+                    "PayloadIdentifier": "com.unwiredmdm.mobileconfig.profile-service",
+                    "PayloadUUID": "ddb4c3b5-8357-4b2c-8b23-4e75dfdf78a1",
+                    "PayloadVersion": 1,
+                    "PayloadContent": [
+                        {
+                            "PayloadType": "com.apple.security.scep",
+                            "PayloadIdentifier": "f459cdf13a0b40ff8ab05c3961deff6a",
+                            "URL": "https://a.simplemdm.com/scep",
+                        },
+                        {
+                            "PayloadType": "com.apple.mdm",
+                            "PayloadIdentifier": "com.apple.mdm",
+                            "ServerURL": "https://a.simplemdm.com/mdm",
+                            "Topic": "com.apple.mgmt.External.205e2f7b-f2e8-4a33-8f11-097496bec56f",
+                        },
+                    ],
+                }
+            }
+        }
+        assert _profile_list_contains_mdm(profiles) is True
+
+    def test_returns_true_for_nested_mdm_payload_via_topic_match(self):
+        """When PayloadContent is not surfaced (typical on iOS 26 metadata),
+        the helper matches the nested MDM payload's Topic against the
+        expected_topic argument. This is the most reliable production path.
+        """
+        from apple_device_cli.enrollment.supervised import _profile_list_contains_mdm
+
+        profiles = {
+            "ProfileMetadata": {
+                "com.unwiredmdm.mobileconfig.profile-service": {
+                    "PayloadType": "Configuration",
+                    "PayloadDisplayName": "Capital Candy Company Profile",
+                    "PayloadIdentifier": "com.unwiredmdm.mobileconfig.profile-service",
+                    "PayloadUUID": "ddb4c3b5-8357-4b2c-8b23-4e75dfdf78a1",
+                    "PayloadVersion": 1,
+                }
+            }
+        }
+        assert (
+            _profile_list_contains_mdm(
+                profiles,
+                expected_topic="com.apple.mgmt.External.205e2f7b-f2e8-4a33-8f11-097496bec56f",
+            )
+            is True
+        )
+
+    def test_returns_true_when_identifier_contains_mdm_keyword(self):
+        """Fallback heuristic: SimpleMDM uses identifiers like
+        'com.unwiredmdm.mobileconfig.profile-service' which contain 'mdm'.
+        This catches the case where neither PayloadType nor PayloadContent
+        is exposed in the metadata (the common iOS 26 case).
+        """
+        from apple_device_cli.enrollment.supervised import _profile_list_contains_mdm
+
+        profiles = {
+            "ProfileMetadata": {
+                "com.unwiredmdm.mobileconfig.profile-service": {
+                    "PayloadDisplayName": "Capital Candy Company Profile",
+                    "PayloadUUID": "ddb4c3b5-8357-4b2c-8b23-4e75dfdf78a1",
+                    "PayloadVersion": 1,
+                }
+            }
+        }
+        assert _profile_list_contains_mdm(profiles) is True
+
+    def test_returns_false_when_identifier_contains_mdm_but_not_in_metadata(self):
+        """The 'mdm' in the identifier check must not trigger on random
+        strings — only when the identifier is actually present and looks
+        like an MDM-vendor identifier."""
+        from apple_device_cli.enrollment.supervised import _profile_list_contains_mdm
+
+        profiles = {
+            "ProfileMetadata": {
+                "Davids-MacBook-Pro.43E2EA9D-7A96-41E9-B400-17CBE7A12DB4": {
+                    "PayloadDisplayName": "Wi-Fi",
+                    "PayloadUUID": "40BE9F2D-91BB-4AC8-B61B-4F55260C2529",
+                    "PayloadVersion": 1,
+                }
+            }
+        }
+        assert _profile_list_contains_mdm(profiles) is False
+
+    def test_returns_false_when_metadata_values_are_not_dicts(self):
+        """Defensive: a malformed ProfileMetadata entry should not crash."""
+        from apple_device_cli.enrollment.supervised import _profile_list_contains_mdm
+
+        profiles = {
+            "ProfileMetadata": {
+                "bad.entry": "not a dict",
+                "Davids-MacBook-Pro.43E2EA9D": None,
+            }
+        }
+        assert _profile_list_contains_mdm(profiles) is False

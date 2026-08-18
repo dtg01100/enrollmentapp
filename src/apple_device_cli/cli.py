@@ -1744,12 +1744,31 @@ def enroll_validate(
 
 @enroll_app.command("activate")
 def enroll_activate(udid: str = typer.Option(None, "--udid")):
-    """Activate device."""
+    """Activate device.
+
+    ``activate_device`` returns ``True`` only when the device's
+    ``ActivationState`` is ``"Activated"``. If it returns ``False`` the
+    device is likely still in Setup Assistant and requires on-screen
+    interaction (the "Activate iPad" prompt, or a SIM card for cellular
+    iPads). Exit non-zero so callers can distinguish the "ok" path from
+    the "needs on-device interaction" path.
+    """
     try:
-        activate_device(udid)
-        typer.secho("Device activated", fg=typer.colors.GREEN)
+        activated = activate_device(udid)
     except AppleDeviceError as e:
         typer.secho(f"Error: {sanitize_text(str(e))}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    if activated:
+        typer.secho("Device activated", fg=typer.colors.GREEN)
+        return
+    typer.secho(
+        "Device not activated: ActivationState is not 'Activated'. "
+        "The device likely needs on-screen interaction (e.g., the "
+        "'Activate iPad' prompt in Setup Assistant, or a SIM card "
+        "for cellular iPads).",
+        fg=typer.colors.YELLOW,
+    )
+    raise typer.Exit(1)
 
 
 def main():

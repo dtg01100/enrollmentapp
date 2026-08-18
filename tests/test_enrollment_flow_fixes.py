@@ -373,17 +373,26 @@ class TestEnrollValidate:
 
 class TestEnrollActivate:
     @patch("apple_device_cli.cli.activate_device", spec=True)
-    def test_success(self, mock_activate):
-        mock_activate.return_value = None
+    def test_success_when_activation_state_is_activated(self, mock_activate):
+        mock_activate.return_value = True
         result = runner.invoke(enroll_app, ["activate"])
         assert result.exit_code == 0
         assert "activated" in result.output.lower()
 
     @patch("apple_device_cli.cli.activate_device", spec=True)
+    def test_not_activated_exits_nonzero(self, mock_activate):
+        mock_activate.return_value = False
+        result = runner.invoke(enroll_app, ["activate"])
+        assert result.exit_code == 1
+        assert "not activated" in result.output.lower()
+        # Mentions the common cause so the user knows what to do
+        assert "setup assistant" in result.output.lower()
+
+    @patch("apple_device_cli.cli.activate_device", spec=True)
     def test_error_prints_message(self, mock_activate):
         mock_activate.side_effect = AppleDeviceError("https://mdm.example.com/verysecrettoken")
         result = runner.invoke(enroll_app, ["activate"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "Error" in result.output
         # URL token redacted (path > 12 chars -> ellipsis appended)
         assert "/…" in result.output

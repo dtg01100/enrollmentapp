@@ -151,7 +151,7 @@ def build_gui(release: bool = False) -> int:
         "--output-filename=ios-enroll-gui",
         "--include-package=PySide6",
         "--enable-plugin=pyside6",
-        str(ROOT / "src" / "apple_device_cli" / "gui_qt.py"),
+        str(ROOT / "src" / "apple_device_cli" / "gui_qt" / "app.py"),
     ])
     return run_nuitka(args)
 
@@ -222,7 +222,7 @@ def build_windows_gui(release: bool = False) -> int:
         "--enable-plugin=pyside6",
         "--windows-console-mode=disable",
         *_windows_compiler_args(),
-        str(ROOT / "src" / "apple_device_cli" / "gui_qt.py"),
+        str(ROOT / "src" / "apple_device_cli" / "gui_qt" / "app.py"),
     ])
     icon = ROOT / "assets" / "ios-enroll.ico"
     if icon.exists():

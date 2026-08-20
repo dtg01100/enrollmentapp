@@ -10,9 +10,9 @@ job within seconds. These tests pin the platform-aware behavior:
 - cross-compiles on Python 3.13+ fail fast with a fix hint
 
 Additional tests cover the speed-optimization flags (``--jobs``,
-``--lto=no``, ``--python-flag=-O``, ``--no-docstrings``), the
-``--release`` opt-in for ``--onefile``, optional ClangCL/LLD selection,
-and the ``--parallel`` flag.
+``--lto=no``, ``--python-flag=-O``, ``--python-flag=no_docstrings``),
+the ``--release`` opt-in for ``--onefile``, optional ClangCL/LLD
+selection, and the ``--parallel`` flag.
 """
 from __future__ import annotations
 
@@ -110,7 +110,9 @@ def test_base_args_dev_mode_skips_onefile_and_lto() -> None:
     assert "--standalone" in joined
     assert "--onefile" not in joined
     assert "--lto=no" in joined
-    assert "--no-docstrings" in joined
+    # --no-docstrings became the no_docstrings python flag in Nuitka 4.x
+    assert "--python-flag=no_docstrings" in joined
+    assert "--no-docstrings" not in joined
     assert "--python-flag=-O" in joined
 
 
@@ -121,7 +123,7 @@ def test_base_args_release_enables_onefile_and_drops_dev_shortcuts() -> None:
     assert "--standalone" in joined
     assert "--onefile" in joined
     assert "--lto=no" not in joined
-    assert "--no-docstrings" not in joined
+    assert "--python-flag=no_docstrings" not in joined
     assert "--python-flag=-O" not in joined
 
 

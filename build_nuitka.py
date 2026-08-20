@@ -9,8 +9,10 @@ MinGW (``--mingw64``) when cross-compiling from Linux/macOS on a Python
 Build modes:
 
 * Default (development): ``--standalone``, ``--lto=no``, ``--python-flag=-O``,
-  parallel jobs, shared cache. The fastest setup for iterating on code; the
-  produced binary is a directory distribution, not a single ``.exe``.
+  ``--python-flag=no_docstrings``, parallel jobs, shared cache (the
+  ``NUITKA_CACHE_DIR`` env var — ``--cache-dir`` was removed in Nuitka 4.x).
+  The fastest setup for iterating on code; the produced binary is a
+  directory distribution, not a single ``.exe``.
 * ``--release``: re-enables ``--onefile`` and link-time optimization for
   shippable artifacts. Slower to build, single self-extracting executable.
 
@@ -85,9 +87,11 @@ def base_args(release: bool = False) -> list[str]:
         args.append("--onefile")
     else:
         # Development build: cheaper compile, smaller intermediate C.
+        # --no-docstrings was removed as a standalone flag in Nuitka 4.x;
+        # it's now the ``no_docstrings`` python flag.
         args.extend([
             "--python-flag=-O",
-            "--no-docstrings",
+            "--python-flag=no_docstrings",
             "--lto=no",
         ])
     # Drop unused pymobiledevice3/rich submodules that drag in extra

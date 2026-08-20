@@ -13,6 +13,18 @@ ios-enroll <command>
 
 Run `ios-enroll --help` for all commands, or `ios-enroll --version` for version info.
 
+### GUI
+
+`ios-enroll --gui` (or the standalone `ios-enroll-gui` script) launches
+the PySide6 GUI. Five tabs, in order: **Devices**, **Organizations**,
+**Enrollment**, **Restore**, **MDM**. The MDM tab is the GUI counterpart
+to the macOS `mdmclient` tool — it shows the currently-selected device's
+configuration profiles, installed apps, and network / security /
+certificate state in three side-by-side panels. The Devices tab's
+right-click menu exposes a "Show MDM Info" entry (switches to the MDM
+tab and refreshes) and a "Remove Profile" sub-menu populated from the
+profiles currently shown in the MDM tab.
+
 ## Installation
 
 ### Manual Installation
@@ -82,6 +94,27 @@ Get device properties (UDID, deviceName, deviceType, buildVersion, firmwareVersi
 `--json` requires `--udid` (the interactive picker can't run in scripts) and
 emits pure JSON; an unknown device yields `{"error": ...}`.
 
+### list-apps
+List apps installed on the device (mdmclient `QueryInstalledApps`).
+Supports `--udid` and `--type Any|User|System`; `--json` emits a JSON
+array of `{bundle_identifier, name, version, short_version, application_type,
+static_disk_usage, dynamic_disk_usage}`.
+
+### network
+Show network state (mdmclient `QueryNetworkInformation`): SSID, BSSID,
+RSSI, IPv4 / IPv6 addresses, DNS servers, HTTP(S) proxy. `--json` emits
+the same data as a flat object.
+
+### certs
+List provisioning profiles installed on the device (mdmclient
+`QueryCertificates`). Note: this is `MisagentService.copy_all()` —
+**provisioning** profiles, not the iOS keychain.
+
+### security-info
+Show device security state (mdmclient `QuerySecurityInfo`): passcode
+set, activation lock, device-locked flag, device class, model number,
+serial number, battery level + charging state.
+
 ### restore
 Restore a device to a signed iOS version or a local `.ipsw` file; supports
 `--udid` / `--ecid` (recovery/DFU targeting), `--list-versions`, `--ipsw`,
@@ -91,6 +124,19 @@ and require `--yes` (skip confirmation) in non-interactive/scripted runs.
 `--show-cache` and `--list-versions` accept `--json`: the former emits the
 cache state (path, size_bytes, ipsw_count, ipsw_files), the latter one
 object per signed version (version, build, url, device, display_label).
+
+## Profile Commands
+
+### list
+List configuration profiles installed on the device (mdmclient
+`QueryInstalledProfiles`). `--json` emits an array of
+`{identifier, display_name, description, organization, payload_type,
+payload_uuid, payload_version, is_managed, is_removable, signer_certificates}`.
+
+### remove
+Remove a configuration profile by its payload identifier (mdmclient
+`removeSystemProfile`). Destructive — confirms on a TTY and requires
+`--yes` in non-interactive runs.
 
 ## Enrollment Commands
 
@@ -158,6 +204,8 @@ Presets: `minimal`, `standard`, `all` (defined in `enrollment/skip_panes.py`).
 | `Organization` | `orgs/manager.py` | Org metadata dataclass |
 | `OrganizationManager` | `orgs/manager.py` | Org CRUD + import/export |
 | `resolve_skip_panes()` | `enrollment/skip_panes.py` | Resolve presets + custom skip list |
+| `list_profiles()` / `remove_profile()` / `list_apps()` / `get_network_info()` / `get_certificates()` / `get_security_info()` | `device/mdm_inspect.py` | Pure helpers for `mdmclient`-equivalent inspection (CLI + GUI) |
+| `MDMTab` | `gui_qt/mdm_tab.py` | 5th GUI tab controller; profiles, apps, network/security/certs panes |
 
 ## Machine-Readable Output (`--json`)
 
@@ -177,9 +225,14 @@ Commands that accept `--json` follow one uniform contract:
 |---|---|
 | `device list --json` | array of `{udid, name, type, ios_version, build_version, ecid}` — `[]` when no devices |
 | `device info --json` | object `{udid, name, type, ios_version, build_version, ecid}` (requires `--udid`) |
+| `device list-apps --json` | array of `{bundle_identifier, name, version, short_version, application_type, static_disk_usage, dynamic_disk_usage}` |
+| `device network --json` | object `{ssid, bssid, rssi, ipv4, ipv6, dns, proxy}` |
+| `device certs --json` | array of `{uuid, name, team_identifier, app_id_prefix, expiration_date, raw_plist}` |
+| `device security-info --json` | object `{is_passcode_set, is_activation_lock_*, is_device_locked, device_class, model_number, serial_number, battery_*}` |
 | `device restore --show-cache --json` | object `{path, size_bytes, ipsw_count, ipsw_files}` |
 | `device restore --list-versions --json` | array of `{version, build, url, device, display_label}` |
 | `org list --json` | array of `{name, org_id, mdm_url, checkin_url, mdm_topic, has_cert, has_key, wifi_config_path}` — `[]` when no orgs |
+| `profile list --json` | array of `{identifier, display_name, description, organization, payload_type, payload_uuid, payload_version, is_managed, is_removable, signer_certificates}` |
 
 ## Usage Examples
 

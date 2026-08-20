@@ -64,7 +64,32 @@ pip install -e .
 ```bash
 ios-enroll device list [--json] [--verbose]              # List connected devices
 ios-enroll device info [--udid <UDID>] [--json]          # Get device info
+ios-enroll device list-apps [--udid <UDID>] [--type Any|User|System] [--json]   # Installed apps
+ios-enroll device network [--udid <UDID>] [--json]       # SSID, IPs, DNS, proxy
+ios-enroll device certs [--udid <UDID>] [--json]         # Provisioning profiles
+ios-enroll device security-info [--udid <UDID>] [--json] # Passcode, lock, battery
 ```
+
+### Profile Commands
+
+```bash
+ios-enroll profile list [--udid <UDID>] [--json]                       # Installed config profiles
+ios-enroll profile remove <identifier> [--udid <UDID>] [--yes]         # Remove a config profile (asks first)
+```
+
+`profile remove` is destructive — it confirms on a TTY and requires `--yes`
+in non-interactive (scripted/CI) runs, where there is no prompt.
+
+The four `device network` / `device certs` / `device security-info` /
+`device list-apps` commands and the two `profile list` / `profile remove`
+commands mirror the macOS `mdmclient` tool's surface (`QueryInstalledApps`,
+`QueryNetworkInformation`, `QueryCertificates`, `QuerySecurityInfo`,
+`QueryInstalledProfiles`, `removeSystemProfile`) so the same MDM inspection
+workflows run on Linux without Apple Configurator. The GUI has a dedicated
+**MDM** tab (next to Devices / Organizations / Enrollment / Restore) that
+renders the same data as tables and side-by-side info panels, and the
+Devices-tab right-click menu exposes "Show MDM Info" and a "Remove Profile"
+sub-menu.
 
 ### Organization Commands
 

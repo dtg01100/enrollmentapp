@@ -5,9 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.0] - 2026-08-20
 
 ### Added
+- **mdmclient-equivalent inspection (CLI + GUI).** Six new CLI
+  subcommands under the existing `device` group and a new `profile`
+  group cover the same surface as macOS's `mdmclient` tool, so the
+  same MDM inspection workflows run on Linux without Apple Configurator:
+  - `ios-enroll device list-apps [--udid] [--type Any|User|System] [--json]`
+    — every installed app (mdmclient `QueryInstalledApps`).
+  - `ios-enroll device network [--udid] [--json]` — SSID, BSSID, RSSI,
+    IPv4/IPv6, DNS, proxy (mdmclient `QueryNetworkInformation`).
+  - `ios-enroll device certs [--udid] [--json]` — provisioning
+    profiles installed on the device (mdmclient `QueryCertificates`).
+  - `ios-enroll device security-info [--udid] [--json]` — passcode,
+    activation lock, device class, model, battery (mdmclient
+    `QuerySecurityInfo`).
+  - `ios-enroll profile list [--udid] [--json]` — installed
+    configuration profiles (mdmclient `QueryInstalledProfiles`).
+  - `ios-enroll profile remove <identifier> [--udid] [--yes]`
+    — remove a configuration profile by its payload identifier
+    (mdmclient `removeSystemProfile`); destructive, gated by `--yes`.
+  Backed by `apple_device_cli/device/mdm_inspect.py` — six pure
+  functions (`list_profiles`, `remove_profile`, `list_apps`,
+  `get_network_info`, `get_certificates`, `get_security_info`) that
+  each take an already-connected pymobiledevice3 service (dependency
+  injection) and return JSON-serializable dataclasses.
+- **5th GUI tab: MDM.** `ios-enroll-gui` now has a new **MDM** tab
+  (Devices / Organizations / Enrollment / Restore / **MDM**). Three
+  sections: a Configuration Profiles table, an Installed Apps table,
+  and three side-by-side info panels (Network / Security /
+  Certificates). Auto-refreshes when the user picks a device on the
+  Devices tab; the Refresh button re-queries all three sections.
+- **Devices tab right-click: Show MDM Info + Remove Profile.**
+  Right-clicking a device in the Devices tab now shows a "Show MDM
+  Info" entry (switches to the MDM tab and refreshes) and a "Remove
+  Profile" sub-menu listing the profiles currently shown in the MDM
+  tab — each entry confirms before sending `removeSystemProfile` to
+  the device and refreshes the tab on success.
 - **Machine-readable output for scripts.** `device restore --show-cache
   --json` emits the cache state (path, size_bytes, ipsw_count, ipsw_files),
   `device restore --list-versions --json` emits one object per signed

@@ -18,7 +18,11 @@
 ## Quick Setup
 
 ```bash
-# Install
+# Install (CLI + GUI). The [gui] extra pulls PySide6; without it,
+# `ios-enroll-gui` fails at boot with "PySide6 is not available".
+uv tool install '.[gui]'
+
+# CLI-only install (skip PySide6 — GUI won't run, CLI works fine).
 uv tool install .
 
 # Run (no install)
@@ -33,12 +37,16 @@ PYTHONPATH=src python -m pytest tests/ -v
 The project has two optional dependency groups in `pyproject.toml`:
 
 ```bash
-# PySide6 GUI (ios-enroll-gui, --gui flag)
+# PySide6 GUI (ios-enroll-gui, --gui flag) — already pulled by `uv tool install '.[gui]'`
 pip install '.[gui]'
 
 # Native onefile builds via Nuitka
 pip install '.[build]'
 ```
+
+When using `uv tool install`, the extras install into the tool's venv — use
+`uv pip install --python <tool-bin> '.[gui]'` to add an extra to an
+existing tool install without rebuilding the project itself.
 
 Both are optional at runtime — `ios-enroll` works without them.
 

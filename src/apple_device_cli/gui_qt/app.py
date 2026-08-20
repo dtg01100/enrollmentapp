@@ -107,6 +107,7 @@ if TYPE_CHECKING:
         QMainWindow,
         QMenu,
         QMessageBox,
+        QPlainTextEdit,
         QProgressBar,
         QPushButton,
         QTabWidget,
@@ -253,7 +254,7 @@ def _require_pyside6() -> None:
     global QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout
     global QHBoxLayout
     global QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow
-    global QMessageBox, QProgressBar, QPushButton, QSplitter, QStatusBar, QTabWidget, QTextEdit
+    global QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSplitter, QStatusBar, QTabWidget, QTextEdit
     global QToolButton
     global QVBoxLayout, QWidget
     global QGroupBox, QSettings
@@ -275,6 +276,7 @@ def _require_pyside6() -> None:
             QMainWindow,
             QMenu,
             QMessageBox,
+            QPlainTextEdit,
             QProgressBar,
             QPushButton,
             QSplitter,
@@ -408,6 +410,7 @@ def _require_pyside6() -> None:
             self.orgs_tab = self._create_orgs_tab()
             self.enroll_tab = self._create_enroll_tab()
             self.restore_tab = self._create_restore_tab()
+            self.mdm_tab = self._create_mdm_tab()
 
             style = self.style()
             self.tabs.addTab(
@@ -429,6 +432,11 @@ def _require_pyside6() -> None:
                 self.restore_tab,
                 style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload),
                 "Restore",
+            )
+            self.tabs.addTab(
+                self.mdm_tab,
+                style.standardIcon(QStyle.StandardPixmap.SP_FileDialogInfoView),
+                "MDM",
             )
 
             log_group = QWidget()
@@ -454,18 +462,26 @@ def _require_pyside6() -> None:
             log_header_row.addWidget(self.log_toggle_btn)
             log_layout.addLayout(log_header_row)
 
-            self.log_text = QTextEdit()
+            self.log_text = QPlainTextEdit()
             self.log_text.setReadOnly(True)
             self.log_text.setObjectName("log_text")
             # Inner padding so descenders aren't clipped at the bottom edge.
             self.log_text.setStyleSheet(
-                "QTextEdit { padding: 4px 6px; }"
+                "QPlainTextEdit { padding: 4px 6px; }"
             )
             # Cap the log at a fixed height so a verbose operation can't
             # squeeze the tab content to zero height. Min keeps at least
             # 4 lines visible.
             self.log_text.setMaximumHeight(180)
             self.log_text.setMinimumHeight(80)
+            # Cap the line count so expanding a long-lived log doesn't
+            # trigger a multi-second synchronous relayout (was hanging
+            # the GUI when the log toggle was clicked after a long
+            # restore). 500 lines is plenty for a single session; older
+            # blocks are silently dropped. QPlainTextEdit is the right
+            # widget for this — QTextEdit's rich-text engine is what
+            # made the relayout expensive.
+            self.log_text.setMaximumBlockCount(500)
             log_layout.addWidget(self.log_text)
             layout.addWidget(log_group)
 
@@ -665,7 +681,10 @@ def _require_pyside6() -> None:
             self.log_signal.emit(message)
 
         def _append_log(self, message: str) -> None:
-            self.log_text.append(message)
+            # QPlainTextEdit uses appendPlainText(); QTextEdit (used by the
+            # Restore tab) uses append(). The main log widget is QPlainTextEdit
+            # for performance — see the comment at the widget construction.
+            self.log_text.appendPlainText(message)
 
         def _log_to_restore(self, message: str) -> None:
             self.restore_tab_controller._log_to_restore(message)
@@ -743,6 +762,22 @@ def _require_pyside6() -> None:
             can detect stale completions against ``self._request_token``.
             """
             self._worker_pool.submit(worker, on_finished, buttons_to_disable, token=token)
+
+        def _create_mdm_tab(self) -> QWidget:
+            from apple_device_cli.gui_qt.mdm_tab import MDMTab
+
+            self.mdm_tab_controller = MDMTab(self)
+            # Mirror the controller's widgets on self so the existing
+            # test conventions (reach into app.<widget>) keep working.
+            self.mdm_refresh_btn = self.mdm_tab_controller.refresh_btn
+            self.mdm_profiles_table = self.mdm_tab_controller.profiles_table
+            self.mdm_apps_table = self.mdm_tab_controller.apps_table
+            self.mdm_network_view = self.mdm_tab_controller.network_view
+            self.mdm_security_view = self.mdm_tab_controller.security_view
+            self.mdm_certs_view = self.mdm_tab_controller.certs_view
+            self.mdm_status_label = self.mdm_tab_controller.status_label
+            self.mdm_empty_state_label = self.mdm_tab_controller.empty_state_label
+            return self.mdm_tab_controller.tab_widget()
 
         def _refresh_devices(self) -> None:
             self.devices_tab_controller._refresh()

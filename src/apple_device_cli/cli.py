@@ -30,6 +30,15 @@ from apple_device_cli.device.connection import (
     list_devices,
 )
 from apple_device_cli.device.info import DeviceInfo
+from apple_device_cli.device.mdm_inspect import (
+    dataclass_to_dict,
+    get_certificates,
+    get_network_info,
+    get_security_info,
+    list_apps,
+    list_profiles,
+    remove_profile,
+)
 
 from apple_device_cli.cli_actions import (
     OrgNotFoundError,
@@ -185,11 +194,13 @@ app = typer.Typer(
 device_app = typer.Typer(help="Device management commands")
 org_app = typer.Typer(help="Organization management commands")
 enroll_app = typer.Typer(help="Enrollment commands")
+profile_app = typer.Typer(help="Configuration profile commands")
 
 
 app.add_typer(device_app, name="device", invoke_without_command=True)
 app.add_typer(org_app, name="org", invoke_without_command=True)
 app.add_typer(enroll_app, name="enroll", invoke_without_command=True)
+app.add_typer(profile_app, name="profile", invoke_without_command=True)
 
 
 def _device_help() -> None:
@@ -198,6 +209,10 @@ def _device_help() -> None:
     typer.echo("Commands:")
     typer.echo("  ios-enroll device list            List connected devices")
     typer.echo("  ios-enroll device info            Show device details")
+    typer.echo("  ios-enroll device list-apps       List installed apps")
+    typer.echo("  ios-enroll device network         Show network state (Wi-Fi, IPs, DNS)")
+    typer.echo("  ios-enroll device certs           List installed provisioning profiles")
+    typer.echo("  ios-enroll device security-info   Show security state (passcode, lock, battery)")
     typer.echo("\nExample: ios-enroll device list")
 
 
@@ -246,6 +261,22 @@ def enroll_group(ctx: typer.Context):
     """Enrollment commands."""
     if ctx.invoked_subcommand is None:
         _enroll_help()
+
+
+def _profile_help() -> None:
+    """Help message for incomplete profile commands."""
+    typer.secho("ios-enroll profile - Configuration profile commands\n", fg=typer.colors.BLUE, bold=True)
+    typer.echo("Commands:")
+    typer.echo("  ios-enroll profile list           List installed configuration profiles")
+    typer.echo("  ios-enroll profile remove         Remove a configuration profile by identifier")
+    typer.echo("\nExample: ios-enroll profile list")
+
+
+@profile_app.callback(invoke_without_command=True)
+def profile_group(ctx: typer.Context):
+    """Configuration profile commands."""
+    if ctx.invoked_subcommand is None:
+        _profile_help()
 
 
 
@@ -1766,6 +1797,332 @@ def enroll_activate(udid: str = typer.Option(None, "--udid")):
         "The device likely needs on-screen interaction (e.g., the "
         "'Activate iPad' prompt in Setup Assistant, or a SIM card "
         "for cellular iPads).",
+        fg=typer.colors.YELLOW,
+    )
+    raise typer.Exit(1)
+
+
+async def _with_lockdown(udid: str):
+    """Open a lockdown connection to the device.
+
+    Returns the (async) lockdown object so callers can pass it to a
+    service constructor.  Caller is responsible for closing it.
+    """
+    from pymobiledevice3.lockdown import create_using_usbmux
+
+    return await create_using_usbmux(serial=udid)
+
+
+async def _run_with_mc_service(udid: str, coro_factory):
+    """Open a MobileConfigService for ``udid`` and run ``coro_factory(mc)``."""
+    lockdown = await _with_lockdown(udid)
+    from pymobiledevice3.services.mobile_config import MobileConfigService
+
+    async with MobileConfigService(lockdown) as mc:
+        return await coro_factory(mc)
+
+
+async def _run_with_install_service(udid: str, coro_factory):
+    """Open an InstallationProxyService for ``udid`` and run the coroutine."""
+    lockdown = await _with_lockdown(udid)
+    from pymobiledevice3.services.installation_proxy import InstallationProxyService
+
+    async with InstallationProxyService(lockdown) as svc:
+        return await coro_factory(svc)
+
+
+async def _run_with_misagent_service(udid: str, coro_factory):
+    """Open a MisagentService for ``udid`` and run the coroutine."""
+    lockdown = await _with_lockdown(udid)
+    from pymobiledevice3.services.misagent import MisagentService
+
+    async with MisagentService(lockdown) as svc:
+        return await coro_factory(svc)
+
+
+async def _run_with_diagnostics_service(udid: str, coro_factory):
+    """Open a DiagnosticsService for ``udid`` and run the coroutine."""
+    lockdown = await _with_lockdown(udid)
+    from pymobiledevice3.services.diagnostics import DiagnosticsService
+
+    async with DiagnosticsService(lockdown) as svc:
+        return await coro_factory(svc)
+
+
+def _resolve_udid_for_command(udid: str | None) -> str:
+    """Resolve a UDID for an MDM-inspect command.
+
+    When ``udid`` is given, returns it as-is.  When omitted, refuses to
+    run interactively (these commands target a specific device, and
+    picking from a list makes no sense for scripts).  Returns empty
+    string when no UDID is available so the caller can emit a clean
+    error.
+    """
+    if udid:
+        return udid
+    return ""
+
+
+def _json_or_table(data: object, json_output: bool) -> None:
+    """Print ``data`` as JSON or leave it for the caller's table render."""
+    if json_output:
+        typer.echo(json.dumps(data, indent=2, default=str))
+
+
+# ---------------------------------------------------------------------------
+# New device subcommands (mdmclient-equivalent inspection)
+# ---------------------------------------------------------------------------
+
+
+@device_app.command("list-apps")
+def device_list_apps(
+    udid: str = typer.Option(None, "--udid", help="Target device UDID"),
+    application_type: str = typer.Option(
+        "Any", "--type", help="Filter: Any, User, or System",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """List apps installed on the device (mdmclient QueryInstalledApps)."""
+    target_udid = _resolve_udid_for_command(udid)
+    if not target_udid:
+        typer.secho(
+            "--udid is required for this command (no interactive picker).",
+            fg=typer.colors.RED, err=True,
+        )
+        raise typer.Exit(1)
+    ensure_device_pairing(target_udid)
+
+    async def _call(svc):
+        return list_apps(svc, application_type=application_type, calculate_sizes=True)
+
+    try:
+        apps = asyncio.run(_run_with_install_service(target_udid, _call))
+    except Exception as e:
+        if json_output:
+            typer.echo(json.dumps({"error": str(e)}))
+        else:
+            typer.secho(f"Error: {sanitize_text(str(e))}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    if json_output:
+        typer.echo(json.dumps(dataclass_to_dict(apps), indent=2))
+        return
+    if not apps:
+        typer.secho("No apps found", fg=typer.colors.YELLOW)
+        return
+    typer.echo(f"{'Name':<32}  {'Bundle ID':<48}  {'Version':<10}  {'Size':>10}  Type")
+    typer.echo("-" * 116)
+    for a in apps:
+        name = (a.name or "")[:32]
+        bundle = (a.bundle_identifier or "")[:48]
+        version = (a.short_version or a.version or "")[:10]
+        size = a.static_disk_usage + a.dynamic_disk_usage
+        size_str = f"{size:,}" if size else ""
+        typer.echo(f"{name:<32}  {bundle:<48}  {version:<10}  {size_str:>10}  {a.application_type}")
+
+
+@device_app.command("network")
+def device_network(
+    udid: str = typer.Option(None, "--udid", help="Target device UDID"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Show network state (mdmclient QueryNetworkInformation)."""
+    target_udid = _resolve_udid_for_command(udid)
+    if not target_udid:
+        typer.secho("--udid is required for this command.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    ensure_device_pairing(target_udid)
+
+    async def _call(svc):
+        return get_network_info(svc)
+
+    try:
+        info = asyncio.run(_run_with_diagnostics_service(target_udid, _call))
+    except Exception as e:
+        if json_output:
+            typer.echo(json.dumps({"error": str(e)}))
+        else:
+            typer.secho(f"Error: {sanitize_text(str(e))}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    if json_output:
+        typer.echo(json.dumps(info, indent=2))
+        return
+    if not info:
+        typer.secho("No network information available", fg=typer.colors.YELLOW)
+        return
+    typer.echo(f"SSID:  {info.get('ssid', '')}")
+    typer.echo(f"BSSID: {info.get('bssid', '')}")
+    typer.echo(f"RSSI:  {info.get('rssi', 0)} dBm")
+    ipv4 = ", ".join(info.get("ipv4") or []) or "(none)"
+    ipv6 = ", ".join(info.get("ipv6") or []) or "(none)"
+    typer.echo(f"IPv4:  {ipv4}")
+    typer.echo(f"IPv6:  {ipv6}")
+    dns = info.get("dns") or {}
+    if isinstance(dns, dict) and dns:
+        servers = ", ".join(dns.get("Servers", [])) or "(none)"
+        typer.echo(f"DNS:   {servers}")
+    if info.get("proxy"):
+        typer.echo(f"Proxy: {info['proxy']}")
+
+
+@device_app.command("certs")
+def device_certs(
+    udid: str = typer.Option(None, "--udid", help="Target device UDID"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """List provisioning profiles installed on the device (mdmclient QueryCertificates)."""
+    target_udid = _resolve_udid_for_command(udid)
+    if not target_udid:
+        typer.secho("--udid is required for this command.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    ensure_device_pairing(target_udid)
+
+    async def _call(svc):
+        return get_certificates(svc)
+
+    try:
+        certs = asyncio.run(_run_with_misagent_service(target_udid, _call))
+    except Exception as e:
+        if json_output:
+            typer.echo(json.dumps({"error": str(e)}))
+        else:
+            typer.secho(f"Error: {sanitize_text(str(e))}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    if json_output:
+        typer.echo(json.dumps(dataclass_to_dict(certs), indent=2))
+        return
+    if not certs:
+        typer.secho("No provisioning profiles installed", fg=typer.colors.YELLOW)
+        return
+    typer.echo(f"{'Name':<40}  {'UUID':<36}  Expires")
+    typer.echo("-" * 100)
+    for c in certs:
+        name = (c.name or "")[:40]
+        uuid = (c.uuid or "")[:36]
+        typer.echo(f"{name:<40}  {uuid:<36}  {c.expiration_date}")
+
+
+@device_app.command("security-info")
+def device_security_info(
+    udid: str = typer.Option(None, "--udid", help="Target device UDID"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Show device security state (mdmclient QuerySecurityInfo)."""
+    target_udid = _resolve_udid_for_command(udid)
+    if not target_udid:
+        typer.secho("--udid is required for this command.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    ensure_device_pairing(target_udid)
+
+    async def _call(svc):
+        return get_security_info(svc)
+
+    try:
+        info = asyncio.run(_run_with_diagnostics_service(target_udid, _call))
+    except Exception as e:
+        if json_output:
+            typer.echo(json.dumps({"error": str(e)}))
+        else:
+            typer.secho(f"Error: {sanitize_text(str(e))}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    if json_output:
+        typer.echo(json.dumps(info, indent=2))
+        return
+    if not info:
+        typer.secho("No security information available", fg=typer.colors.YELLOW)
+        return
+    typer.echo(f"Passcode set:           {info.get('is_passcode_set')}")
+    typer.echo(f"Activation lock:        {info.get('is_activation_lock_enabled')}")
+    typer.echo(f"Device locked:          {info.get('is_device_locked')}")
+    typer.echo(f"Device class:           {info.get('device_class')}")
+    typer.echo(f"Model:                  {info.get('model_number')}")
+    typer.echo(f"Serial:                 {info.get('serial_number')}")
+    typer.echo(f"Battery:                {info.get('battery_current_capacity')}% "
+               f"{'(charging)' if info.get('battery_is_charging') else ''}")
+
+
+# ---------------------------------------------------------------------------
+# New profile subcommands
+# ---------------------------------------------------------------------------
+
+
+@profile_app.command("list")
+def profile_list(
+    udid: str = typer.Option(None, "--udid", help="Target device UDID"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """List configuration profiles installed on the device (mdmclient QueryInstalledProfiles)."""
+    target_udid = _resolve_udid_for_command(udid)
+    if not target_udid:
+        typer.secho("--udid is required for this command.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    ensure_device_pairing(target_udid)
+
+    async def _call(svc):
+        return list_profiles(svc)
+
+    try:
+        profiles = asyncio.run(_run_with_mc_service(target_udid, _call))
+    except Exception as e:
+        if json_output:
+            typer.echo(json.dumps({"error": str(e)}))
+        else:
+            typer.secho(f"Error: {sanitize_text(str(e))}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    if json_output:
+        typer.echo(json.dumps(dataclass_to_dict(profiles), indent=2))
+        return
+    if not profiles:
+        typer.secho("No configuration profiles installed", fg=typer.colors.YELLOW)
+        return
+    typer.echo(f"{'Display Name':<32}  {'Identifier':<48}  {'Managed':<7}  Removable")
+    typer.echo("-" * 100)
+    for p in profiles:
+        name = (p.display_name or "")[:32]
+        ident = (p.identifier or "")[:48]
+        typer.echo(f"{name:<32}  {ident:<48}  {str(p.is_managed):<7}  {p.is_removable}")
+
+
+@profile_app.command("remove")
+def profile_remove(
+    identifier: str = typer.Argument(..., help="Payload identifier of the profile to remove"),
+    udid: str = typer.Option(None, "--udid", help="Target device UDID"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt (for scripts)"),
+):
+    """Remove a configuration profile by its identifier (mdmclient removeSystemProfile)."""
+    target_udid = _resolve_udid_for_command(udid)
+    if not target_udid:
+        typer.secho("--udid is required for this command.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+    _confirm_destructive_action(
+        yes,
+        f"remove configuration profile '{identifier}'",
+        [
+            (f"About to remove profile: {identifier}", typer.colors.YELLOW, True),
+            ("Some profiles are MDM-managed and removal may be blocked by the device.", typer.colors.RED, False),
+        ],
+    )
+    ensure_device_pairing(target_udid)
+
+    async def _call(svc):
+        return remove_profile(svc, identifier)
+
+    try:
+        removed = asyncio.run(_run_with_mc_service(target_udid, _call))
+    except Exception as e:
+        typer.secho(f"Error: {sanitize_text(str(e))}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    if removed:
+        typer.secho(f"Removed profile: {identifier}", fg=typer.colors.GREEN)
+        return
+    typer.secho(
+        f"Profile '{identifier}' was not present on the device (nothing to remove).",
         fg=typer.colors.YELLOW,
     )
     raise typer.Exit(1)

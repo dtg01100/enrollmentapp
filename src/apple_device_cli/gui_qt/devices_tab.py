@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -263,6 +264,8 @@ class DevicesTab:
     def _build_context_menu(self) -> QMenu:
         menu = QMenu(self.devices_list)
         menu.addAction("Show Device Info", self._show_device_info)
+        menu.addAction("Show MDM Info", self._show_mdm_info)
+        menu.addSeparator()
         menu.addAction("Activate", self._activate_device)
         menu.addAction("Pair / Trust", self._pair_device)
         # Make Supervised is hidden when there's no org selected — clicking
@@ -270,7 +273,89 @@ class DevicesTab:
         # way forward. Gating tells us whether the action can succeed.
         if self._shell._gating.can_enroll():
             menu.addAction("Make Supervised", self._make_supervised_from_context)
+        # Remove Profile: a sub-menu of the profiles currently shown in
+        # the MDM tab. Reads the table that ``MDMTab._populate`` already
+        # maintains, so we don't need a second device round-trip.
+        remove_menu = menu.addMenu("Remove Profile")
+        profiles = self._collect_known_profiles()
+        if not profiles:
+            empty = remove_menu.addAction("(no profiles loaded — open MDM tab)")
+            empty.setEnabled(False)
+        else:
+            for display_name, identifier in profiles:
+                action = remove_menu.addAction(
+                    f"{display_name}  ({identifier})"
+                )
+                # Use a default-arg capture so the loop variable doesn't
+                # leak across iterations (Python late-binding gotcha).
+                action.triggered.connect(
+                    lambda _checked=False, ident=identifier: self._remove_profile(ident)
+                )
         return menu
+
+    def _collect_known_profiles(self) -> list[tuple[str, str]]:
+        """Return [(display_name, identifier), ...] from the MDM tab.
+
+        Falls back to an empty list when the MDM tab is unpopulated
+        (e.g. user never opened it).  Order matches the table.
+        """
+        controller = getattr(self._shell, "mdm_tab_controller", None)
+        if controller is None:
+            return []
+        table = getattr(controller, "profiles_table", None)
+        if table is None or table.rowCount() == 0:
+            return []
+        results: list[tuple[str, str]] = []
+        for row in range(table.rowCount()):
+            name_item = table.item(row, 0)
+            ident_item = table.item(row, 1)
+            name = name_item.text() if name_item else ""
+            ident = ident_item.text() if ident_item else ""
+            if ident:
+                results.append((name or "(no name)", ident))
+        return results
+
+    def _show_mdm_info(self) -> None:
+        """Switch to the MDM tab and trigger a refresh."""
+        mdm_tab = getattr(self._shell, "mdm_tab", None)
+        if mdm_tab is None:
+            return
+        self._shell.tabs.setCurrentWidget(mdm_tab)
+        controller = getattr(self._shell, "mdm_tab_controller", None)
+        if controller is not None:
+            controller.refresh()
+
+    def _remove_profile(self, identifier: str) -> None:
+        """Confirm + delegate to the MDM tab's remove helper."""
+        controller = getattr(self._shell, "mdm_tab_controller", None)
+        if controller is None:
+            return
+        confirm = QMessageBox.question(
+            self._shell,
+            "Remove profile",
+            f"Remove configuration profile:\n\n{identifier}\n\n"
+            "This may be blocked by the device if the profile is MDM-managed.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            removed = controller.remove_profile_by_identifier(identifier)
+        except Exception:  # noqa: BLE001 — error already shown by the helper
+            return
+        if removed:
+            QMessageBox.information(
+                self._shell,
+                "Profile removed",
+                f"Removed profile: {identifier}",
+            )
+        else:
+            QMessageBox.information(
+                self._shell,
+                "Profile not present",
+                f"Profile was not present on the device: {identifier}",
+            )
 
     def _make_supervised_from_context(self) -> None:
         self._shell.tabs.setCurrentWidget(self._shell.enroll_tab)

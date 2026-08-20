@@ -57,16 +57,6 @@ def _jobs_arg() -> str:
     return f"--jobs={n}"
 
 
-def _cache_dir_arg() -> str:
-    """Return ``--cache-dir=<path>`` shared across all targets in a tree.
-
-    ``NUITKA_CACHE_DIR`` overrides the default. CI runners should set this
-    to a path that's cached across runs (see ``.github/workflows/build.yml``).
-    """
-    cache_dir = os.environ.get("NUITKA_CACHE_DIR") or str(ROOT / ".nuitka-cache")
-    return f"--cache-dir={cache_dir}"
-
-
 def base_args(release: bool = False) -> list[str]:
     """Return base Nuitka arguments used by all targets.
 
@@ -90,7 +80,6 @@ def base_args(release: bool = False) -> list[str]:
         "--nofollow-import-to=unittest",
         "--nofollow-import-to=pytest",
         _jobs_arg(),
-        _cache_dir_arg(),
     ]
     if release:
         args.append("--onefile")

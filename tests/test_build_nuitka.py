@@ -10,9 +10,9 @@ job within seconds. These tests pin the platform-aware behavior:
 - cross-compiles on Python 3.13+ fail fast with a fix hint
 
 Additional tests cover the speed-optimization flags (``--jobs``,
-``--cache-dir``, ``--lto=no``, ``--python-flag=-O``, ``--no-docstrings``),
-the ``--release`` opt-in for ``--onefile``, optional ClangCL/LLD
-selection, and the ``--parallel`` flag.
+``--lto=no``, ``--python-flag=-O``, ``--no-docstrings``), the
+``--release`` opt-in for ``--onefile``, optional ClangCL/LLD selection,
+and the ``--parallel`` flag.
 """
 from __future__ import annotations
 
@@ -125,24 +125,16 @@ def test_base_args_release_enables_onefile_and_drops_dev_shortcuts() -> None:
     assert "--python-flag=-O" not in joined
 
 
-def test_base_args_always_sets_jobs_and_cache_dir() -> None:
-    """--jobs and --cache-dir are present in both dev and release modes."""
+def test_base_args_always_sets_jobs_and_omits_removed_cache_flag() -> None:
+    """--jobs is present in both dev and release modes; the --cache-dir
+    CLI flag was removed in Nuitka 4.x (cache dir is now configured via
+    the NUITKA_CACHE_DIR env var, set by the CI workflow), so it must not
+    be passed or every build fails with "no such option"."""
     for release in (False, True):
         args = build_nuitka.base_args(release=release)
         joined = " ".join(args)
         assert "--jobs=" in joined, f"--jobs missing (release={release})"
-        assert "--cache-dir=" in joined, f"--cache-dir missing (release={release})"
-
-
-def test_base_args_cache_dir_respects_env(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    """NUITKA_CACHE_DIR overrides the default cache directory."""
-    custom = tmp_path / "custom-cache"
-    monkeypatch.setenv("NUITKA_CACHE_DIR", str(custom))
-    args = build_nuitka.base_args()
-    assert f"--cache-dir={custom}" in args
+        assert "--cache-dir" not in joined, f"removed flag present (release={release})"
 
 
 def test_base_args_jobs_respects_env(

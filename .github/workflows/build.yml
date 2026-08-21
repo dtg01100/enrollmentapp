@@ -135,26 +135,34 @@ jobs:
             target: windows-cli
             install: '.[build]'
             artifact: ios-enroll-windows-cli
-            file: dist/ios-enroll.exe
+            # Onefile bootstrap is at ``dist/<name>.exe`` for tag builds
+            # (--release). Onedir puts the same binary inside
+            # ``dist/cli.dist/`` for branch/PR builds. Verify-PE and the
+            # upload step use whichever path exists for this run.
+            release_path: dist/ios-enroll.exe
+            dev_path: dist/cli.dist/ios-enroll.exe
             verify_pe: true
           - label: Windows GUI
             os: windows-latest
             target: windows-gui
             install: '.[build,gui]'
             artifact: ios-enroll-windows-gui
-            file: dist/ios-enroll-gui.exe
+            release_path: dist/ios-enroll-gui.exe
+            dev_path: dist/gui.dist/ios-enroll-gui.exe
           - label: Linux CLI
             os: ubuntu-latest
             target: cli
             install: '.[build]'
             artifact: ios-enroll-linux-cli
-            file: dist/ios-enroll
+            release_path: dist/ios-enroll
+            dev_path: dist/cli.dist/ios-enroll
           - label: Linux GUI
             os: ubuntu-latest
             target: gui
             install: '.[build,gui]'
             artifact: ios-enroll-linux-gui
-            file: dist/ios-enroll-gui
+            release_path: dist/ios-enroll-gui
+            dev_path: dist/gui.dist/ios-enroll-gui
     env:
       # Deterministic Nuitka cache location (overrides appdirs default),
       # restored/saved by actions/cache below. Nuitka's cache is keyed on
@@ -204,11 +212,24 @@ jobs:
           python build_nuitka.py
           ${{ github.ref_type == 'tag' && '--release ' || '' }}${{ matrix.target }}
 
+      # The path to the produced binary depends on whether --onefile was
+      # passed (tag builds) or not (branch/PR onedir). Resolve it once
+      # here so Verify-PE and the upload step both see the right file.
+      - name: Resolve binary path
+        id: bin
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "path=${{ matrix.release_path }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=${{ matrix.dev_path }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Verify PE header
         if: matrix.verify_pe
         shell: pwsh
         run: |
-          $bytes = [System.IO.File]::ReadAllBytes("${{ matrix.file }}")
+          $bytes = [System.IO.File]::ReadAllBytes("${{ steps.bin.outputs.path }}")
           if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
             Write-Error "Not a valid PE file (MZ magic missing)"
             exit 1
@@ -218,14 +239,14 @@ jobs:
             Write-Error "PE signature missing"
             exit 1
           }
-          $size = (Get-Item "${{ matrix.file }}").Length
-          Write-Host "${{ matrix.file }}: $size bytes, valid PE"
+          $size = (Get-Item "${{ steps.bin.outputs.path }}").Length
+          Write-Host "${{ steps.bin.outputs.path }}: $size bytes, valid PE"
 
       - name: Upload ${{ matrix.label }} executable
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.file }}
+          path: ${{ steps.bin.outputs.path }}
           if-no-files-found: error
           retention-days: 30
 

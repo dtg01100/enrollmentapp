@@ -9,8 +9,10 @@ MinGW (``--mingw64``) when cross-compiling from Linux/macOS on a Python
 Build modes:
 
 * Default (development): ``--standalone``, ``--lto=no``, ``--python-flag=-O``,
-  parallel jobs, shared cache. The fastest setup for iterating on code; the
-  produced binary is a directory distribution, not a single ``.exe``.
+  ``--python-flag=no_docstrings``, parallel jobs, shared cache (the
+  ``NUITKA_CACHE_DIR`` env var — ``--cache-dir`` was removed in Nuitka 4.x).
+  The fastest setup for iterating on code; the produced binary is a
+  directory distribution, not a single ``.exe``.
 * ``--release``: re-enables ``--onefile`` and link-time optimization for
   shippable artifacts. Slower to build, single self-extracting executable.
 
@@ -57,16 +59,6 @@ def _jobs_arg() -> str:
     return f"--jobs={n}"
 
 
-def _cache_dir_arg() -> str:
-    """Return ``--cache-dir=<path>`` shared across all targets in a tree.
-
-    ``NUITKA_CACHE_DIR`` overrides the default. CI runners should set this
-    to a path that's cached across runs (see ``.github/workflows/build.yml``).
-    """
-    cache_dir = os.environ.get("NUITKA_CACHE_DIR") or str(ROOT / ".nuitka-cache")
-    return f"--cache-dir={cache_dir}"
-
-
 def base_args(release: bool = False) -> list[str]:
     """Return base Nuitka arguments used by all targets.
 
@@ -90,15 +82,16 @@ def base_args(release: bool = False) -> list[str]:
         "--nofollow-import-to=unittest",
         "--nofollow-import-to=pytest",
         _jobs_arg(),
-        _cache_dir_arg(),
     ]
     if release:
         args.append("--onefile")
     else:
         # Development build: cheaper compile, smaller intermediate C.
+        # --no-docstrings was removed as a standalone flag in Nuitka 4.x;
+        # it's now the ``no_docstrings`` python flag.
         args.extend([
             "--python-flag=-O",
-            "--no-docstrings",
+            "--python-flag=no_docstrings",
             "--lto=no",
         ])
     # Drop unused pymobiledevice3/rich submodules that drag in extra
@@ -158,7 +151,7 @@ def build_gui(release: bool = False) -> int:
         "--output-filename=ios-enroll-gui",
         "--include-package=PySide6",
         "--enable-plugin=pyside6",
-        str(ROOT / "src" / "apple_device_cli" / "gui_qt.py"),
+        str(ROOT / "src" / "apple_device_cli" / "gui_qt" / "app.py"),
     ])
     return run_nuitka(args)
 
@@ -229,7 +222,7 @@ def build_windows_gui(release: bool = False) -> int:
         "--enable-plugin=pyside6",
         "--windows-console-mode=disable",
         *_windows_compiler_args(),
-        str(ROOT / "src" / "apple_device_cli" / "gui_qt.py"),
+        str(ROOT / "src" / "apple_device_cli" / "gui_qt" / "app.py"),
     ])
     icon = ROOT / "assets" / "ios-enroll.ico"
     if icon.exists():

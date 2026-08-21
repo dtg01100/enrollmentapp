@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit, urlunsplit
 
 ELLIPSIS = "…"
@@ -32,16 +32,20 @@ def _is_home_like_path(path: Path) -> bool:
     except ValueError:
         pass
 
-    parts = path.parts
-    if len(parts) >= 4 and parts[:3] == ("/", "var", "home"):
+    # POSIX layout checks. Compare against PurePosixPath so ``/home/u``,
+    # ``/var/home/u``, and ``/Users/u`` classify as home-like even when
+    # running on Windows (where ``WindowsPath('/home/u').parts`` uses a
+    # backslash root ``('\\', 'home', 'u')``).
+    posix_parts = PurePosixPath(path).parts
+    if len(posix_parts) >= 4 and posix_parts[:3] == ("/", "var", "home"):
         return True
-    if len(parts) >= 3 and parts[:2] in {("/", "home"), ("/", "Users")}:
+    if len(posix_parts) >= 3 and posix_parts[:2] in {("/", "home"), ("/", "Users")}:
         return True
 
     username = home.name
-    if username and username in parts:
-        username_index = parts.index(username)
-        trailing_parts = parts[username_index + 1 :]
+    if username and username in posix_parts:
+        username_index = posix_parts.index(username)
+        trailing_parts = posix_parts[username_index + 1 :]
         if any(part in PERSONAL_PATH_MARKERS or part.startswith(".") for part in trailing_parts):
             return True
 
@@ -119,7 +123,7 @@ def redact_path(value: str | Path | None) -> str:
 
     path = Path(value).expanduser()
     if path.name == "":
-        return str(path)
+        return path.as_posix()
 
     if _is_home_like_path(path):
         return f"~/{ELLIPSIS}/{path.name}"

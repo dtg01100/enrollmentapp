@@ -51,7 +51,10 @@ def _help_flags(group: str, command: str) -> set[str]:
     # segment. Strip them so the literal box characters are contiguous and
     # the panel regex below still matches.
     output = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
-    box = re.search(r"╭─ Options ─.*?╰─", output, re.S)
+    # On Windows CI, pytest captures stdout, so rich's VT detection fails and
+    # it substitutes the ROUNDED panel corners (╭ … ╰) with SQUARE ones
+    # (┌ … └) via LEGACY_WINDOWS_SUBSTITUTIONS. Accept both corner styles.
+    box = re.search(r"[╭┌]─ Options ─.*?[╰└]─", output, re.S)
     assert box is not None, f"no Options box in `{group} {command} --help`"
     flags = set(_LONG_FLAG.findall(box.group(0))) | set(_SHORT_FLAG.findall(box.group(0)))
     flags.discard("--help")  # implicit click option, never documented
